@@ -1,9 +1,10 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getRoutingDb } from "#/db/index.ts";
-import { credentials } from "#/db/schema.ts";
+import { credentials, invites } from "#/db/schema.ts";
 import { randomToken, sha256Base64url } from "#/lib/crypto.ts";
 import {
 	mintDeviceInputSchema,
+	redeemInviteInputSchema,
 	revokeDeviceInputSchema,
 } from "#/shared/identity.ts";
 import {
@@ -59,6 +60,12 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 			return await withAuth(request, env, (ctx) =>
 				revokeDevice(request, env, ctx),
 			);
+		}
+		if (path === "/api/invites" && method === "POST") {
+			return await withAuth(request, env, (ctx) => createInvite(env, ctx));
+		}
+		if (path === "/api/invites/redeem" && method === "POST") {
+			return await redeemInvite(request, env);
 		}
 		return errorResponse("not found", 404);
 	} catch (error) {
@@ -175,4 +182,91 @@ async function revokeDevice(
 		.where(eq(credentials.credentialHash, token_hash));
 
 	return json({ ok: true });
+}
+
+/** How long a pairing invite stays valid. */
+const INVITE_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * POST /api/invites — Partner A mints a short-lived, single-use invite. Only
+ * valid while the couple is still pairing and alone; supersedes any prior unused
+ * invite so at most one is live at a time (basic rate-limit).
+ */
+async function createInvite(
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const state = await stub.getState(auth.identityHash);
+	if (state.invitations_closed || state.member_count >= 2) {
+		return errorResponse("this couple is already paired", 409);
+	}
+
+	const code = randomToken();
+	const codeHash = await sha256Base64url(code);
+	const db = getRoutingDb(env.DB);
+	// One live invite per couple: drop prior unused ones.
+	await db
+		.delete(invites)
+		.where(
+			and(eq(invites.coupleDoId, auth.coupleDoId), isNull(invites.usedAt)),
+		);
+	const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
+	await db.insert(invites).values({
+		codeHash,
+		coupleDoId: auth.coupleDoId,
+		expiresAt,
+	});
+
+	return json({ code, expires_at: expiresAt.getTime() }, 201);
+}
+
+/**
+ * POST /api/invites/redeem — Partner B. Authenticates with a brand-new secret
+ * (no routing row yet, so this is unauthenticated in the usual sense), binds B
+ * into A's couple, and marks the invite used. The DO enforces that the couple
+ * can never exceed two members.
+ */
+async function redeemInvite(request: Request, env: Env): Promise<Response> {
+	const secret = bearerToken(request);
+	if (!secret) return errorResponse("missing bearer credential", 401);
+	const parsed = await readJson(request, redeemInviteInputSchema);
+	if ("response" in parsed) return parsed.response;
+
+	const db = getRoutingDb(env.DB);
+	const codeHash = await sha256Base64url(parsed.data.code);
+	const invite = await db
+		.select()
+		.from(invites)
+		.where(eq(invites.codeHash, codeHash))
+		.get();
+	if (!invite) return errorResponse("invalid invite code", 404);
+	if (invite.usedAt) return errorResponse("invite already used", 410);
+	if (invite.expiresAt.getTime() < Date.now())
+		return errorResponse("invite expired", 410);
+
+	const credentialHash = await credentialHashOf(secret);
+	const existing = await db
+		.select({ id: credentials.credentialHash })
+		.from(credentials)
+		.where(eq(credentials.credentialHash, credentialHash))
+		.get();
+	if (existing) return errorResponse("identity already exists", 409);
+
+	const identityHash = await deriveIdentityHash(secret);
+	const stub = coupleStubById(env, invite.coupleDoId);
+	const { member_id } = await stub.joinCouple(identityHash);
+
+	await db.insert(credentials).values({
+		credentialHash,
+		identityHash,
+		coupleDoId: invite.coupleDoId,
+		kind: "root",
+		label: "recovery phrase",
+	});
+	await db
+		.update(invites)
+		.set({ usedAt: new Date() })
+		.where(eq(invites.codeHash, codeHash));
+
+	return json({ couple_do_id: invite.coupleDoId, member_id }, 201);
 }

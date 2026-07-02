@@ -1,6 +1,7 @@
 import type {
 	CreateIdentityResult,
 	Device,
+	InviteResult,
 	MintDeviceResult,
 	Session,
 } from "#/shared/identity.ts";
@@ -77,5 +78,22 @@ export function revokeDevice(deviceId: string): Promise<{ ok: true }> {
 	return apiFetch<{ ok: true }>("/api/devices/revoke", {
 		method: "POST",
 		body: { device_id: deviceId },
+	});
+}
+
+/** Partner A mints a pairing invite. */
+export function createInvite(): Promise<InviteResult> {
+	return apiFetch<InviteResult>("/api/invites", { method: "POST" });
+}
+
+/** Partner B redeems an invite with a freshly generated secret. */
+export function redeemInvite(
+	code: string,
+	bearer: string,
+): Promise<CreateIdentityResult> {
+	return apiFetch<CreateIdentityResult>("/api/invites/redeem", {
+		method: "POST",
+		body: { code },
+		bearer,
 	});
 }

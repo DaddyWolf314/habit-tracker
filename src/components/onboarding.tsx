@@ -1,19 +1,26 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
-import { ApiError, createIdentity, getSession } from "#/lib/api.ts";
+import {
+	ApiError,
+	createIdentity,
+	createInvite,
+	getSession,
+	redeemInvite,
+} from "#/lib/api.ts";
 import {
 	generateSecret,
 	hasIdentity,
 	secretFromMnemonic,
 	storeSecret,
 } from "#/lib/identity.ts";
-import type { Session } from "#/shared/identity.ts";
+import type { InviteResult, Session } from "#/shared/identity.ts";
 
 type Stage =
 	| { name: "loading" }
 	| { name: "intro" }
 	| { name: "recover" }
+	| { name: "join" }
 	| { name: "ceremony"; mnemonic: string }
 	| { name: "home"; session: Session };
 
@@ -84,6 +91,28 @@ export function Onboarding() {
 		}
 	}
 
+	async function handleJoin(code: string) {
+		setBusy(true);
+		setError(null);
+		try {
+			const { secret, mnemonic } = generateSecret();
+			await redeemInvite(code.trim(), secret); // binds B into A's couple
+			storeSecret(secret);
+			setStage({ name: "ceremony", mnemonic });
+		} catch (err) {
+			setError(
+				err instanceof Error ? err.message : "Couldn't join with that code.",
+			);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function refreshSession() {
+		const session = await getSession();
+		setStage({ name: "home", session });
+	}
+
 	switch (stage.name) {
 		case "loading":
 			return <Centered>Loading…</Centered>;
@@ -99,6 +128,15 @@ export function Onboarding() {
 					<div className="flex flex-col gap-2">
 						<Button onClick={handleCreate} disabled={busy}>
 							{busy ? "Creating…" : "Create your space"}
+						</Button>
+						<Button
+							variant="secondary"
+							onClick={() => {
+								setError(null);
+								setStage({ name: "join" });
+							}}
+						>
+							Join your partner
 						</Button>
 						<Button
 							variant="link"
@@ -124,6 +162,18 @@ export function Onboarding() {
 					onSubmit={handleRecover}
 				/>
 			);
+		case "join":
+			return (
+				<JoinForm
+					busy={busy}
+					error={error}
+					onCancel={() => {
+						setError(null);
+						setStage({ name: "intro" });
+					}}
+					onSubmit={handleJoin}
+				/>
+			);
 		case "ceremony":
 			return (
 				<Ceremony
@@ -133,7 +183,7 @@ export function Onboarding() {
 				/>
 			);
 		case "home":
-			return <Home session={stage.session} />;
+			return <Home session={stage.session} onRefresh={refreshSession} />;
 	}
 }
 
@@ -168,6 +218,47 @@ function RecoverForm({
 					disabled={busy || value.trim() === ""}
 				>
 					{busy ? "Recovering…" : "Recover"}
+				</Button>
+			</div>
+		</Centered>
+	);
+}
+
+function JoinForm({
+	busy,
+	error,
+	onCancel,
+	onSubmit,
+}: {
+	busy: boolean;
+	error: string | null;
+	onCancel: () => void;
+	onSubmit: (code: string) => void;
+}) {
+	const [value, setValue] = useState("");
+	return (
+		<Centered>
+			<h2 className="text-2xl font-bold">Join your partner</h2>
+			<p className="max-w-md text-muted-foreground">
+				Paste the invite your partner sent you. We'll create your own recovery
+				phrase next — you get your own key.
+			</p>
+			<input
+				className="w-full max-w-md rounded-md border bg-background p-3 text-sm"
+				placeholder="invite code"
+				value={value}
+				onChange={(e) => setValue(e.target.value)}
+			/>
+			{error && <ErrorText>{error}</ErrorText>}
+			<div className="flex gap-2">
+				<Button variant="outline" onClick={onCancel} disabled={busy}>
+					Back
+				</Button>
+				<Button
+					onClick={() => onSubmit(value)}
+					disabled={busy || value.trim() === ""}
+				>
+					{busy ? "Joining…" : "Join"}
 				</Button>
 			</div>
 		</Centered>
@@ -222,7 +313,14 @@ function Ceremony({
 	);
 }
 
-function Home({ session }: { session: Session }) {
+function Home({
+	session,
+	onRefresh,
+}: {
+	session: Session;
+	onRefresh: () => void | Promise<void>;
+}) {
+	const awaitingPartner = session.member_count < 2;
 	return (
 		<div className="mx-auto max-w-2xl p-8">
 			<h1 className="text-2xl font-bold">Your space</h1>
@@ -234,16 +332,67 @@ function Home({ session }: { session: Session }) {
 				<dt className="text-muted-foreground">Your role</dt>
 				<dd className="font-medium">{session.role ?? "not set"}</dd>
 			</dl>
+
+			{awaitingPartner && <InvitePanel onRefresh={onRefresh} />}
+			{!awaitingPartner && (
+				<p className="mt-6 text-sm text-muted-foreground">
+					You're paired. Next: confirm your roles together.
+				</p>
+			)}
+
 			<div className="mt-6">
 				<Link to="/devices" className="text-sm underline">
 					Manage devices
 				</Link>
 			</div>
-			{session.status === "pairing" && session.member_count < 2 && (
-				<p className="mt-6 text-sm text-muted-foreground">
-					Next: invite your partner to join. (Coming in the pairing flow.)
-				</p>
+		</div>
+	);
+}
+
+function InvitePanel({ onRefresh }: { onRefresh: () => void | Promise<void> }) {
+	const [invite, setInvite] = useState<InviteResult | null>(null);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function generate() {
+		setBusy(true);
+		setError(null);
+		try {
+			setInvite(await createInvite());
+		} catch (err) {
+			setError(
+				err instanceof Error ? err.message : "Couldn't create an invite.",
+			);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	return (
+		<div className="mt-6 rounded-md border p-4">
+			<h2 className="font-medium">Invite your partner</h2>
+			<p className="mt-1 text-sm text-muted-foreground">
+				Send them this code. It works once and expires in 15 minutes.
+			</p>
+			{invite && (
+				<div className="mt-3">
+					<code className="block overflow-x-auto rounded bg-muted p-2 text-xs">
+						{invite.code}
+					</code>
+					<p className="mt-1 text-xs text-muted-foreground">
+						Expires {new Date(invite.expires_at).toLocaleTimeString()}
+					</p>
+				</div>
 			)}
+			{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+			<div className="mt-3 flex gap-2">
+				<Button onClick={generate} disabled={busy} size="sm">
+					{invite ? "New code" : "Create invite"}
+				</Button>
+				<Button variant="outline" size="sm" onClick={() => onRefresh()}>
+					I've paired — refresh
+				</Button>
+			</div>
 		</div>
 	);
 }

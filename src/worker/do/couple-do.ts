@@ -66,6 +66,35 @@ export class CoupleDO extends DurableObject<Env> {
 		return { member_id: memberId };
 	}
 
+	/**
+	 * Binds the second partner via a redeemed invite and permanently closes
+	 * invitations — so no third member can ever be added (handoff §2). Rejects if
+	 * the couple is already full, invitations are closed, or the identity is
+	 * already a member.
+	 */
+	async joinCouple(identityHash: string): Promise<{ member_id: string }> {
+		if (this.getSetting("invitations_closed") === "1") {
+			throw coupleError("GONE", "invitations are closed");
+		}
+		const members = this.members();
+		if (members.length === 0)
+			throw coupleError("BAD_REQUEST", "couple not initialized");
+		if (members.length >= 2) throw coupleError("CONFLICT", "couple is full");
+		if (members.some((m) => m.identity_hash === identityHash)) {
+			throw coupleError("CONFLICT", "already a member of this couple");
+		}
+		const memberId = crypto.randomUUID();
+		this.sql.exec(
+			`INSERT INTO members (id, identity_hash, role, joined_at) VALUES (?, ?, NULL, ?)`,
+			memberId,
+			identityHash,
+			Date.now(),
+		);
+		// Permanently close the couple to further members.
+		this.setSetting("invitations_closed", "1");
+		return { member_id: memberId };
+	}
+
 	/** Whoami for a member, plus couple-level status. */
 	async getState(identityHash: string): Promise<Session> {
 		const member = this.memberByIdentity(identityHash);
