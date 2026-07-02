@@ -1,7 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
-import type { CoupleStatus, Device, Session } from "#/shared/identity.ts";
+import type {
+	ConsentEntry,
+	CoupleStatus,
+	Device,
+	RoleAssignment,
+	RoleConfirmationState,
+	Session,
+} from "#/shared/identity.ts";
 import { coupleError } from "./errors.ts";
 import { runMigrations } from "./migrations.ts";
+
+/** Persisted shape of an in-flight role proposal (in the settings table). */
+interface RoleProposal {
+	proposed_by: string;
+	assignment: RoleAssignment;
+	confirmed_by: string[];
+}
 
 interface MemberRow {
 	id: string;
@@ -110,6 +124,136 @@ export class CoupleDO extends DurableObject<Env> {
 			invitations_closed: this.getSetting("invitations_closed") === "1",
 			roles_active: status === "active",
 		};
+	}
+
+	// ── Mutual role confirmation (handoff §2) ────────────────────────────────
+
+	/**
+	 * Proposes a role assignment covering both members. The proposer implicitly
+	 * confirms; the dynamic stays inactive until the partner confirms too. A new
+	 * proposal supersedes any prior one.
+	 */
+	async proposeRoles(
+		identityHash: string,
+		assignment: RoleAssignment,
+	): Promise<RoleConfirmationState> {
+		const me = this.requireMember(identityHash);
+		if (this.status() === "active") {
+			throw coupleError("CONFLICT", "roles are already confirmed");
+		}
+		const members = this.members();
+		if (members.length < 2)
+			throw coupleError("BAD_REQUEST", "the couple is not paired yet");
+
+		const ids = members.map((m) => m.id).sort();
+		const assignedIds = Object.keys(assignment).sort();
+		if (
+			ids.length !== assignedIds.length ||
+			ids.some((id, i) => id !== assignedIds[i])
+		) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"assignment must cover both members exactly",
+			);
+		}
+
+		const proposal: RoleProposal = {
+			proposed_by: me.id,
+			assignment,
+			confirmed_by: [me.id],
+		};
+		this.setSetting("role_proposal", JSON.stringify(proposal));
+		return this.roleState(identityHash);
+	}
+
+	/**
+	 * Confirms the standing proposal. When both members have confirmed, roles are
+	 * written, the dynamic activates, and the confirmation becomes the first entry
+	 * in the consent history.
+	 */
+	async confirmRoles(identityHash: string): Promise<RoleConfirmationState> {
+		const me = this.requireMember(identityHash);
+		if (this.status() === "active") return this.roleState(identityHash);
+		const proposal = this.proposal();
+		if (!proposal)
+			throw coupleError("BAD_REQUEST", "there is no role proposal to confirm");
+
+		if (!proposal.confirmed_by.includes(me.id)) {
+			proposal.confirmed_by.push(me.id);
+			this.setSetting("role_proposal", JSON.stringify(proposal));
+		}
+
+		const everyone = this.members().every((m) =>
+			proposal.confirmed_by.includes(m.id),
+		);
+		if (everyone) this.activateRoles(proposal.assignment);
+		return this.roleState(identityHash);
+	}
+
+	/** Current role-confirmation state for the caller. */
+	async getRoleState(identityHash: string): Promise<RoleConfirmationState> {
+		this.requireMember(identityHash);
+		return this.roleState(identityHash);
+	}
+
+	/** The append-only agreement/consent history (newest first). */
+	async listConsentHistory(identityHash: string): Promise<ConsentEntry[]> {
+		this.requireMember(identityHash);
+		return this.sql
+			.exec<{
+				id: string;
+				at: number;
+				kind: string;
+				detail: string | null;
+			}>(`SELECT id, at, kind, detail FROM consent_history ORDER BY at DESC`)
+			.toArray()
+			.map((row) => ({
+				id: row.id,
+				at: row.at,
+				kind: row.kind,
+				detail: row.detail,
+			}));
+	}
+
+	private activateRoles(assignment: RoleAssignment): void {
+		for (const [memberId, role] of Object.entries(assignment)) {
+			this.sql.exec(`UPDATE members SET role = ? WHERE id = ?`, role, memberId);
+		}
+		this.setSetting("status", "active");
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'roles_confirmed', ?)`,
+			crypto.randomUUID(),
+			Date.now(),
+			JSON.stringify({ assignment }),
+		);
+	}
+
+	private roleState(identityHash: string): RoleConfirmationState {
+		const me = this.memberByIdentity(identityHash);
+		const proposal = this.proposal();
+		return {
+			members: this.members().map((m) => ({
+				member_id: m.id,
+				role:
+					(m.role as RoleConfirmationState["members"][number]["role"]) ?? null,
+				is_self: m.id === me?.id,
+			})),
+			assignment: proposal?.assignment ?? null,
+			proposed_by: proposal?.proposed_by ?? null,
+			confirmed_by: proposal?.confirmed_by ?? [],
+			active: this.status() === "active",
+		};
+	}
+
+	private proposal(): RoleProposal | null {
+		const raw = this.getSetting("role_proposal");
+		return raw ? (JSON.parse(raw) as RoleProposal) : null;
+	}
+
+	private requireMember(identityHash: string): MemberRow {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		return member;
 	}
 
 	// ── Device tokens (handoff §2) ───────────────────────────────────────────

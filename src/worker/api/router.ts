@@ -4,6 +4,7 @@ import { credentials, invites } from "#/db/schema.ts";
 import { randomToken, sha256Base64url } from "#/lib/crypto.ts";
 import {
 	mintDeviceInputSchema,
+	proposeRolesInputSchema,
 	redeemInviteInputSchema,
 	revokeDeviceInputSchema,
 } from "#/shared/identity.ts";
@@ -66,6 +67,26 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 		}
 		if (path === "/api/invites/redeem" && method === "POST") {
 			return await redeemInvite(request, env);
+		}
+		if (path === "/api/roles" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.getRoleState(auth.identityHash).then((s) => json(s)),
+			);
+		}
+		if (path === "/api/roles/propose" && method === "POST") {
+			return await withAuth(request, env, (ctx) => proposeRoles(request, ctx));
+		}
+		if (path === "/api/roles/confirm" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.confirmRoles(auth.identityHash).then((s) => json(s)),
+			);
+		}
+		if (path === "/api/consent-history" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listConsentHistory(auth.identityHash)
+					.then((entries) => json({ entries })),
+			);
 		}
 		return errorResponse("not found", 404);
 	} catch (error) {
@@ -269,4 +290,18 @@ async function redeemInvite(request: Request, env: Env): Promise<Response> {
 		.where(eq(invites.codeHash, codeHash));
 
 	return json({ couple_do_id: invite.coupleDoId, member_id }, 201);
+}
+
+/** POST /api/roles/propose — propose a role assignment covering both members. */
+async function proposeRoles(
+	request: Request,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const parsed = await readJson(request, proposeRolesInputSchema);
+	if ("response" in parsed) return parsed.response;
+	const state = await stub.proposeRoles(
+		auth.identityHash,
+		parsed.data.assignment,
+	);
+	return json(state);
 }

@@ -3,6 +3,8 @@ import type {
 	Device,
 	InviteResult,
 	MintDeviceResult,
+	RoleAssignment,
+	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
 import { getBearer } from "./identity.ts";
@@ -95,5 +97,24 @@ export function redeemInvite(
 		method: "POST",
 		body: { code },
 		bearer,
+	});
+}
+
+export function getRoles(): Promise<RoleConfirmationState> {
+	return apiFetch<RoleConfirmationState>("/api/roles");
+}
+
+export function proposeRoles(
+	assignment: RoleAssignment,
+): Promise<RoleConfirmationState> {
+	return apiFetch<RoleConfirmationState>("/api/roles/propose", {
+		method: "POST",
+		body: { assignment },
+	});
+}
+
+export function confirmRoles(): Promise<RoleConfirmationState> {
+	return apiFetch<RoleConfirmationState>("/api/roles/confirm", {
+		method: "POST",
 	});
 }

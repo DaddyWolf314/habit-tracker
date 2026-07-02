@@ -107,6 +107,16 @@ export const DO_MIGRATIONS: string[][] = [
 		`ALTER TABLE devices ADD COLUMN device_id TEXT`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS devices_device_id_idx ON devices (device_id)`,
 	],
+	// v3 — Phase 1 #16: the append-only agreement/consent history. Mutual role
+	// confirmation writes the first entry; later agreements append here too.
+	[
+		`CREATE TABLE IF NOT EXISTS consent_history (
+			id TEXT PRIMARY KEY,
+			at INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			detail TEXT
+		)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

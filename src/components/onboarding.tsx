@@ -1,11 +1,14 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import {
 	ApiError,
+	confirmRoles,
 	createIdentity,
 	createInvite,
+	getRoles,
 	getSession,
+	proposeRoles,
 	redeemInvite,
 } from "#/lib/api.ts";
 import {
@@ -14,7 +17,12 @@ import {
 	secretFromMnemonic,
 	storeSecret,
 } from "#/lib/identity.ts";
-import type { InviteResult, Session } from "#/shared/identity.ts";
+import type {
+	InviteResult,
+	RoleConfirmationState,
+	Session,
+} from "#/shared/identity.ts";
+import type { Role } from "#/shared/roles.ts";
 
 type Stage =
 	| { name: "loading" }
@@ -334,17 +342,158 @@ function Home({
 			</dl>
 
 			{awaitingPartner && <InvitePanel onRefresh={onRefresh} />}
-			{!awaitingPartner && (
-				<p className="mt-6 text-sm text-muted-foreground">
-					You're paired. Next: confirm your roles together.
-				</p>
-			)}
+			{!awaitingPartner && <RolesPanel onActivated={onRefresh} />}
 
 			<div className="mt-6">
 				<Link to="/devices" className="text-sm underline">
 					Manage devices
 				</Link>
 			</div>
+		</div>
+	);
+}
+
+const ROLE_OPTIONS: Role[] = ["dom", "sub", "switch"];
+
+/**
+ * Mutual role confirmation (handoff §2). Either partner proposes who holds which
+ * role; the dynamic only activates once both confirm the same assignment, and
+ * that confirmation is the first entry in the consent history.
+ */
+function RolesPanel({
+	onActivated,
+}: {
+	onActivated: () => void | Promise<void>;
+}) {
+	const [state, setState] = useState<RoleConfirmationState | null>(null);
+	const [selfRole, setSelfRole] = useState<Role>("dom");
+	const [partnerRole, setPartnerRole] = useState<Role>("sub");
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	const load = useCallback(async () => {
+		try {
+			setState(await getRoles());
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Couldn't load roles.");
+		}
+	}, []);
+
+	useEffect(() => {
+		load();
+	}, [load]);
+
+	if (!state)
+		return <p className="mt-6 text-sm text-muted-foreground">Loading roles…</p>;
+
+	const self = state.members.find((m) => m.is_self);
+	const partner = state.members.find((m) => !m.is_self);
+
+	if (state.active) {
+		return (
+			<div className="mt-6 rounded-md border p-4">
+				<h2 className="font-medium">Roles confirmed</h2>
+				<p className="mt-1 text-sm">
+					You are the <strong>{self?.role}</strong>; your partner is the{" "}
+					<strong>{partner?.role}</strong>.
+				</p>
+			</div>
+		);
+	}
+
+	async function run(action: () => Promise<RoleConfirmationState>) {
+		setBusy(true);
+		setError(null);
+		try {
+			const next = await action();
+			setState(next);
+			if (next.active) await onActivated();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Something went wrong.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	const hasProposal = state.proposed_by !== null;
+	const iProposed = state.proposed_by === self?.member_id;
+	const iConfirmed = self ? state.confirmed_by.includes(self.member_id) : false;
+	const partnerRoleName = partner
+		? state.assignment?.[partner.member_id]
+		: undefined;
+	const selfRoleName = self ? state.assignment?.[self.member_id] : undefined;
+
+	return (
+		<div className="mt-6 rounded-md border p-4">
+			<h2 className="font-medium">Confirm your roles</h2>
+			<p className="mt-1 text-sm text-muted-foreground">
+				Both of you have to agree before the dynamic starts.
+			</p>
+
+			{hasProposal && (
+				<p className="mt-3 rounded bg-muted/50 p-2 text-sm">
+					Proposed: you are the <strong>{selfRoleName}</strong>, your partner is
+					the <strong>{partnerRoleName}</strong>.{" "}
+					{iProposed ? "Waiting for your partner." : "They proposed this."}
+				</p>
+			)}
+
+			{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+
+			{hasProposal && !iProposed && !iConfirmed ? (
+				<div className="mt-3 flex gap-2">
+					<Button size="sm" disabled={busy} onClick={() => run(confirmRoles)}>
+						Confirm these roles
+					</Button>
+				</div>
+			) : (
+				<div className="mt-3 flex flex-wrap items-end gap-3">
+					<label className="text-sm">
+						<span className="block text-muted-foreground">You</span>
+						<select
+							className="mt-1 rounded-md border bg-background p-2 text-sm"
+							value={selfRole}
+							onChange={(e) => setSelfRole(e.target.value as Role)}
+						>
+							{ROLE_OPTIONS.map((r) => (
+								<option key={r} value={r}>
+									{r}
+								</option>
+							))}
+						</select>
+					</label>
+					<label className="text-sm">
+						<span className="block text-muted-foreground">Your partner</span>
+						<select
+							className="mt-1 rounded-md border bg-background p-2 text-sm"
+							value={partnerRole}
+							onChange={(e) => setPartnerRole(e.target.value as Role)}
+						>
+							{ROLE_OPTIONS.map((r) => (
+								<option key={r} value={r}>
+									{r}
+								</option>
+							))}
+						</select>
+					</label>
+					<Button
+						size="sm"
+						disabled={busy || !self || !partner}
+						onClick={() =>
+							self &&
+							partner &&
+							run(() =>
+								proposeRoles({
+									[self.member_id]: selfRole,
+									[partner.member_id]: partnerRole,
+								}),
+							)
+						}
+					>
+						{hasProposal ? "Propose different roles" : "Propose"}
+					</Button>
+				</div>
+			)}
 		</div>
 	);
 }

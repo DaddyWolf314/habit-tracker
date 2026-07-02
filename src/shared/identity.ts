@@ -78,7 +78,16 @@ export const proposeRolesInputSchema = z.object({
 	assignment: roleAssignmentSchema,
 });
 
+/** A member as shown in the role-confirmation UI. */
+export const roleMemberSchema = z.object({
+	member_id: z.string(),
+	role: roleSchema.nullable(),
+	is_self: z.boolean(),
+});
+export type RoleMember = z.infer<typeof roleMemberSchema>;
+
 export const roleConfirmationStateSchema = z.object({
+	members: z.array(roleMemberSchema),
 	assignment: roleAssignmentSchema.nullable(),
 	proposed_by: z.string().nullable(),
 	confirmed_by: z.array(z.string()),
