@@ -1,10 +1,14 @@
 import type { z } from "zod";
 
-/** JSON response with the right content type. */
-export function json(data: unknown, status = 200): Response {
+/** JSON response with the right content type (plus any extra headers). */
+export function json(
+	data: unknown,
+	status = 200,
+	headers: Record<string, string> = {},
+): Response {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: { "content-type": "application/json" },
+		headers: { "content-type": "application/json", ...headers },
 	});
 }
 

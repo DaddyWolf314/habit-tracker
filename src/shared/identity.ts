@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { roleSchema } from "./roles.ts";
+import { type Role, roleSchema } from "./roles.ts";
 
 /**
  * Identity, device, pairing, and role-confirmation contracts (handoff §2). The
@@ -103,3 +103,27 @@ export const consentEntrySchema = z.object({
 	detail: z.string().nullable(),
 });
 export type ConsentEntry = z.infer<typeof consentEntrySchema>;
+
+/**
+ * A flat, RPC-serializable record. Used for the export's event/counter rows,
+ * which are empty in Phase 1 and gain real shapes in later phases (kept
+ * non-recursive so it crosses the Durable Object RPC boundary cleanly).
+ */
+export type ExportRow = Record<string, string | number | boolean | null>;
+
+/**
+ * A member's exportable view of the relationship (handoff §2, abuse-edge). Any
+ * authenticated member can export at any time. The event/counter surfaces are
+ * present but empty until later phases fill them in.
+ */
+export interface CoupleExport {
+	exported_at: number;
+	couple_do_id: string;
+	status: CoupleStatus;
+	self: { member_id: string; role: Role | null };
+	members: Array<{ member_id: string; role: Role | null }>;
+	devices: Device[];
+	consent_history: ConsentEntry[];
+	events: ExportRow[];
+	counters: ExportRow[];
+}

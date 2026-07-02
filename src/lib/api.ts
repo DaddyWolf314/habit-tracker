@@ -1,4 +1,6 @@
 import type {
+	CoupleExport,
+	CoupleStatus,
 	CreateIdentityResult,
 	Device,
 	InviteResult,
@@ -115,6 +117,18 @@ export function proposeRoles(
 
 export function confirmRoles(): Promise<RoleConfirmationState> {
 	return apiFetch<RoleConfirmationState>("/api/roles/confirm", {
+		method: "POST",
+	});
+}
+
+/** Export the caller's own view of the relationship. */
+export function exportData(): Promise<CoupleExport> {
+	return apiFetch<CoupleExport>("/api/export");
+}
+
+/** Unilaterally dissolve the pairing (freezes the dynamic). */
+export function dissolve(): Promise<{ status: CoupleStatus }> {
+	return apiFetch<{ status: CoupleStatus }>("/api/dissolve", {
 		method: "POST",
 	});
 }

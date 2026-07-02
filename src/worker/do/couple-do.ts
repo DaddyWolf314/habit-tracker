@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type {
 	ConsentEntry,
+	CoupleExport,
 	CoupleStatus,
 	Device,
 	RoleAssignment,
@@ -87,6 +88,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 * already a member.
 	 */
 	async joinCouple(identityHash: string): Promise<{ member_id: string }> {
+		this.assertLive();
 		if (this.getSetting("invitations_closed") === "1") {
 			throw coupleError("GONE", "invitations are closed");
 		}
@@ -138,6 +140,7 @@ export class CoupleDO extends DurableObject<Env> {
 		assignment: RoleAssignment,
 	): Promise<RoleConfirmationState> {
 		const me = this.requireMember(identityHash);
+		this.assertLive();
 		if (this.status() === "active") {
 			throw coupleError("CONFLICT", "roles are already confirmed");
 		}
@@ -173,6 +176,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	async confirmRoles(identityHash: string): Promise<RoleConfirmationState> {
 		const me = this.requireMember(identityHash);
+		this.assertLive();
 		if (this.status() === "active") return this.roleState(identityHash);
 		const proposal = this.proposal();
 		if (!proposal)
@@ -256,6 +260,61 @@ export class CoupleDO extends DurableObject<Env> {
 		return member;
 	}
 
+	private assertLive(): void {
+		if (this.status() === "dissolved") {
+			throw coupleError("GONE", "this couple has been dissolved");
+		}
+	}
+
+	// ── Dissolve + export (handoff §2, abuse-edge) ───────────────────────────
+
+	/**
+	 * Either member can unilaterally dissolve the pairing: freeze the dynamic and
+	 * suspend the schedule. Full teardown (offer export → delete the DO → purge
+	 * routing rows) lands in Phase 6; this stub freezes and records the event.
+	 */
+	async dissolve(identityHash: string): Promise<{ status: CoupleStatus }> {
+		this.requireMember(identityHash);
+		if (this.status() !== "dissolved") {
+			this.setSetting("status", "dissolved");
+			this.ctx.storage.deleteAlarm();
+			this.sql.exec(
+				`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'dissolved', NULL)`,
+				crypto.randomUUID(),
+				Date.now(),
+			);
+		}
+		return { status: "dissolved" };
+	}
+
+	/** A member's exportable snapshot of the relationship. */
+	async exportData(identityHash: string): Promise<CoupleExport> {
+		const me = this.requireMember(identityHash);
+		return {
+			exported_at: Date.now(),
+			couple_do_id: this.ctx.id.toString(),
+			status: this.status(),
+			self: {
+				member_id: me.id,
+				role: (me.role as CoupleExport["self"]["role"]) ?? null,
+			},
+			members: this.members().map((m) => ({
+				member_id: m.id,
+				role: (m.role as CoupleExport["self"]["role"]) ?? null,
+			})),
+			devices: this.devicesOf(me.id).map((row) => ({
+				device_id: row.device_id,
+				label: row.label,
+				created_at: row.created_at,
+				revoked_at: row.revoked_at,
+				current: false,
+			})),
+			consent_history: await this.listConsentHistory(identityHash),
+			events: [],
+			counters: [],
+		};
+	}
+
 	// ── Device tokens (handoff §2) ───────────────────────────────────────────
 
 	/** Records a newly minted device token in the caller's member record. */
@@ -264,6 +323,7 @@ export class CoupleDO extends DurableObject<Env> {
 		tokenHash: string,
 		label: string | null,
 	): Promise<Device> {
+		this.assertLive();
 		const member = this.memberByIdentity(identityHash);
 		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
 		const deviceId = crypto.randomUUID();

@@ -88,6 +88,21 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((entries) => json({ entries })),
 			);
 		}
+		if (path === "/api/dissolve" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.dissolve(auth.identityHash).then((r) => json(r)),
+			);
+		}
+		if (path === "/api/export" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.exportData(auth.identityHash).then((data) =>
+					json(data, 200, {
+						"content-disposition":
+							'attachment; filename="strawberry-export.json"',
+					}),
+				),
+			);
+		}
 		return errorResponse("not found", 404);
 	} catch (error) {
 		const { status, message } = statusFromError(error);

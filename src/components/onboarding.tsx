@@ -6,6 +6,8 @@ import {
 	confirmRoles,
 	createIdentity,
 	createInvite,
+	dissolve,
+	exportData,
 	getRoles,
 	getSession,
 	proposeRoles,
@@ -328,6 +330,7 @@ function Home({
 	session: Session;
 	onRefresh: () => void | Promise<void>;
 }) {
+	const dissolved = session.status === "dissolved";
 	const awaitingPartner = session.member_count < 2;
 	return (
 		<div className="mx-auto max-w-2xl p-8">
@@ -341,13 +344,124 @@ function Home({
 				<dd className="font-medium">{session.role ?? "not set"}</dd>
 			</dl>
 
-			{awaitingPartner && <InvitePanel onRefresh={onRefresh} />}
-			{!awaitingPartner && <RolesPanel onActivated={onRefresh} />}
+			{dissolved ? (
+				<p className="mt-6 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm">
+					This space has been dissolved. Everything is frozen. You can still
+					export your copy below.
+				</p>
+			) : (
+				<>
+					{awaitingPartner && <InvitePanel onRefresh={onRefresh} />}
+					{!awaitingPartner && <RolesPanel onActivated={onRefresh} />}
+				</>
+			)}
+
+			<SettingsPanel dissolved={dissolved} onDissolved={onRefresh} />
 
 			<div className="mt-6">
 				<Link to="/devices" className="text-sm underline">
 					Manage devices
 				</Link>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * Export + dissolve (handoff §2, abuse-edge). Either partner can export their
+ * own copy at any time and can unilaterally dissolve — no one is trapped inside
+ * the app's structure. Dissolve takes a deliberate second click instead of a
+ * blocking dialog.
+ */
+function SettingsPanel({
+	dissolved,
+	onDissolved,
+}: {
+	dissolved: boolean;
+	onDissolved: () => void | Promise<void>;
+}) {
+	const [busy, setBusy] = useState(false);
+	const [confirming, setConfirming] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function handleExport() {
+		setBusy(true);
+		setError(null);
+		try {
+			const data = await exportData();
+			const blob = new Blob([JSON.stringify(data, null, 2)], {
+				type: "application/json",
+			});
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement("a");
+			anchor.href = url;
+			anchor.download = "strawberry-export.json";
+			anchor.click();
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Couldn't export.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function handleDissolve() {
+		setBusy(true);
+		setError(null);
+		try {
+			await dissolve();
+			setConfirming(false);
+			await onDissolved();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Couldn't dissolve.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	return (
+		<div className="mt-6 rounded-md border p-4">
+			<h2 className="font-medium">Your data</h2>
+			{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+			<div className="mt-3 flex flex-wrap gap-2">
+				<Button
+					variant="outline"
+					size="sm"
+					disabled={busy}
+					onClick={handleExport}
+				>
+					Export my data
+				</Button>
+				{!dissolved &&
+					(confirming ? (
+						<>
+							<Button
+								variant="destructive"
+								size="sm"
+								disabled={busy}
+								onClick={handleDissolve}
+							>
+								Yes, dissolve everything
+							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								disabled={busy}
+								onClick={() => setConfirming(false)}
+							>
+								Cancel
+							</Button>
+						</>
+					) : (
+						<Button
+							variant="outline"
+							size="sm"
+							disabled={busy}
+							onClick={() => setConfirming(true)}
+						>
+							Dissolve this space
+						</Button>
+					))}
 			</div>
 		</div>
 	);
