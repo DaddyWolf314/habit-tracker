@@ -4,42 +4,48 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "tracker",
+	"name": "habit-tracker",
+	"account_id": "22d893d7fc1c1d8bb09d0e104d6f2564",
 	"compatibility_date": "2025-09-02",
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
-	"main": "@tanstack/react-start/server-entry",
+	"main": "./src/server.ts",
 	"observability": {
 		"enabled": true
 	},
-	"upload_source_maps": true
+	"upload_source_maps": true,
 	/**
-	 * Smart Placement
-	 * https://developers.cloudflare.com/workers/configuration/smart-placement/#smart-placement
+	 * D1: identity → couple-DO routing (see src/db/schema.ts). Create the
+	 * database with `wrangler d1 create habit-tracker-routing` and paste the
+	 * returned id below. Migrations live in ./migrations/d1 (drizzle-generated
+	 * via `npm run db:generate`, applied with
+	 * `wrangler d1 migrations apply habit-tracker-routing`).
 	 */
-	// "placement": {  "mode": "smart" }
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "habit-tracker-routing",
+			"database_id": "REPLACE_WITH_D1_DATABASE_ID",
+			"migrations_dir": "./migrations/d1"
+		}
+	],
 	/**
-	 * Bindings
-	 * Bindings allow your Worker to interact with resources on the Cloudflare Developer Platform, including
-	 * databases, object storage, AI inference, real-time communication and more.
-	 * https://developers.cloudflare.com/workers/runtime-apis/bindings/
+	 * One SQLite-backed Durable Object per couple. The class is exported from
+	 * the Worker entry (src/server.ts).
 	 */
-	/**
-	 * Environment Variables
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#environment-variables
-	 * Note: Use secrets to store sensitive data.
-	 * https://developers.cloudflare.com/workers/configuration/secrets/
-	 */
-	// "vars": {  "MY_VARIABLE": "production_value" }
-	/**
-	 * Static Assets
-	 * https://developers.cloudflare.com/workers/static-assets/binding/
-	 */
-	// "assets": {  "directory": "./public/",  "binding": "ASSETS" }
-	/**
-	 * Service Bindings (communicate between multiple Workers)
-	 * https://developers.cloudflare.com/workers/wrangler/configuration/#service-bindings
-	 */
-	// "services": [  {   "binding": "MY_SERVICE",   "service": "my-service"  } ]
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "COUPLE_DO",
+				"class_name": "CoupleDO"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["CoupleDO"]
+		}
+	]
 }

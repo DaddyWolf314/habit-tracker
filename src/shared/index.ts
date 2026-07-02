@@ -1,0 +1,11 @@
+/**
+ * Shared zod schemas — the contract between the client, the Worker server
+ * routes, and the CoupleDO. Domain model per the technical handoff (§4–§7).
+ */
+
+export * from "./amendments.ts";
+export * from "./event-types.ts";
+export * from "./events.ts";
+export * from "./roles.ts";
+export * from "./rules.ts";
+export * from "./ws.ts";
