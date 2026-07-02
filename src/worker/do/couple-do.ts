@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { CoupleStatus, Session } from "#/shared/identity.ts";
+import type { CoupleStatus, Device, Session } from "#/shared/identity.ts";
 import { coupleError } from "./errors.ts";
 import { runMigrations } from "./migrations.ts";
 
@@ -8,6 +8,15 @@ interface MemberRow {
 	identity_hash: string;
 	role: string | null;
 	joined_at: number;
+	[key: string]: SqlStorageValue;
+}
+
+interface DeviceRow {
+	device_id: string;
+	token_hash: string;
+	label: string | null;
+	created_at: number;
+	revoked_at: number | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -74,7 +83,90 @@ export class CoupleDO extends DurableObject<Env> {
 		};
 	}
 
+	// ── Device tokens (handoff §2) ───────────────────────────────────────────
+
+	/** Records a newly minted device token in the caller's member record. */
+	async addDevice(
+		identityHash: string,
+		tokenHash: string,
+		label: string | null,
+	): Promise<Device> {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		const deviceId = crypto.randomUUID();
+		const now = Date.now();
+		this.sql.exec(
+			`INSERT INTO devices (token_hash, member_id, label, created_at, revoked_at, device_id)
+				VALUES (?, ?, ?, ?, NULL, ?)`,
+			tokenHash,
+			member.id,
+			label,
+			now,
+			deviceId,
+		);
+		return {
+			device_id: deviceId,
+			label,
+			created_at: now,
+			revoked_at: null,
+			current: false,
+		};
+	}
+
+	/**
+	 * Lists the caller's devices for the "your devices" panel. The token hash is
+	 * never returned; the device the caller is using is flagged `current`.
+	 */
+	async listDevices(
+		identityHash: string,
+		callerCredentialHash: string,
+	): Promise<Device[]> {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		return this.devicesOf(member.id).map((row) => ({
+			device_id: row.device_id,
+			label: row.label,
+			created_at: row.created_at,
+			revoked_at: row.revoked_at,
+			current: row.token_hash === callerCredentialHash,
+		}));
+	}
+
+	/**
+	 * Revokes one device and returns its token hash so the caller can flip the
+	 * matching routing-layer credential to revoked (auth rejects it thereafter).
+	 */
+	async revokeDevice(
+		identityHash: string,
+		deviceId: string,
+	): Promise<{ token_hash: string }> {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		const device = this.devicesOf(member.id).find(
+			(d) => d.device_id === deviceId,
+		);
+		if (!device) throw coupleError("NOT_FOUND", "no such device");
+		if (device.revoked_at === null) {
+			this.sql.exec(
+				`UPDATE devices SET revoked_at = ? WHERE device_id = ?`,
+				Date.now(),
+				deviceId,
+			);
+		}
+		return { token_hash: device.token_hash };
+	}
+
 	// ── SQL helpers ──────────────────────────────────────────────────────────
+
+	protected devicesOf(memberId: string): DeviceRow[] {
+		return this.sql
+			.exec<DeviceRow>(
+				`SELECT device_id, token_hash, label, created_at, revoked_at
+					FROM devices WHERE member_id = ? ORDER BY created_at`,
+				memberId,
+			)
+			.toArray();
+	}
 
 	protected members(): MemberRow[] {
 		return this.sql

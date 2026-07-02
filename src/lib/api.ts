@@ -1,4 +1,9 @@
-import type { CreateIdentityResult, Session } from "#/shared/identity.ts";
+import type {
+	CreateIdentityResult,
+	Device,
+	MintDeviceResult,
+	Session,
+} from "#/shared/identity.ts";
 import { getBearer } from "./identity.ts";
 
 /**
@@ -55,4 +60,22 @@ export function createIdentity(bearer: string): Promise<CreateIdentityResult> {
 
 export function getSession(): Promise<Session> {
 	return apiFetch<Session>("/api/session");
+}
+
+export function mintDevice(label?: string): Promise<MintDeviceResult> {
+	return apiFetch<MintDeviceResult>("/api/devices", {
+		method: "POST",
+		body: { label },
+	});
+}
+
+export function listDevices(): Promise<{ devices: Device[] }> {
+	return apiFetch<{ devices: Device[] }>("/api/devices");
+}
+
+export function revokeDevice(deviceId: string): Promise<{ ok: true }> {
+	return apiFetch<{ ok: true }>("/api/devices/revoke", {
+		method: "POST",
+		body: { device_id: deviceId },
+	});
 }

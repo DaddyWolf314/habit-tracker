@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { ApiError, createIdentity, getSession } from "#/lib/api.ts";
@@ -233,6 +234,11 @@ function Home({ session }: { session: Session }) {
 				<dt className="text-muted-foreground">Your role</dt>
 				<dd className="font-medium">{session.role ?? "not set"}</dd>
 			</dl>
+			<div className="mt-6">
+				<Link to="/devices" className="text-sm underline">
+					Manage devices
+				</Link>
+			</div>
 			{session.status === "pairing" && session.member_count < 2 && (
 				<p className="mt-6 text-sm text-muted-foreground">
 					Next: invite your partner to join. (Coming in the pairing flow.)

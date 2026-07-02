@@ -101,6 +101,12 @@ export const DO_MIGRATIONS: string[][] = [
 		)`,
 		`CREATE INDEX IF NOT EXISTS schedule_fire_idx ON schedule (next_fire_at)`,
 	],
+	// v2 — Phase 1 #14: an opaque per-device id so the "your devices" panel can
+	// list and revoke devices without ever exposing the token hash.
+	[
+		`ALTER TABLE devices ADD COLUMN device_id TEXT`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS devices_device_id_idx ON devices (device_id)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

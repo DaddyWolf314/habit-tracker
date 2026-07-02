@@ -1,11 +1,27 @@
 import { eq } from "drizzle-orm";
 import { getRoutingDb } from "#/db/index.ts";
 import { credentials } from "#/db/schema.ts";
-import { sha256Base64url } from "#/lib/crypto.ts";
-import { authenticate, bearerToken, credentialHashOf } from "../auth.ts";
+import { randomToken, sha256Base64url } from "#/lib/crypto.ts";
+import {
+	mintDeviceInputSchema,
+	revokeDeviceInputSchema,
+} from "#/shared/identity.ts";
+import {
+	type AuthContext,
+	authenticate,
+	bearerToken,
+	credentialHashOf,
+} from "../auth.ts";
+import type { CoupleDO } from "../do/couple-do.ts";
 import { statusFromError } from "../do/errors.ts";
 import { coupleStubById } from "../routing.ts";
-import { errorResponse, json } from "./http.ts";
+import { errorResponse, json, readJson } from "./http.ts";
+
+/** An authenticated request, with the couple DO stub resolved. */
+interface AuthedRequest {
+	auth: AuthContext;
+	stub: DurableObjectStub<CoupleDO>;
+}
 
 /**
  * Worker-native JSON API for identity, devices, pairing, roles, and the
@@ -23,7 +39,26 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 			return await createIdentity(request, env);
 		}
 		if (path === "/api/session" && method === "GET") {
-			return await getSession(request, env);
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.getState(auth.identityHash).then((s) => json(s)),
+			);
+		}
+		if (path === "/api/devices" && method === "POST") {
+			return await withAuth(request, env, (ctx) =>
+				mintDevice(request, env, ctx),
+			);
+		}
+		if (path === "/api/devices" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listDevices(auth.identityHash, auth.credentialHash)
+					.then((devices) => json({ devices })),
+			);
+		}
+		if (path === "/api/devices/revoke" && method === "POST") {
+			return await withAuth(request, env, (ctx) =>
+				revokeDevice(request, env, ctx),
+			);
 		}
 		return errorResponse("not found", 404);
 	} catch (error) {
@@ -78,11 +113,66 @@ async function createIdentity(request: Request, env: Env): Promise<Response> {
 	return json({ couple_do_id: id.toString(), member_id }, 201);
 }
 
-/** GET /api/session — whoami for the authenticated caller. */
-async function getSession(request: Request, env: Env): Promise<Response> {
+/** Authenticates a request and runs `handler` with the resolved DO stub. */
+async function withAuth(
+	request: Request,
+	env: Env,
+	handler: (ctx: AuthedRequest) => Promise<Response>,
+): Promise<Response> {
 	const auth = await authenticate(request, env);
 	if (!auth) return errorResponse("unauthorized", 401);
-	const stub = coupleStubById(env, auth.coupleDoId);
-	const state = await stub.getState(auth.identityHash);
-	return json(state);
+	return handler({ auth, stub: coupleStubById(env, auth.coupleDoId) });
+}
+
+/**
+ * POST /api/devices — mint a new device token for day-to-day auth (handoff §2).
+ * The raw token is returned exactly once; only its hash is stored, both in the
+ * DO's device list and as a routing-layer credential.
+ */
+async function mintDevice(
+	request: Request,
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const parsed = await readJson(request, mintDeviceInputSchema);
+	if ("response" in parsed) return parsed.response;
+
+	const token = randomToken();
+	const tokenHash = await credentialHashOf(token);
+	const label = parsed.data.label ?? null;
+	const device = await stub.addDevice(auth.identityHash, tokenHash, label);
+
+	await getRoutingDb(env.DB).insert(credentials).values({
+		credentialHash: tokenHash,
+		identityHash: auth.identityHash,
+		coupleDoId: auth.coupleDoId,
+		kind: "device",
+		label,
+	});
+
+	return json({ token, device }, 201);
+}
+
+/**
+ * POST /api/devices/revoke — revoke a device. The DO returns the token hash and
+ * we flip the routing credential to revoked, so the token stops authenticating.
+ */
+async function revokeDevice(
+	request: Request,
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const parsed = await readJson(request, revokeDeviceInputSchema);
+	if ("response" in parsed) return parsed.response;
+
+	const { token_hash } = await stub.revokeDevice(
+		auth.identityHash,
+		parsed.data.device_id,
+	);
+	await getRoutingDb(env.DB)
+		.update(credentials)
+		.set({ revokedAt: new Date() })
+		.where(eq(credentials.credentialHash, token_hash));
+
+	return json({ ok: true });
 }
