@@ -1,3 +1,6 @@
+import type { Counter, CreateCounterBody } from "#/shared/counters.ts";
+import type { EventType } from "#/shared/event-types.ts";
+import type { EventView, LogEventInput } from "#/shared/events.ts";
 import type {
 	CoupleExport,
 	CoupleStatus,
@@ -9,6 +12,7 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
 
 /**
@@ -131,4 +135,65 @@ export function dissolve(): Promise<{ status: CoupleStatus }> {
 	return apiFetch<{ status: CoupleStatus }>("/api/dissolve", {
 		method: "POST",
 	});
+}
+
+// ── Phase 2: event log + counters ──────────────────────────────────────────
+
+/** The couple's event-type schema set (starter seven + custom). */
+export function listEventTypes(): Promise<{ types: EventType[] }> {
+	return apiFetch<{ types: EventType[] }>("/api/event-types");
+}
+
+/** The event log, newest first, as composite views. */
+export function listEvents(): Promise<{ events: EventView[] }> {
+	return apiFetch<{ events: EventView[] }>("/api/events");
+}
+
+/** Appends an event to the log (also the sugar target for counter taps). */
+export function logEvent(input: LogEventInput): Promise<EventView> {
+	return apiFetch<EventView>("/api/events", { method: "POST", body: input });
+}
+
+/** The projections a single event touched (trace drill-in). */
+export function getEventTrace(eventId: string): Promise<{ rows: TraceRow[] }> {
+	return apiFetch<{ rows: TraceRow[] }>(
+		`/api/events/trace?event_id=${encodeURIComponent(eventId)}`,
+	);
+}
+
+export function listCounters(): Promise<{ counters: Counter[] }> {
+	return apiFetch<{ counters: Counter[] }>("/api/counters");
+}
+
+export function createCounter(input: CreateCounterBody): Promise<Counter> {
+	return apiFetch<Counter>("/api/counters", { method: "POST", body: input });
+}
+
+/** A "+N / −N" tap — sugar that appends a `counter_adjusted` event. */
+export function adjustCounter(
+	counterId: string,
+	delta: number,
+	note?: string,
+): Promise<Counter> {
+	return apiFetch<Counter>("/api/counters/adjust", {
+		method: "POST",
+		body: { counter_id: counterId, delta, note },
+	});
+}
+
+export function resetCounter(
+	counterId: string,
+	note?: string,
+): Promise<Counter> {
+	return apiFetch<Counter>("/api/counters/reset", {
+		method: "POST",
+		body: { counter_id: counterId, note },
+	});
+}
+
+/** The full causal chain behind a counter (consent record + debug view). */
+export function getCounterTrace(counterId: string): Promise<CounterTrace> {
+	return apiFetch<CounterTrace>(
+		`/api/counters/trace?counter_id=${encodeURIComponent(counterId)}`,
+	);
 }
