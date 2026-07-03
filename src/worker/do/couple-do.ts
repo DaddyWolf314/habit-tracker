@@ -13,6 +13,7 @@ import type {
 	CoupleExport,
 	CoupleStatus,
 	Device,
+	ExportRow,
 	RoleAssignment,
 	RoleConfirmationState,
 	Session,
@@ -30,9 +31,19 @@ import {
 	DEFAULT_EVENT_TYPES,
 	EVENT_TYPES_VERSION,
 	isBuiltinType,
+	isReservedTypeId,
 } from "#/templates/index.ts";
 import { coupleError } from "./errors.ts";
 import { runMigrations } from "./migrations.ts";
+
+/** Derives a stable, url-safe counter id from a human name. */
+function slugify(name: string): string {
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "");
+}
 
 /** Persisted shape of an in-flight role proposal (in the settings table). */
 interface RoleProposal {
@@ -362,27 +373,43 @@ export class CoupleDO extends DurableObject<Env> {
 				current: false,
 			})),
 			consent_history: await this.listConsentHistory(identityHash),
-			events: this.eventRows().map((row) => ({
-				id: row.id,
-				type: row.type,
-				actor: row.actor,
-				subject: row.subject,
-				occurred_at: row.occurred_at,
-				logged_at: row.logged_at,
-				metadata: row.metadata,
-				note: row.note,
-			})),
-			counters: this.counterRows().map((row) => {
-				const def = JSON.parse(row.definition) as CounterDefinition;
-				return {
-					id: def.id,
-					name: def.name,
-					valence: def.valence,
-					reset: def.reset,
-					value: row.value,
-					updated_at: row.updated_at,
-				};
-			}),
+			events: this.eventRows().map((row) => this.eventExportRow(row)),
+			counters: this.counterRows().map((row) => this.counterExportRow(row)),
+		};
+	}
+
+	/**
+	 * Flattens an event for the export (ExportRow is a flat, RPC-serializable
+	 * map, so nested metadata is carried as a JSON string). Reuses `rowToEvent`
+	 * so the parsing lives in one place.
+	 */
+	private eventExportRow(row: EventRow): ExportRow {
+		const event = this.rowToEvent(row);
+		return {
+			id: event.id,
+			type: event.type,
+			actor: event.actor,
+			subject: event.subject ?? null,
+			occurred_at: event.occurred_at,
+			logged_at: event.logged_at,
+			metadata: JSON.stringify(event.metadata),
+			note: event.note ?? null,
+		};
+	}
+
+	/** Flattens a counter for the export — full definition, nothing dropped. */
+	private counterExportRow(row: CounterRow): ExportRow {
+		const counter = this.rowToCounter(row);
+		return {
+			id: counter.id,
+			name: counter.name,
+			valence: counter.valence,
+			daily_target: counter.daily_target ?? null,
+			weekly_target: counter.weekly_target ?? null,
+			reset: counter.reset,
+			modify_permission: JSON.stringify(counter.modify_permission),
+			value: counter.value,
+			updated_at: counter.updated_at,
 		};
 	}
 
@@ -516,8 +543,8 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 		const type = parsed.data;
-		if (isBuiltinType(type.id)) {
-			throw coupleError("CONFLICT", "that id is reserved");
+		if (isReservedTypeId(type.id)) {
+			throw coupleError("CONFLICT", "the counter_ prefix is reserved");
 		}
 		if (this.eventTypeById(type.id)) {
 			throw coupleError(
@@ -648,18 +675,21 @@ export class CoupleDO extends DurableObject<Env> {
 		return this.counterRows().map((row) => this.rowToCounter(row));
 	}
 
-	/** Defines a new counter. The value starts at 0 and only moves via events. */
+	/**
+	 * Defines a new counter. The value starts at 0 and only moves via events. The
+	 * id is derived from the name when the caller doesn't supply one, and
+	 * disambiguated against existing counters (so "Good boy!" and "Good boy" don't
+	 * collide on the same slug and reject the second create).
+	 */
 	async createCounter(
 		identityHash: string,
-		input: CreateCounterInput & { id: string },
+		input: CreateCounterInput,
 	): Promise<Counter> {
 		this.requireMember(identityHash);
 		this.assertLive();
-		if (this.counterById(input.id)) {
-			throw coupleError("CONFLICT", "a counter with that id already exists");
-		}
+		const id = this.uniqueCounterId(input.id ?? slugify(input.name));
 		const definition: CounterDefinition = {
-			id: input.id,
+			id,
 			name: input.name,
 			valence: input.valence,
 			daily_target: input.daily_target,
@@ -986,6 +1016,16 @@ export class CoupleDO extends DurableObject<Env> {
 				id,
 			)
 			.toArray()[0];
+	}
+
+	/** A free counter id from a slug base, suffixing `_2`, `_3`… on collision. */
+	private uniqueCounterId(base: string): string {
+		if (!base) throw coupleError("BAD_REQUEST", "counter name is required");
+		if (!this.counterById(base)) return base;
+		for (let n = 2; ; n++) {
+			const candidate = `${base}_${n}`;
+			if (!this.counterById(candidate)) return candidate;
+		}
 	}
 
 	private requireCounterRow(id: string): CounterRow {

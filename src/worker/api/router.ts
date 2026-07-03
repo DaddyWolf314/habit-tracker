@@ -35,15 +35,6 @@ interface AuthedRequest {
 /** A non-empty identifier (counter id, event id) from a request body/query. */
 const idSchema = z.string().min(1);
 
-/** Derives a stable, url-safe id from a human counter name. */
-function slugify(name: string): string {
-	return name
-		.toLowerCase()
-		.trim()
-		.replace(/[^a-z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "");
-}
-
 /**
  * Worker-native JSON API for identity, devices, pairing, roles, and the
  * dissolve/export escape hatches. Dispatched from the server entry for `/api/*`
@@ -168,12 +159,11 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 			return await withAuth(request, env, async ({ auth, stub }) => {
 				const parsed = await readJson(request, createCounterInputSchema);
 				if ("response" in parsed) return parsed.response;
-				const id = parsed.data.id ?? slugify(parsed.data.name);
-				if (!id) return errorResponse("counter name is required", 400);
-				const counter = await stub.createCounter(auth.identityHash, {
-					...parsed.data,
-					id,
-				});
+				// The DO derives the id from the name and disambiguates collisions.
+				const counter = await stub.createCounter(
+					auth.identityHash,
+					parsed.data,
+				);
 				return json(counter, 201);
 			});
 		}
