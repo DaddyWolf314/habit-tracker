@@ -33,3 +33,25 @@ export const credentials = sqliteTable(
 
 export type Credential = typeof credentials.$inferSelect;
 export type NewCredential = typeof credentials.$inferInsert;
+
+/**
+ * Short-lived, single-use pairing invitations (handoff §2, pairing flow). Lives
+ * in the routing layer so the second partner can be routed to the couple's DO
+ * at redeem time — before they are a member. Only the code hash is stored; the
+ * code itself is a brief bearer credential for joining.
+ */
+export const invites = sqliteTable(
+	"invites",
+	{
+		codeHash: text("code_hash").primaryKey(),
+		coupleDoId: text("couple_do_id").notNull(),
+		createdAt: integer("created_at", { mode: "timestamp" })
+			.notNull()
+			.default(sql`(unixepoch())`),
+		expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+		usedAt: integer("used_at", { mode: "timestamp" }),
+	},
+	(table) => [index("invites_couple_idx").on(table.coupleDoId)],
+);
+
+export type Invite = typeof invites.$inferSelect;

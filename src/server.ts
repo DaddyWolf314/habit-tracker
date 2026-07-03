@@ -2,6 +2,7 @@ import {
 	createStartHandler,
 	defaultStreamHandler,
 } from "@tanstack/react-start/server";
+import { handleApi } from "./worker/api/router.ts";
 import { coupleStub } from "./worker/routing.ts";
 
 /**
@@ -32,6 +33,11 @@ export default {
 				return new Response("missing couple", { status: 400 });
 			}
 			return coupleStub(env, coupleId).fetch(request);
+		}
+
+		// JSON API: identity, devices, pairing, roles, dissolve/export.
+		if (url.pathname.startsWith("/api/")) {
+			return handleApi(request, env);
 		}
 
 		// Everything else — SSR, server functions, API routes — is TanStack Start.
