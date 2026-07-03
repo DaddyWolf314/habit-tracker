@@ -26,7 +26,7 @@
 		{
 			"binding": "DB",
 			"database_name": "habit-tracker-routing",
-			"database_id": "REPLACE_WITH_D1_DATABASE_ID",
+			"database_id": "da3f4004-8449-47ba-9082-1f918baaedce",
 			"migrations_dir": "./migrations/d1"
 		}
 	],

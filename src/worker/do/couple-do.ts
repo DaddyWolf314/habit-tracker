@@ -1,5 +1,39 @@
 import { DurableObject } from "cloudflare:workers";
+import type {
+	ConsentEntry,
+	CoupleExport,
+	CoupleStatus,
+	Device,
+	RoleAssignment,
+	RoleConfirmationState,
+	Session,
+} from "#/shared/identity.ts";
+import { coupleError } from "./errors.ts";
 import { runMigrations } from "./migrations.ts";
+
+/** Persisted shape of an in-flight role proposal (in the settings table). */
+interface RoleProposal {
+	proposed_by: string;
+	assignment: RoleAssignment;
+	confirmed_by: string[];
+}
+
+interface MemberRow {
+	id: string;
+	identity_hash: string;
+	role: string | null;
+	joined_at: number;
+	[key: string]: SqlStorageValue;
+}
+
+interface DeviceRow {
+	device_id: string;
+	token_hash: string;
+	label: string | null;
+	created_at: number;
+	revoked_at: number | null;
+	[key: string]: SqlStorageValue;
+}
 
 /**
  * CoupleDO — one SQLite-backed Durable Object per couple (handoff §3.2). It owns
@@ -8,9 +42,9 @@ import { runMigrations } from "./migrations.ts";
  * critical sequences (pairing, event append → rule eval → projection update →
  * broadcast, pause-everything) run serialized in this single event loop.
  *
- * This is the Phase 0 skeleton: schema migrations run on wake, the WebSocket
- * upgrade + hibernation handlers are wired, and the alarm entry point exists.
- * Command handling and the rules engine land in later phases.
+ * Phase 1 adds the identity/pairing state machine: binding members, minting and
+ * revoking device tokens, the invite flow, and mutual role confirmation. The
+ * rules engine and live projections still land in later phases.
  */
 export class CoupleDO extends DurableObject<Env> {
 	private readonly sql: SqlStorage;
@@ -24,6 +58,384 @@ export class CoupleDO extends DurableObject<Env> {
 			runMigrations(this.sql);
 		});
 	}
+
+	// ── Couple / member state ────────────────────────────────────────────────
+
+	/**
+	 * Binds the founding partner and opens the couple for pairing. Rejects if the
+	 * couple already has any member — a DO is created fresh per couple.
+	 */
+	async createCouple(identityHash: string): Promise<{ member_id: string }> {
+		if (this.members().length > 0) {
+			throw coupleError("CONFLICT", "couple already created");
+		}
+		const memberId = crypto.randomUUID();
+		this.sql.exec(
+			`INSERT INTO members (id, identity_hash, role, joined_at) VALUES (?, ?, NULL, ?)`,
+			memberId,
+			identityHash,
+			Date.now(),
+		);
+		this.setSetting("status", "pairing");
+		this.setSetting("invitations_closed", "0");
+		return { member_id: memberId };
+	}
+
+	/**
+	 * Binds the second partner via a redeemed invite and permanently closes
+	 * invitations — so no third member can ever be added (handoff §2). Rejects if
+	 * the couple is already full, invitations are closed, or the identity is
+	 * already a member.
+	 */
+	async joinCouple(identityHash: string): Promise<{ member_id: string }> {
+		this.assertLive();
+		if (this.getSetting("invitations_closed") === "1") {
+			throw coupleError("GONE", "invitations are closed");
+		}
+		const members = this.members();
+		if (members.length === 0)
+			throw coupleError("BAD_REQUEST", "couple not initialized");
+		if (members.length >= 2) throw coupleError("CONFLICT", "couple is full");
+		if (members.some((m) => m.identity_hash === identityHash)) {
+			throw coupleError("CONFLICT", "already a member of this couple");
+		}
+		const memberId = crypto.randomUUID();
+		this.sql.exec(
+			`INSERT INTO members (id, identity_hash, role, joined_at) VALUES (?, ?, NULL, ?)`,
+			memberId,
+			identityHash,
+			Date.now(),
+		);
+		// Permanently close the couple to further members.
+		this.setSetting("invitations_closed", "1");
+		return { member_id: memberId };
+	}
+
+	/** Whoami for a member, plus couple-level status. */
+	async getState(identityHash: string): Promise<Session> {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		const status = this.status();
+		return {
+			couple_do_id: this.ctx.id.toString(),
+			member_id: member.id,
+			identity_hash: identityHash,
+			role: (member.role as Session["role"]) ?? null,
+			status,
+			member_count: this.members().length,
+			invitations_closed: this.getSetting("invitations_closed") === "1",
+			roles_active: status === "active",
+		};
+	}
+
+	// ── Mutual role confirmation (handoff §2) ────────────────────────────────
+
+	/**
+	 * Proposes a role assignment covering both members. The proposer implicitly
+	 * confirms; the dynamic stays inactive until the partner confirms too. A new
+	 * proposal supersedes any prior one.
+	 */
+	async proposeRoles(
+		identityHash: string,
+		assignment: RoleAssignment,
+	): Promise<RoleConfirmationState> {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		if (this.status() === "active") {
+			throw coupleError("CONFLICT", "roles are already confirmed");
+		}
+		const members = this.members();
+		if (members.length < 2)
+			throw coupleError("BAD_REQUEST", "the couple is not paired yet");
+
+		const ids = members.map((m) => m.id).sort();
+		const assignedIds = Object.keys(assignment).sort();
+		if (
+			ids.length !== assignedIds.length ||
+			ids.some((id, i) => id !== assignedIds[i])
+		) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"assignment must cover both members exactly",
+			);
+		}
+
+		const proposal: RoleProposal = {
+			proposed_by: me.id,
+			assignment,
+			confirmed_by: [me.id],
+		};
+		this.setSetting("role_proposal", JSON.stringify(proposal));
+		return this.roleState(identityHash);
+	}
+
+	/**
+	 * Confirms the standing proposal. When both members have confirmed, roles are
+	 * written, the dynamic activates, and the confirmation becomes the first entry
+	 * in the consent history.
+	 */
+	async confirmRoles(identityHash: string): Promise<RoleConfirmationState> {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		if (this.status() === "active") return this.roleState(identityHash);
+		const proposal = this.proposal();
+		if (!proposal)
+			throw coupleError("BAD_REQUEST", "there is no role proposal to confirm");
+
+		if (!proposal.confirmed_by.includes(me.id)) {
+			proposal.confirmed_by.push(me.id);
+			this.setSetting("role_proposal", JSON.stringify(proposal));
+		}
+
+		const everyone = this.members().every((m) =>
+			proposal.confirmed_by.includes(m.id),
+		);
+		if (everyone) this.activateRoles(proposal.assignment);
+		return this.roleState(identityHash);
+	}
+
+	/** Current role-confirmation state for the caller. */
+	async getRoleState(identityHash: string): Promise<RoleConfirmationState> {
+		this.requireMember(identityHash);
+		return this.roleState(identityHash);
+	}
+
+	/** The append-only agreement/consent history (newest first). */
+	async listConsentHistory(identityHash: string): Promise<ConsentEntry[]> {
+		this.requireMember(identityHash);
+		return this.sql
+			.exec<{
+				id: string;
+				at: number;
+				kind: string;
+				detail: string | null;
+			}>(`SELECT id, at, kind, detail FROM consent_history ORDER BY at DESC`)
+			.toArray()
+			.map((row) => ({
+				id: row.id,
+				at: row.at,
+				kind: row.kind,
+				detail: row.detail,
+			}));
+	}
+
+	private activateRoles(assignment: RoleAssignment): void {
+		for (const [memberId, role] of Object.entries(assignment)) {
+			this.sql.exec(`UPDATE members SET role = ? WHERE id = ?`, role, memberId);
+		}
+		this.setSetting("status", "active");
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'roles_confirmed', ?)`,
+			crypto.randomUUID(),
+			Date.now(),
+			JSON.stringify({ assignment }),
+		);
+	}
+
+	private roleState(identityHash: string): RoleConfirmationState {
+		const me = this.memberByIdentity(identityHash);
+		const proposal = this.proposal();
+		return {
+			members: this.members().map((m) => ({
+				member_id: m.id,
+				role:
+					(m.role as RoleConfirmationState["members"][number]["role"]) ?? null,
+				is_self: m.id === me?.id,
+			})),
+			assignment: proposal?.assignment ?? null,
+			proposed_by: proposal?.proposed_by ?? null,
+			confirmed_by: proposal?.confirmed_by ?? [],
+			active: this.status() === "active",
+		};
+	}
+
+	private proposal(): RoleProposal | null {
+		const raw = this.getSetting("role_proposal");
+		return raw ? (JSON.parse(raw) as RoleProposal) : null;
+	}
+
+	private requireMember(identityHash: string): MemberRow {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		return member;
+	}
+
+	private assertLive(): void {
+		if (this.status() === "dissolved") {
+			throw coupleError("GONE", "this couple has been dissolved");
+		}
+	}
+
+	// ── Dissolve + export (handoff §2, abuse-edge) ───────────────────────────
+
+	/**
+	 * Either member can unilaterally dissolve the pairing: freeze the dynamic and
+	 * suspend the schedule. Full teardown (offer export → delete the DO → purge
+	 * routing rows) lands in Phase 6; this stub freezes and records the event.
+	 */
+	async dissolve(identityHash: string): Promise<{ status: CoupleStatus }> {
+		this.requireMember(identityHash);
+		if (this.status() !== "dissolved") {
+			this.setSetting("status", "dissolved");
+			this.ctx.storage.deleteAlarm();
+			this.sql.exec(
+				`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'dissolved', NULL)`,
+				crypto.randomUUID(),
+				Date.now(),
+			);
+		}
+		return { status: "dissolved" };
+	}
+
+	/** A member's exportable snapshot of the relationship. */
+	async exportData(identityHash: string): Promise<CoupleExport> {
+		const me = this.requireMember(identityHash);
+		return {
+			exported_at: Date.now(),
+			couple_do_id: this.ctx.id.toString(),
+			status: this.status(),
+			self: {
+				member_id: me.id,
+				role: (me.role as CoupleExport["self"]["role"]) ?? null,
+			},
+			members: this.members().map((m) => ({
+				member_id: m.id,
+				role: (m.role as CoupleExport["self"]["role"]) ?? null,
+			})),
+			devices: this.devicesOf(me.id).map((row) => ({
+				device_id: row.device_id,
+				label: row.label,
+				created_at: row.created_at,
+				revoked_at: row.revoked_at,
+				current: false,
+			})),
+			consent_history: await this.listConsentHistory(identityHash),
+			events: [],
+			counters: [],
+		};
+	}
+
+	// ── Device tokens (handoff §2) ───────────────────────────────────────────
+
+	/** Records a newly minted device token in the caller's member record. */
+	async addDevice(
+		identityHash: string,
+		tokenHash: string,
+		label: string | null,
+	): Promise<Device> {
+		this.assertLive();
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		const deviceId = crypto.randomUUID();
+		const now = Date.now();
+		this.sql.exec(
+			`INSERT INTO devices (token_hash, member_id, label, created_at, revoked_at, device_id)
+				VALUES (?, ?, ?, ?, NULL, ?)`,
+			tokenHash,
+			member.id,
+			label,
+			now,
+			deviceId,
+		);
+		return {
+			device_id: deviceId,
+			label,
+			created_at: now,
+			revoked_at: null,
+			current: false,
+		};
+	}
+
+	/**
+	 * Lists the caller's devices for the "your devices" panel. The token hash is
+	 * never returned; the device the caller is using is flagged `current`.
+	 */
+	async listDevices(
+		identityHash: string,
+		callerCredentialHash: string,
+	): Promise<Device[]> {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		return this.devicesOf(member.id).map((row) => ({
+			device_id: row.device_id,
+			label: row.label,
+			created_at: row.created_at,
+			revoked_at: row.revoked_at,
+			current: row.token_hash === callerCredentialHash,
+		}));
+	}
+
+	/**
+	 * Revokes one device and returns its token hash so the caller can flip the
+	 * matching routing-layer credential to revoked (auth rejects it thereafter).
+	 */
+	async revokeDevice(
+		identityHash: string,
+		deviceId: string,
+	): Promise<{ token_hash: string }> {
+		const member = this.memberByIdentity(identityHash);
+		if (!member) throw coupleError("NOT_FOUND", "not a member of this couple");
+		const device = this.devicesOf(member.id).find(
+			(d) => d.device_id === deviceId,
+		);
+		if (!device) throw coupleError("NOT_FOUND", "no such device");
+		if (device.revoked_at === null) {
+			this.sql.exec(
+				`UPDATE devices SET revoked_at = ? WHERE device_id = ?`,
+				Date.now(),
+				deviceId,
+			);
+		}
+		return { token_hash: device.token_hash };
+	}
+
+	// ── SQL helpers ──────────────────────────────────────────────────────────
+
+	protected devicesOf(memberId: string): DeviceRow[] {
+		return this.sql
+			.exec<DeviceRow>(
+				`SELECT device_id, token_hash, label, created_at, revoked_at
+					FROM devices WHERE member_id = ? ORDER BY created_at`,
+				memberId,
+			)
+			.toArray();
+	}
+
+	protected members(): MemberRow[] {
+		return this.sql
+			.exec<MemberRow>(`SELECT id, identity_hash, role, joined_at FROM members`)
+			.toArray();
+	}
+
+	protected memberByIdentity(identityHash: string): MemberRow | undefined {
+		return this.sql
+			.exec<MemberRow>(
+				`SELECT id, identity_hash, role, joined_at FROM members WHERE identity_hash = ?`,
+				identityHash,
+			)
+			.toArray()[0];
+	}
+
+	protected status(): CoupleStatus {
+		return (this.getSetting("status") as CoupleStatus | undefined) ?? "pairing";
+	}
+
+	protected getSetting(key: string): string | undefined {
+		return this.sql
+			.exec<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, key)
+			.toArray()[0]?.value;
+	}
+
+	protected setSetting(key: string, value: string): void {
+		this.sql.exec(
+			`INSERT INTO settings (key, value) VALUES (?, ?)
+				ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+			key,
+			value,
+		);
+	}
+
+	// ── WebSocket + alarms ───────────────────────────────────────────────────
 
 	override async fetch(request: Request): Promise<Response> {
 		if (request.headers.get("Upgrade") === "websocket") {

@@ -8,6 +8,13 @@
       "when": 1783033794642,
       "tag": "0000_safe_wendigo",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1783035618564,
+      "tag": "0001_petite_rockslide",
+      "breakpoints": true
     }
   ]
 }

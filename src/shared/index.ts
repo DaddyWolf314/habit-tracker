@@ -6,6 +6,7 @@
 export * from "./amendments.ts";
 export * from "./event-types.ts";
 export * from "./events.ts";
+export * from "./identity.ts";
 export * from "./roles.ts";
 export * from "./rules.ts";
 export * from "./ws.ts";
