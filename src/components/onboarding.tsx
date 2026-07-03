@@ -358,7 +358,12 @@ function Home({
 
 			<SettingsPanel dissolved={dissolved} onDissolved={onRefresh} />
 
-			<div className="mt-6">
+			<div className="mt-6 flex gap-4">
+				{session.roles_active && (
+					<Link to="/log" className="text-sm underline">
+						Open the log
+					</Link>
+				)}
 				<Link to="/devices" className="text-sm underline">
 					Manage devices
 				</Link>

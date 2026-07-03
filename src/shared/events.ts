@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { amendmentSchema } from "./amendments.ts";
 import { metadataValueSchema } from "./roles.ts";
 
 /**
@@ -35,3 +36,18 @@ export const logEventInputSchema = z.object({
 	note: z.string().optional(),
 });
 export type LogEventInput = z.infer<typeof logEventInputSchema>;
+
+/**
+ * An event as rendered in the log (handoff §4.6, §9 surface 3): the raw event
+ * plus its amendments, the derived composite metadata (original overlaid by
+ * amendments), and the derived `pending` status. Composite state and pending
+ * are computed, never stored; in Phase 2 there are no amendments yet, so the
+ * composite equals the original — the shape is here so the UI is correct as
+ * amendments arrive in Phase 5.
+ */
+export const eventViewSchema = eventSchema.extend({
+	amendments: z.array(amendmentSchema).default([]),
+	composite_metadata: z.record(z.string(), metadataValueSchema).default({}),
+	pending: z.boolean(),
+});
+export type EventView = z.infer<typeof eventViewSchema>;
