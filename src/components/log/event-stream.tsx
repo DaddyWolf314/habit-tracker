@@ -57,6 +57,7 @@ function EventRow({
 }) {
 	const [trace, setTrace] = useState<TraceRow[] | null>(null);
 	const [open, setOpen] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 
 	async function toggle() {
 		if (open) {
@@ -64,7 +65,14 @@ function EventRow({
 			return;
 		}
 		setOpen(true);
-		if (trace === null) setTrace((await getEventTrace(event.id)).rows);
+		if (trace !== null) return;
+		try {
+			setError(null);
+			setTrace((await getEventTrace(event.id)).rows);
+		} catch (err) {
+			// Leave trace null so tapping again retries rather than sticking.
+			setError(err instanceof Error ? err.message : "Couldn't load the chain.");
+		}
 	}
 
 	const meta = Object.entries(event.composite_metadata);
@@ -123,7 +131,10 @@ function EventRow({
 						Projections touched
 					</p>
 					<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
-						{trace === null && <li>Loading…</li>}
+						{error && (
+							<li className="text-destructive">{error} Tap to retry.</li>
+						)}
+						{!error && trace === null && <li>Loading…</li>}
 						{trace?.length === 0 && (
 							<li>No projections — this event fired no effects.</li>
 						)}

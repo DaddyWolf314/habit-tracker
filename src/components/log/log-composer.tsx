@@ -63,8 +63,25 @@ export function LogComposer({
 		return out;
 	}
 
+	/** Required fields (non-`awaiting`) the user hasn't filled in yet. */
+	function missingRequired(t: EventType): string[] {
+		const missing: string[] = [];
+		if (t.subject_required && !subject) missing.push("Subject");
+		for (const [key, field] of Object.entries(t.metadata)) {
+			if (field.required && !t.awaiting.includes(key) && !(meta[key] ?? "")) {
+				missing.push(field.label);
+			}
+		}
+		return missing;
+	}
+
 	async function submit() {
 		if (!type) return;
+		const missing = missingRequired(type);
+		if (missing.length > 0) {
+			setError(`Please fill in: ${missing.join(", ")}.`);
+			return;
+		}
 		setBusy(true);
 		setError(null);
 		try {
@@ -173,6 +190,9 @@ function MetadataInput({
 	const label = (
 		<span className="text-xs text-muted-foreground">
 			{field.label}
+			{field.required && !awaiting && (
+				<span className="ml-1 text-destructive">(required)</span>
+			)}
 			{awaiting && (
 				<span className="ml-1 text-amber-600">
 					(awaiting — leave blank to defer)

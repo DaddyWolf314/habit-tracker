@@ -31,6 +31,16 @@ export function isBuiltinType(id: string): boolean {
 	return id === COUNTER_ADJUSTED_TYPE || id === COUNTER_RESET_TYPE;
 }
 
+/**
+ * The `counter_` prefix is a reserved namespace: the composer hides any type id
+ * that starts with it, so custom types may not use it — otherwise they would be
+ * created but never appear in the picker (unloggable). Broader than
+ * {@link isBuiltinType}, which matches only the two real builtins.
+ */
+export function isReservedTypeId(id: string): boolean {
+	return id.startsWith("counter_");
+}
+
 export const BUILTIN_EVENT_TYPES: EventType[] = [
 	eventTypeSchema.parse({
 		id: COUNTER_ADJUSTED_TYPE,
