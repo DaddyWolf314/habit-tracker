@@ -5,6 +5,12 @@
  * §4.1): it is lexicographically sortable by creation time — so the log's
  * natural order is chronological without a separate sequence — and it carries
  * enough entropy to avoid collisions within a single millisecond.
+ *
+ * Generation is *monotonic*: two ULIDs minted in the same millisecond are still
+ * strictly increasing (the random field is incremented rather than re-rolled).
+ * This is load-bearing — projection replay tie-breaks equal-`logged_at` events
+ * by id, so id order must equal append order or a rebuilt counter could diverge
+ * from the live cache (e.g. a reset and an adjustment logged in the same ms).
  */
 
 // Crockford base32 — no I, L, O, U to avoid transcription ambiguity.
@@ -22,16 +28,39 @@ function encodeTime(now: number): string {
 	return out;
 }
 
-function encodeRandom(): string {
+// Monotonic state: the last timestamp minted and the base32 indices (0–31) of
+// its random field, so a same-ms mint can increment rather than re-roll.
+let lastTime = -1;
+let lastRandom: number[] = [];
+
+function freshRandom(): number[] {
 	const bytes = new Uint8Array(RANDOM_LEN);
 	crypto.getRandomValues(bytes);
-	let out = "";
-	// Each byte contributes one base32 char (we use the low 5 bits); 16 chars.
-	for (let i = 0; i < RANDOM_LEN; i++) out += ENCODING[bytes[i] & 0x1f];
-	return out;
+	return Array.from(bytes, (b) => b & 0x1f);
 }
 
-/** A fresh ULID for the given time (defaults to now). */
+/** Increments the base32 random field in place, carrying from the low end. */
+function incrementRandom(random: number[]): void {
+	for (let i = RANDOM_LEN - 1; i >= 0; i--) {
+		if (random[i] < 31) {
+			random[i]++;
+			return;
+		}
+		random[i] = 0; // carry
+	}
+	// Overflowed all 80 bits in one ms (astronomically unlikely) — re-seed.
+	const reseeded = freshRandom();
+	for (let i = 0; i < RANDOM_LEN; i++) random[i] = reseeded[i];
+}
+
+/** A fresh, monotonic ULID for the given time (defaults to now). */
 export function ulid(now: number = Date.now()): string {
-	return encodeTime(now) + encodeRandom();
+	if (now <= lastTime) {
+		incrementRandom(lastRandom);
+	} else {
+		lastTime = now;
+		lastRandom = freshRandom();
+	}
+	const random = lastRandom.map((i) => ENCODING[i]).join("");
+	return encodeTime(now) + random;
 }
