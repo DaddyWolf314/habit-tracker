@@ -1,0 +1,204 @@
+{
+	"version": 1,
+	"types": [
+		{
+			"id": "ritual_completed",
+			"label": "Ritual completed",
+			"icon": "sunrise",
+			"valence": "positive",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"ritual_id": {
+					"kind": "ref",
+					"ref_kind": "ritual",
+					"label": "Ritual",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"late": {
+					"kind": "boolean",
+					"label": "Late?",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": [],
+			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "task_completed",
+			"label": "Task completed",
+			"icon": "check-circle",
+			"valence": "positive",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"task_id": {
+					"kind": "ref",
+					"ref_kind": "task",
+					"label": "Task",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"quality": {
+					"kind": "enum",
+					"options": ["exceeded", "met", "partial"],
+					"label": "Quality",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"],
+					"adjudicated_by": ["dom"]
+				}
+			},
+			"awaiting": ["quality"],
+			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "infraction",
+			"label": "Infraction",
+			"icon": "alert-triangle",
+			"valence": "negative",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"rule_ref": {
+					"kind": "ref",
+					"ref_kind": "rule",
+					"label": "Rule",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"severity": {
+					"kind": "enum",
+					"options": ["minor", "major"],
+					"label": "Severity",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"],
+					"adjudicated_by": ["dom"]
+				},
+				"self_reported": {
+					"kind": "boolean",
+					"label": "Self-reported?",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": ["severity"],
+			"note_prompt": "What happened?"
+		},
+		{
+			"id": "orgasm",
+			"label": "Orgasm",
+			"icon": "sparkles",
+			"valence": "neutral",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"permitted": {
+					"kind": "boolean",
+					"label": "Permitted?",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"],
+					"adjudicated_by": ["dom"]
+				},
+				"outcome": {
+					"kind": "enum",
+					"options": ["full", "ruined", "denied"],
+					"label": "Outcome",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": ["permitted"],
+			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "session_started",
+			"label": "Session started",
+			"icon": "play",
+			"valence": "neutral",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"activity": {
+					"kind": "enum",
+					"options": ["kneeling", "service", "wear", "scene"],
+					"label": "Activity",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"session_id": {
+					"kind": "ref",
+					"ref_kind": "session",
+					"label": "Session",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": []
+		},
+		{
+			"id": "session_ended",
+			"label": "Session ended",
+			"icon": "stop",
+			"valence": "neutral",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"activity": {
+					"kind": "enum",
+					"options": ["kneeling", "service", "wear", "scene"],
+					"label": "Activity",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"session_id": {
+					"kind": "ref",
+					"ref_kind": "session",
+					"label": "Session",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": []
+		},
+		{
+			"id": "check_in",
+			"label": "Check-in",
+			"icon": "heart",
+			"valence": "positive",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"mood": {
+					"kind": "number",
+					"min": 1,
+					"max": 5,
+					"label": "Mood (1–5)",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"flag": {
+					"kind": "enum",
+					"options": ["wants_conversation"],
+					"label": "Flag",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": [],
+			"note_prompt": "How are you doing?"
+		},
+		{
+			"id": "note",
+			"label": "Note",
+			"icon": "message-square",
+			"valence": "neutral",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": false,
+			"metadata": {},
+			"awaiting": [],
+			"note_prompt": "Write a note"
+		}
+	]
+}
