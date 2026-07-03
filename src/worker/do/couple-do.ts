@@ -101,9 +101,13 @@ export class CoupleDO extends DurableObject<Env> {
 		super(ctx, env);
 		this.sql = ctx.storage.sql;
 		// Lazy, idempotent per-DO migrations; block so no request sees a
-		// half-migrated schema (handoff §3.5).
+		// half-migrated schema (handoff §3.5). Seeding the event-type defaults is
+		// reconciled the same way — version-guarded on every wake — so couples
+		// paired before Phase 2 shipped get backfilled the first time their DO
+		// wakes, not just at creation.
 		ctx.blockConcurrencyWhile(async () => {
 			runMigrations(this.sql);
+			this.ensureSeeded();
 		});
 	}
 
@@ -126,7 +130,6 @@ export class CoupleDO extends DurableObject<Env> {
 		);
 		this.setSetting("status", "pairing");
 		this.setSetting("invitations_closed", "0");
-		this.seedDefaults();
 		return { member_id: memberId };
 	}
 
@@ -460,10 +463,22 @@ export class CoupleDO extends DurableObject<Env> {
 	// ── Event-type schemas (handoff §5, §6) ──────────────────────────────────
 
 	/**
-	 * Seeds the ship-time defaults into a fresh couple: the starter seven plus
-	 * the reserved counter-manipulation types. Idempotent (`INSERT OR IGNORE`) so
-	 * it is safe if a couple is somehow seeded twice; the version is recorded so a
-	 * later template revision can be reconciled.
+	 * Seeds the ship-time defaults if this DO hasn't reached the current template
+	 * version yet. Runs on every wake (cheap: one settings read) so couples that
+	 * predate a template — including everyone paired before Phase 2 — get
+	 * backfilled without a bespoke migration.
+	 */
+	private ensureSeeded(): void {
+		const seeded = Number(this.getSetting("event_types_version") ?? "0");
+		if (seeded >= EVENT_TYPES_VERSION) return;
+		this.seedDefaults();
+	}
+
+	/**
+	 * Seeds the ship-time defaults into a couple: the starter seven plus the
+	 * reserved counter-manipulation types. Idempotent (`INSERT OR IGNORE`) so it is
+	 * safe to re-run; the version is recorded so a later template revision can be
+	 * reconciled.
 	 */
 	private seedDefaults(): void {
 		for (const type of DEFAULT_EVENT_TYPES) {
@@ -533,6 +548,27 @@ export class CoupleDO extends DurableObject<Env> {
 		input: LogEventInput,
 	): Promise<EventView> {
 		const me = this.requireMember(identityHash);
+		// The `counter_*` types are internal sugar. They must go through
+		// adjustCounter/resetCounter, which enforce the counter's own
+		// modify_permission and coerce the delta — accepting them on the raw log
+		// path would bypass both (a permission-and-integrity hole).
+		if (isBuiltinType(input.type)) {
+			throw coupleError(
+				"FORBIDDEN",
+				"counters are changed through the counter endpoints",
+			);
+		}
+		return this.appendEvent(me, input);
+	}
+
+	/**
+	 * The shared append path: validates against the type schema and writes the
+	 * event, then applies any direct-manipulation projection. Callers are
+	 * responsible for authorization — the public `logEvent` blocks the internal
+	 * counter types, while `adjustCounter`/`resetCounter` gate on the counter's
+	 * `modify_permission` before appending their `counter_*` events here.
+	 */
+	private appendEvent(me: MemberRow, input: LogEventInput): EventView {
 		this.assertLive();
 		if (this.status() !== "active") {
 			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
@@ -653,7 +689,11 @@ export class CoupleDO extends DurableObject<Env> {
 		const me = this.requireMember(identityHash);
 		const counter = this.requireCounter(counterId);
 		this.assertModifyAllowed(me, counter);
-		await this.logEvent(identityHash, {
+		// Integer only — a fractional delta would break counterSchema on read.
+		if (!Number.isInteger(delta)) {
+			throw coupleError("BAD_REQUEST", "delta must be a whole number");
+		}
+		this.appendEvent(me, {
 			type: COUNTER_ADJUSTED_TYPE,
 			metadata: { counter: counterId, delta },
 			note,
@@ -670,7 +710,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const me = this.requireMember(identityHash);
 		const counter = this.requireCounter(counterId);
 		this.assertModifyAllowed(me, counter);
-		await this.logEvent(identityHash, {
+		this.appendEvent(me, {
 			type: COUNTER_RESET_TYPE,
 			metadata: { counter: counterId },
 			note,
@@ -687,7 +727,9 @@ export class CoupleDO extends DurableObject<Env> {
 		this.requireMember(identityHash);
 		const rows = this.counterRows();
 		const values = new Map<string, number>(rows.map((r) => [r.id, 0]));
-		let lastAt: number | null = null;
+		// Each counter's own last-event time, mirroring the incremental path;
+		// a counter with no events keeps `updated_at` null.
+		const lastAt = new Map<string, number>();
 		// Replay in append order so the fold matches live application exactly.
 		for (const row of this.eventRows(undefined, "ASC")) {
 			if (row.type !== COUNTER_ADJUSTED_TYPE && row.type !== COUNTER_RESET_TYPE)
@@ -707,13 +749,13 @@ export class CoupleDO extends DurableObject<Env> {
 					metadata,
 				}),
 			);
-			lastAt = row.logged_at;
+			lastAt.set(counterId, row.logged_at);
 		}
 		for (const [id, value] of values) {
 			this.sql.exec(
 				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
 				value,
-				lastAt,
+				lastAt.get(id) ?? null,
 				id,
 			);
 		}

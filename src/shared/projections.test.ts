@@ -122,4 +122,13 @@ describe("ulid", () => {
 		expect(b).toHaveLength(26);
 		expect(a < b).toBe(true);
 	});
+
+	it("is strictly monotonic within a single millisecond", () => {
+		// Same timestamp minted repeatedly must still increase, so replay's
+		// (logged_at, id) tie-break reproduces append order.
+		const ids = Array.from({ length: 50 }, () => ulid(5000));
+		for (let i = 1; i < ids.length; i++) {
+			expect(ids[i - 1] < ids[i]).toBe(true);
+		}
+	});
 });
