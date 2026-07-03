@@ -1,7 +1,14 @@
 import { and, eq, isNull } from "drizzle-orm";
+import { z } from "zod";
 import { getRoutingDb } from "#/db/index.ts";
 import { credentials, invites } from "#/db/schema.ts";
 import { randomToken, sha256Base64url } from "#/lib/crypto.ts";
+import {
+	adjustCounterInputSchema,
+	createCounterInputSchema,
+	resetCounterInputSchema,
+} from "#/shared/counters.ts";
+import { logEventInputSchema } from "#/shared/events.ts";
 import {
 	mintDeviceInputSchema,
 	proposeRolesInputSchema,
@@ -23,6 +30,18 @@ import { errorResponse, json, readJson } from "./http.ts";
 interface AuthedRequest {
 	auth: AuthContext;
 	stub: DurableObjectStub<CoupleDO>;
+}
+
+/** A non-empty identifier (counter id, event id) from a request body/query. */
+const idSchema = z.string().min(1);
+
+/** Derives a stable, url-safe id from a human counter name. */
+function slugify(name: string): string {
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "");
 }
 
 /**
@@ -101,6 +120,107 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 							'attachment; filename="strawberry-export.json"',
 					}),
 				),
+			);
+		}
+
+		// ── Phase 2: event log + counters ──────────────────────────────────────
+		if (path === "/api/event-types" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.listEventTypes(auth.identityHash).then((types) => json({ types })),
+			);
+		}
+		if (path === "/api/event-types" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const body = await request.json().catch(() => null);
+				const type = await stub.createEventType(auth.identityHash, body);
+				return json(type, 201);
+			});
+		}
+		if (path === "/api/events" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.listEvents(auth.identityHash).then((events) => json({ events })),
+			);
+		}
+		if (path === "/api/events" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, logEventInputSchema);
+				if ("response" in parsed) return parsed.response;
+				const event = await stub.logEvent(auth.identityHash, parsed.data);
+				return json(event, 201);
+			});
+		}
+		if (path === "/api/events/trace" && method === "GET") {
+			const eventId = url.searchParams.get("event_id") ?? "";
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.getEventTrace(auth.identityHash, eventId)
+					.then((rows) => json({ rows })),
+			);
+		}
+		if (path === "/api/counters" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listCounters(auth.identityHash)
+					.then((counters) => json({ counters })),
+			);
+		}
+		if (path === "/api/counters" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, createCounterInputSchema);
+				if ("response" in parsed) return parsed.response;
+				const id = parsed.data.id ?? slugify(parsed.data.name);
+				if (!id) return errorResponse("counter name is required", 400);
+				const counter = await stub.createCounter(auth.identityHash, {
+					...parsed.data,
+					id,
+				});
+				return json(counter, 201);
+			});
+		}
+		if (path === "/api/counters/adjust" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(
+					request,
+					adjustCounterInputSchema.extend({ counter_id: idSchema }),
+				);
+				if ("response" in parsed) return parsed.response;
+				const counter = await stub.adjustCounter(
+					auth.identityHash,
+					parsed.data.counter_id,
+					parsed.data.delta,
+					parsed.data.note,
+				);
+				return json(counter);
+			});
+		}
+		if (path === "/api/counters/reset" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(
+					request,
+					resetCounterInputSchema.extend({ counter_id: idSchema }),
+				);
+				if ("response" in parsed) return parsed.response;
+				const counter = await stub.resetCounter(
+					auth.identityHash,
+					parsed.data.counter_id,
+					parsed.data.note,
+				);
+				return json(counter);
+			});
+		}
+		if (path === "/api/counters/rebuild" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.rebuildCounters(auth.identityHash)
+					.then((counters) => json({ counters })),
+			);
+		}
+		if (path === "/api/counters/trace" && method === "GET") {
+			const counterId = url.searchParams.get("counter_id") ?? "";
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.getCounterTrace(auth.identityHash, counterId)
+					.then((trace) => json(trace)),
 			);
 		}
 		return errorResponse("not found", 404);
