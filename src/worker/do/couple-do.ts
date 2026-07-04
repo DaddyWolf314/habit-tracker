@@ -24,14 +24,18 @@ import {
 	isPending,
 } from "#/shared/projections.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
+import type { Rule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import {
 	COUNTER_ADJUSTED_TYPE,
 	COUNTER_RESET_TYPE,
+	DEFAULT_COUNTERS,
 	DEFAULT_EVENT_TYPES,
+	DEFAULT_RULES,
 	EVENT_TYPES_VERSION,
 	isBuiltinType,
 	isReservedTypeId,
+	RULE_PACK_VERSION,
 } from "#/templates/index.ts";
 import { coupleError } from "./errors.ts";
 import { runMigrations } from "./migrations.ts";
@@ -89,6 +93,13 @@ interface CounterRow {
 	[key: string]: SqlStorageValue;
 }
 
+interface RuleRow {
+	id: string;
+	definition: string;
+	enabled: number;
+	[key: string]: SqlStorageValue;
+}
+
 /**
  * CoupleDO — one SQLite-backed Durable Object per couple (handoff §3.2). It owns
  * all relationship data: members, roles, devices, the event log, amendments,
@@ -119,6 +130,7 @@ export class CoupleDO extends DurableObject<Env> {
 		ctx.blockConcurrencyWhile(async () => {
 			runMigrations(this.sql);
 			this.ensureSeeded();
+			this.ensureRulePackSeeded();
 		});
 	}
 
@@ -516,6 +528,41 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 		this.setSetting("event_types_version", String(EVENT_TYPES_VERSION));
+	}
+
+	/**
+	 * Installs the default projections & rule pack (handoff §7) if this DO hasn't
+	 * reached the current pack version yet: the default counters the pack drives
+	 * and R1–R18. Version-guarded and idempotent, mirroring {@link ensureSeeded},
+	 * so couples paired before Phase 3 shipped get the pack the first time their
+	 * DO wakes. Counters are seeded before rules so a rule's target exists.
+	 */
+	private ensureRulePackSeeded(): void {
+		const seeded = Number(this.getSetting("rule_pack_version") ?? "0");
+		if (seeded >= RULE_PACK_VERSION) return;
+		for (const counter of DEFAULT_COUNTERS) {
+			this.sql.exec(
+				`INSERT OR IGNORE INTO counters (id, definition, value, updated_at)
+					VALUES (?, ?, 0, NULL)`,
+				counter.id,
+				JSON.stringify(counter),
+			);
+		}
+		for (const rule of DEFAULT_RULES) {
+			this.sql.exec(
+				`INSERT OR IGNORE INTO rules (id, definition, enabled) VALUES (?, ?, ?)`,
+				rule.id,
+				JSON.stringify(rule),
+				rule.enabled === false ? 0 : 1,
+			);
+		}
+		this.setSetting("rule_pack_version", String(RULE_PACK_VERSION));
+	}
+
+	/** The couple's installed rules (R1–R18 template + any custom), enabled flag applied. */
+	async listRules(identityHash: string): Promise<Rule[]> {
+		this.requireMember(identityHash);
+		return this.rules();
 	}
 
 	/** The couple's event-type schema set (starter seven + any custom types). */
@@ -1007,6 +1054,21 @@ export class CoupleDO extends DurableObject<Env> {
 				`SELECT id, definition, value, updated_at FROM counters ORDER BY id`,
 			)
 			.toArray();
+	}
+
+	/**
+	 * The installed rules, ordered by id so evaluation is deterministic (matters
+	 * for replay/rebuild). The stored `enabled` flag overrides the definition's,
+	 * so toggling a rule off never has to rewrite its JSON.
+	 */
+	private rules(): Rule[] {
+		return this.sql
+			.exec<RuleRow>(`SELECT id, definition, enabled FROM rules ORDER BY id`)
+			.toArray()
+			.map((row) => ({
+				...(JSON.parse(row.definition) as Rule),
+				enabled: row.enabled === 1,
+			}));
 	}
 
 	private counterById(id: string): CounterRow | undefined {

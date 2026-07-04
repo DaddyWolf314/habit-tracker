@@ -1,6 +1,12 @@
+import type { CounterDefinition } from "#/shared/counters.ts";
+import { counterDefinitionSchema } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
+import type { Rule } from "#/shared/rules.ts";
+import { ruleSchema } from "#/shared/rules.ts";
+import countersJson from "./counters.json" with { type: "json" };
 import eventTypesJson from "./event-types.json" with { type: "json" };
+import rulesJson from "./rules.json" with { type: "json" };
 
 /**
  * Ship-time defaults seeded into every couple's Durable Object (handoff §6).
@@ -90,4 +96,43 @@ export const BUILTIN_EVENT_TYPES: EventType[] = [
 export const DEFAULT_EVENT_TYPES: EventType[] = [
 	...STARTER_EVENT_TYPES,
 	...BUILTIN_EVENT_TYPES,
+];
+
+/**
+ * The default projections & rule pack (handoff §7) — the installable template
+ * that turns the starter seven into a working dynamic. Versioned as one unit so
+ * a couple's seeded pack is auditable and can evolve without a code migration;
+ * the guard version lives on the rule pack (bump it whenever either the rules or
+ * the default counters change). Every rule condition, counter, anchor, and timer
+ * here derives from only the starter seven — the acceptance test for §7.
+ */
+export const RULE_PACK_VERSION: number = rulesJson.version;
+
+/** The R1–R18 default rules (validated against the shared schema at load). */
+export const DEFAULT_RULES: Rule[] = rulesJson.rules.map((r) =>
+	ruleSchema.parse(r),
+);
+
+/** The default counter projections the pack drives (§7 Projections). */
+export const DEFAULT_COUNTERS: CounterDefinition[] = countersJson.counters.map(
+	(c) => counterDefinitionSchema.parse(c),
+);
+
+/**
+ * The default elapsed-since anchors (§7). Anchors are trivial state (a single
+ * reset timestamp); a rule effect resets them. Named here so rule validation and
+ * the trace have a known projection set to check against; their live projection
+ * (the "days since" display) lands with timers in Phase 4.
+ */
+export const DEFAULT_ANCHORS: readonly string[] = [
+	"since_last_infraction",
+	"since_last_orgasm",
+	"since_last_check_in",
+];
+
+/** The default timers the pack opens/closes (§7). The state machine is Phase 4. */
+export const DEFAULT_TIMERS: readonly string[] = [
+	"task_countdown",
+	"denial_period",
+	"session_stopwatch",
 ];

@@ -1,0 +1,154 @@
+{
+	"version": 1,
+	"rules": [
+		{
+			"id": "R1",
+			"condition": { "type": "ritual_completed", "metadata": {} },
+			"effects": [
+				{ "verb": "increment_counter", "counter": "rituals_completed_today" }
+			]
+		},
+		{
+			"id": "R2",
+			"condition": { "type": "ritual_completed", "metadata": { "late": true } },
+			"effects": [{ "verb": "increment_counter", "counter": "demerits" }]
+		},
+		{
+			"id": "R3",
+			"condition": { "type": "task_completed", "metadata": {} },
+			"effects": [{ "verb": "increment_counter", "counter": "tasks_completed" }]
+		},
+		{
+			"id": "R4",
+			"condition": { "type": "task_completed", "metadata": {} },
+			"effects": [
+				{
+					"verb": "close_timer",
+					"timer": "task_countdown",
+					"match_on": { "task_id": "task_id" },
+					"status": "completed"
+				}
+			]
+		},
+		{
+			"id": "R5",
+			"condition": {
+				"type": "task_completed",
+				"metadata": { "quality": "partial" }
+			},
+			"effects": [{ "verb": "increment_counter", "counter": "demerits" }]
+		},
+		{
+			"id": "R6",
+			"condition": { "type": "infraction", "metadata": {} },
+			"effects": [
+				{ "verb": "increment_counter", "counter": "infractions_lifetime" }
+			]
+		},
+		{
+			"id": "R7",
+			"condition": { "type": "infraction", "metadata": {} },
+			"effects": [{ "verb": "reset_anchor", "anchor": "since_last_infraction" }]
+		},
+		{
+			"id": "R8",
+			"condition": {
+				"type": "infraction",
+				"metadata": { "severity": "major" }
+			},
+			"effects": [
+				{ "verb": "increment_counter", "counter": "demerits", "by": 2 }
+			]
+		},
+		{
+			"id": "R9",
+			"condition": {
+				"type": "infraction",
+				"metadata": { "severity": "minor", "self_reported": false }
+			},
+			"effects": [{ "verb": "increment_counter", "counter": "demerits" }]
+		},
+		{
+			"id": "R10",
+			"condition": { "type": "orgasm", "metadata": {} },
+			"effects": [
+				{ "verb": "increment_counter", "counter": "orgasms_lifetime" }
+			]
+		},
+		{
+			"id": "R11",
+			"condition": {
+				"type": "orgasm",
+				"metadata": { "permitted": true, "outcome": "full" }
+			},
+			"effects": [
+				{ "verb": "increment_counter", "counter": "orgasms_permitted" },
+				{ "verb": "reset_anchor", "anchor": "since_last_orgasm" }
+			]
+		},
+		{
+			"id": "R12",
+			"condition": { "type": "orgasm", "metadata": { "permitted": false } },
+			"effects": [
+				{ "verb": "increment_counter", "counter": "orgasms_unpermitted" },
+				{ "verb": "reset_anchor", "anchor": "since_last_orgasm" },
+				{ "verb": "increment_counter", "counter": "demerits", "by": 2 },
+				{ "verb": "reset_anchor", "anchor": "since_last_infraction" }
+			]
+		},
+		{
+			"id": "R13",
+			"condition": { "type": "orgasm", "metadata": { "outcome": "denied" } },
+			"effects": [{ "verb": "increment_counter", "counter": "orgasms_denied" }]
+		},
+		{
+			"id": "R14",
+			"condition": { "type": "orgasm", "metadata": { "permitted": false } },
+			"effects": [
+				{ "verb": "close_timer", "timer": "denial_period", "status": "failed" }
+			]
+		},
+		{
+			"id": "R15",
+			"condition": { "type": "session_started", "metadata": {} },
+			"effects": [
+				{
+					"verb": "open_timer",
+					"timer": "session_stopwatch",
+					"match_on": { "session_id": "session_id" },
+					"tag_from": "activity"
+				}
+			]
+		},
+		{
+			"id": "R16",
+			"condition": { "type": "session_ended", "metadata": {} },
+			"effects": [
+				{
+					"verb": "close_timer",
+					"timer": "session_stopwatch",
+					"match_on": { "session_id": "session_id" },
+					"status": "completed",
+					"route_duration_to": "service_minutes_week",
+					"route_when": { "activity": "service" }
+				}
+			]
+		},
+		{
+			"id": "R17",
+			"condition": { "type": "check_in", "metadata": {} },
+			"effects": [
+				{ "verb": "increment_counter", "counter": "check_ins_week" },
+				{ "verb": "reset_anchor", "anchor": "since_last_check_in" }
+			]
+		},
+		{
+			"id": "R18",
+			"condition": {
+				"type": "check_in",
+				"metadata": { "flag": "wants_conversation" }
+			},
+			"effects": [{ "verb": "notify", "target": "partner" }]
+		}
+	]
+}
