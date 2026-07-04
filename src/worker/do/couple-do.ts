@@ -24,14 +24,18 @@ import {
 	isPending,
 } from "#/shared/projections.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
+import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
+import { ruleSchema } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import {
 	COUNTER_ADJUSTED_TYPE,
 	COUNTER_RESET_TYPE,
+	DEFAULT_ANCHORS,
 	DEFAULT_COUNTERS,
 	DEFAULT_EVENT_TYPES,
 	DEFAULT_RULES,
+	DEFAULT_TIMERS,
 	EVENT_TYPES_VERSION,
 	isBuiltinType,
 	isReservedTypeId,
@@ -565,6 +569,43 @@ export class CoupleDO extends DurableObject<Env> {
 		return this.rules();
 	}
 
+	/**
+	 * Creates a custom rule. It is validated against the couple's event-type
+	 * schema and known projections at creation (handoff §4.3) — conditioning on a
+	 * nonexistent key or targeting an unknown projection is rejected here, not
+	 * silently skipped forever at runtime. First-class and identical in shape to
+	 * the R1–R18 template.
+	 */
+	async createRule(identityHash: string, definition: unknown): Promise<Rule> {
+		this.requireMember(identityHash);
+		this.assertLive();
+		const parsed = ruleSchema.safeParse(definition);
+		if (!parsed.success) {
+			throw coupleError(
+				"BAD_REQUEST",
+				parsed.error.issues[0]?.message ?? "invalid rule",
+			);
+		}
+		const rule = parsed.data;
+		if (this.ruleById(rule.id)) {
+			throw coupleError("CONFLICT", "a rule with that id already exists");
+		}
+		const result = validateRule(rule, {
+			eventTypes: new Map(this.eventTypes().map((t) => [t.id, t])),
+			counters: new Set(this.counterRows().map((r) => r.id)),
+			anchors: new Set(DEFAULT_ANCHORS),
+			timers: new Set(DEFAULT_TIMERS),
+		});
+		if (!result.ok) throw coupleError("BAD_REQUEST", result.error);
+		this.sql.exec(
+			`INSERT INTO rules (id, definition, enabled) VALUES (?, ?, ?)`,
+			rule.id,
+			JSON.stringify(rule),
+			rule.enabled === false ? 0 : 1,
+		);
+		return rule;
+	}
+
 	/** The couple's event-type schema set (starter seven + any custom types). */
 	async listEventTypes(identityHash: string): Promise<EventType[]> {
 		this.requireMember(identityHash);
@@ -1069,6 +1110,15 @@ export class CoupleDO extends DurableObject<Env> {
 				...(JSON.parse(row.definition) as Rule),
 				enabled: row.enabled === 1,
 			}));
+	}
+
+	private ruleById(id: string): RuleRow | undefined {
+		return this.sql
+			.exec<RuleRow>(
+				`SELECT id, definition, enabled FROM rules WHERE id = ?`,
+				id,
+			)
+			.toArray()[0];
 	}
 
 	private counterById(id: string): CounterRow | undefined {

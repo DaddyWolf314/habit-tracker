@@ -220,6 +220,13 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				stub.listRules(auth.identityHash).then((rules) => json({ rules })),
 			);
 		}
+		if (path === "/api/rules" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const body = await request.json().catch(() => null);
+				const rule = await stub.createRule(auth.identityHash, body);
+				return json(rule, 201);
+			});
+		}
 		return errorResponse("not found", 404);
 	} catch (error) {
 		const { status, message } = statusFromError(error);
