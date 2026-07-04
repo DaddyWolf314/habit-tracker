@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	applyCounterOp,
 	type EffectOp,
 	type RuleEventContext,
 	resolveEffect,
@@ -153,5 +154,32 @@ describe("routing derived duration into a counter (handoff §4.3, R16)", () => {
 			ctx("task_completed", { task_id: "t1" }),
 		);
 		expect(routeClosedTimerDuration(plainClose, 12)).toBeNull();
+	});
+});
+
+describe("applyCounterOp (shared by live apply + rebuild)", () => {
+	it("folds increment/decrement (by defaults to 1) and reset", () => {
+		expect(
+			applyCounterOp(5, {
+				kind: "counter",
+				counter: "c",
+				op: "increment",
+				by: 2,
+			}),
+		).toBe(7);
+		expect(
+			applyCounterOp(5, { kind: "counter", counter: "c", op: "increment" }),
+		).toBe(6);
+		expect(
+			applyCounterOp(5, {
+				kind: "counter",
+				counter: "c",
+				op: "decrement",
+				by: 3,
+			}),
+		).toBe(2);
+		expect(
+			applyCounterOp(5, { kind: "counter", counter: "c", op: "reset" }),
+		).toBe(0);
 	});
 });
