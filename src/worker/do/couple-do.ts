@@ -5,6 +5,12 @@ import type {
 	CounterDefinition,
 	CreateCounterInput,
 } from "#/shared/counters.ts";
+import {
+	applyCounterOp,
+	type EffectOp,
+	evaluateRules,
+	type NearMiss,
+} from "#/shared/engine.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
@@ -117,8 +123,13 @@ interface RuleRow {
  * Phase 2 adds the event log and counters: the per-couple event-type schema set
  * (starter seven), the append-only log with `counter_adjusted` direct-
  * manipulation sugar, materialized counter values (a cache rebuildable by
- * replay), and a trace row for every projection change. The general rules
- * engine, timers, and amendments still land in Phases 3–5.
+ * replay), and a trace row for every projection change.
+ *
+ * Phase 3 adds the rules engine: the R1–R18 default pack installed as a
+ * versioned template, creation-time rule validation, and the append-time
+ * evaluation that fires effects, folds counter changes into the cache, and
+ * records near-miss traces for conditional rules waiting on adjudication. Timers
+ * and amendments still land in Phases 4–5.
  */
 export class CoupleDO extends DurableObject<Env> {
 	private readonly sql: SqlStorage;
@@ -725,9 +736,15 @@ export class CoupleDO extends DurableObject<Env> {
 			event.note ?? null,
 		);
 
-		// Phase 2 "engine": only direct manipulation moves projections. The
-		// general rule pack (R1–R18) that reacts to real events lands in Phase 3.
+		// Two disjoint projection paths: `counter_*` sugar moves a counter directly;
+		// every real event is run through the rule engine (Phase 3). A pending
+		// event still fires its unconditional rules and records near-misses for the
+		// conditional ones waiting on adjudication (handoff §7).
 		this.applyDirectManipulation(event);
+		if (!isBuiltinType(event.type)) {
+			// No amendments at append time, so composite == the event's own metadata.
+			this.applyRules(event, event.metadata);
+		}
 
 		return {
 			...event,
@@ -839,35 +856,64 @@ export class CoupleDO extends DurableObject<Env> {
 	/**
 	 * Rebuilds every counter's value by replaying the log from scratch and
 	 * overwrites the cache. The materialized value is only ever a cache (handoff
-	 * §4.4); this is the proof — after a rebuild the values are identical.
+	 * §4.4); this is the proof — after a rebuild the values are identical. Both
+	 * causes of a counter move are replayed: `counter_*` direct manipulation and
+	 * rule-driven effects (Phase 3), each in append order so the fold matches live
+	 * application exactly. Amendments (Phase 5) will fold into `composite` here.
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
 		const rows = this.counterRows();
 		const values = new Map<string, number>(rows.map((r) => [r.id, 0]));
+		const rules = this.rules();
 		// Each counter's own last-event time, mirroring the incremental path;
 		// a counter with no events keeps `updated_at` null.
 		const lastAt = new Map<string, number>();
+		const bump = (counterId: string, value: number, at: number): void => {
+			if (!values.has(counterId)) return;
+			values.set(counterId, value);
+			lastAt.set(counterId, at);
+		};
 		// Replay in append order so the fold matches live application exactly.
 		for (const row of this.eventRows(undefined, "ASC")) {
-			if (row.type !== COUNTER_ADJUSTED_TYPE && row.type !== COUNTER_RESET_TYPE)
-				continue;
 			const metadata = JSON.parse(row.metadata) as Record<
 				string,
 				MetadataValue
 			>;
-			const counterId = metadata.counter;
-			if (typeof counterId !== "string" || !values.has(counterId)) continue;
-			values.set(
-				counterId,
-				applyCounterEvent(values.get(counterId) ?? 0, {
-					type: row.type,
-					logged_at: row.logged_at,
-					id: row.id,
-					metadata,
-				}),
-			);
-			lastAt.set(counterId, row.logged_at);
+			if (
+				row.type === COUNTER_ADJUSTED_TYPE ||
+				row.type === COUNTER_RESET_TYPE
+			) {
+				const counterId = metadata.counter;
+				if (typeof counterId !== "string") continue;
+				bump(
+					counterId,
+					applyCounterEvent(values.get(counterId) ?? 0, {
+						type: row.type,
+						logged_at: row.logged_at,
+						id: row.id,
+						metadata,
+					}),
+					row.logged_at,
+				);
+				continue;
+			}
+			// Real event: re-run the engine and fold its counter effects.
+			const { fired } = evaluateRules(rules, {
+				type: row.type,
+				metadata,
+				occurred_at: row.occurred_at,
+			});
+			for (const rule of fired) {
+				for (const op of rule.ops) {
+					if (op.kind !== "counter") continue;
+					bump(
+						op.counter,
+						applyCounterOp(values.get(op.counter) ?? 0, op),
+						row.logged_at,
+					);
+				}
+			}
 		}
 		for (const [id, value] of values) {
 			this.sql.exec(
@@ -963,6 +1009,123 @@ export class CoupleDO extends DurableObject<Env> {
 				from,
 				to,
 			}),
+		);
+	}
+
+	/**
+	 * Runs the rule engine over a freshly appended event (handoff §4.3, §7): the
+	 * fired rules' effects are applied and traced, and every conditional rule that
+	 * matched on type but is waiting on an unset key leaves a near-miss trace so
+	 * pending state is legible (handoff §4.6). Rules never create events, so this
+	 * only ever mutates projections — no cascades, no loops.
+	 */
+	private applyRules(
+		event: Event,
+		composite: Record<string, MetadataValue>,
+	): void {
+		const { fired, nearMisses } = evaluateRules(this.rules(), {
+			type: event.type,
+			metadata: composite,
+			occurred_at: event.occurred_at,
+		});
+		for (const rule of fired) {
+			for (const op of rule.ops) {
+				this.applyEffectOp(event, rule.rule_id, op);
+			}
+		}
+		for (const nearMiss of nearMisses) {
+			this.recordNearMiss(event, nearMiss);
+		}
+	}
+
+	/**
+	 * Applies one resolved effect op and records its trace row, attributed to the
+	 * rule that fired it. Counter ops move the materialized cache now; anchor,
+	 * timer, and notify ops are recorded so the chain shows what the rule routed,
+	 * with their projection state machines landing in Phase 4 (timers + alarms).
+	 */
+	private applyEffectOp(event: Event, ruleId: string, op: EffectOp): void {
+		switch (op.kind) {
+			case "counter": {
+				const row = this.counterById(op.counter);
+				if (!row) return; // a reference to a missing counter is inert.
+				const from = row.value;
+				const to = applyCounterOp(from, op);
+				this.sql.exec(
+					`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
+					to,
+					event.logged_at,
+					op.counter,
+				);
+				this.recordTrace(event, ruleId, `counter:${op.counter}`, {
+					verb: `${op.op}_counter`,
+					by: op.by ?? 1,
+					from,
+					to,
+				});
+				return;
+			}
+			case "anchor":
+				this.recordTrace(event, ruleId, `anchor:${op.anchor}`, {
+					verb: "reset_anchor",
+					at: op.at,
+				});
+				return;
+			case "timer":
+				this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+					verb: op.op === "open" ? "open_timer" : "close_timer",
+					match_on: op.match_on,
+					tag: op.tag,
+					status: op.status,
+					route_duration_to: op.route_duration_to,
+					// The stopwatch/countdown state machine and duration land in Phase 4.
+					deferred: true,
+				});
+				return;
+			case "notify":
+				this.recordTrace(event, ruleId, `notify:${op.target}`, {
+					verb: "notify",
+					target: op.target,
+				});
+				return;
+		}
+	}
+
+	/**
+	 * Records a near-miss (handoff §4.6): a rule that matched on type but didn't
+	 * fire because a condition key was unset or wrong. `projection` is null (it
+	 * touched nothing); `awaiting` drives the "waiting on: …" pending hint.
+	 */
+	private recordNearMiss(event: Event, nearMiss: NearMiss): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, ?, ?, NULL, ?)`,
+			event.logged_at,
+			event.id,
+			nearMiss.rule_id,
+			JSON.stringify({
+				near_miss: true,
+				reason: nearMiss.reason,
+				awaiting: nearMiss.awaiting,
+			}),
+		);
+	}
+
+	/** Inserts one rule-attributed projection trace row. */
+	private recordTrace(
+		event: Event,
+		ruleId: string,
+		projection: string,
+		detail: Record<string, unknown>,
+	): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, ?, ?, ?, ?)`,
+			event.logged_at,
+			event.id,
+			ruleId,
+			projection,
+			JSON.stringify(detail),
 		);
 	}
 

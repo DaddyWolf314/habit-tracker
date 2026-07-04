@@ -156,6 +156,25 @@ export type EffectOp =
 	  }
 	| { kind: "notify"; target: string };
 
+/** A rule-driven counter op (narrowed helper below). */
+type CounterOp = Extract<EffectOp, { kind: "counter" }>;
+
+/**
+ * Folds a rule-driven counter op onto a running value. Shared by the DO's live
+ * application and its from-scratch rebuild, so the materialized counter cache is
+ * provably a cache. `by` defaults to 1, matching the effect schema.
+ */
+export function applyCounterOp(value: number, op: CounterOp): number {
+	switch (op.op) {
+		case "increment":
+			return value + (op.by ?? 1);
+		case "decrement":
+			return value - (op.by ?? 1);
+		case "reset":
+			return 0;
+	}
+}
+
 /** Resolves one effect to its projection op given the event context. */
 export function resolveEffect(
 	effect: Rule["effects"][number],
