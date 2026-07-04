@@ -207,6 +207,29 @@ export function resolveEffect(
 }
 
 /**
+ * Routes a closed timer's *derived duration* into its target counter (handoff
+ * §4.3, R16). The duration is computed by the timer projection on close and
+ * supplied here — the rule only says where it lands, so it never computes a
+ * value. Returns null when the close has no duration target or its routing gate
+ * (e.g. `activity=service`) didn't hold for this event.
+ */
+export function routeClosedTimerDuration(
+	op: EffectOp,
+	duration: number,
+): EffectOp | null {
+	if (op.kind !== "timer" || op.op !== "close" || !op.route_duration_to) {
+		return null;
+	}
+	if (op.route_when_met === false) return null;
+	return {
+		kind: "counter",
+		counter: op.route_duration_to,
+		op: "increment",
+		by: duration,
+	};
+}
+
+/**
  * Resolves a ref match like `timer.session_id = event.session_id` (expressed as
  * `{ session_id: "session_id" }`) into concrete values pulled from the event —
  * the routing that lets a close find the matching open.
