@@ -213,6 +213,13 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((trace) => json(trace)),
 			);
 		}
+
+		// ── Phase 3: rules engine ──────────────────────────────────────────────
+		if (path === "/api/rules" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.listRules(auth.identityHash).then((rules) => json({ rules })),
+			);
+		}
 		return errorResponse("not found", 404);
 	} catch (error) {
 		const { status, message } = statusFromError(error);

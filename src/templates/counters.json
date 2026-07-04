@@ -1,0 +1,71 @@
+{
+	"version": 1,
+	"counters": [
+		{
+			"id": "rituals_completed_today",
+			"name": "Rituals completed today",
+			"valence": "positive",
+			"reset": "daily"
+		},
+		{
+			"id": "ritual_streak_days",
+			"name": "Ritual streak (days)",
+			"valence": "positive",
+			"reset": "never"
+		},
+		{
+			"id": "tasks_completed",
+			"name": "Tasks completed",
+			"valence": "positive",
+			"reset": "never"
+		},
+		{
+			"id": "demerits",
+			"name": "Demerits",
+			"valence": "negative",
+			"reset": "on_acknowledgment"
+		},
+		{
+			"id": "infractions_lifetime",
+			"name": "Infractions (lifetime)",
+			"valence": "negative",
+			"reset": "never"
+		},
+		{
+			"id": "orgasms_lifetime",
+			"name": "Orgasms (lifetime)",
+			"valence": "neutral",
+			"reset": "never"
+		},
+		{
+			"id": "orgasms_permitted",
+			"name": "Orgasms permitted",
+			"valence": "neutral",
+			"reset": "never"
+		},
+		{
+			"id": "orgasms_unpermitted",
+			"name": "Orgasms unpermitted",
+			"valence": "negative",
+			"reset": "never"
+		},
+		{
+			"id": "orgasms_denied",
+			"name": "Orgasms denied",
+			"valence": "neutral",
+			"reset": "never"
+		},
+		{
+			"id": "service_minutes_week",
+			"name": "Service minutes (week)",
+			"valence": "neutral",
+			"reset": "weekly"
+		},
+		{
+			"id": "check_ins_week",
+			"name": "Check-ins (week)",
+			"valence": "positive",
+			"reset": "weekly"
+		}
+	]
+}
