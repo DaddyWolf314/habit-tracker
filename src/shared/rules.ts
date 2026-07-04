@@ -39,13 +39,24 @@ export const effectSchema = z.discriminatedUnion("verb", [
 		verb: z.literal("open_timer"),
 		timer: z.string(),
 		match_on: matchOnSchema.optional(),
+		/** A fixed tag for the opened timer. */
 		tag: z.string().optional(),
+		/** Route an event metadata value as the tag (e.g. `activity`). Routing, not a literal. */
+		tag_from: z.string().optional(),
 	}),
 	z.object({
 		verb: z.literal("close_timer"),
 		timer: z.string(),
 		match_on: matchOnSchema.optional(),
 		status: z.enum(["completed", "failed"]),
+		/**
+		 * The counter the timer's derived duration is routed into on close (e.g.
+		 * R16 → `service_minutes_week`). The duration is computed by the timer
+		 * projection; the rule only says where it lands — it never computes a value.
+		 */
+		route_duration_to: z.string().optional(),
+		/** Optional gate on the duration routing, e.g. only when `activity=service`. */
+		route_when: z.record(z.string(), metadataValueSchema).optional(),
 	}),
 	/** v1: highlighted item in the today view (handoff R18). */
 	z.object({
