@@ -4,7 +4,12 @@ import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { TraceRow } from "#/shared/trace.ts";
-import { formatMetaValue, formatTime, memberLabel } from "./formatting.ts";
+import {
+	describeTraceRow,
+	formatMetaValue,
+	formatTime,
+	memberLabel,
+} from "./formatting.ts";
 
 /**
  * The event stream (handoff §4.6, §9 surface 3): the append-only log in reverse
@@ -128,7 +133,7 @@ function EventRow({
 			{open && (
 				<div className="mt-2 rounded-md border bg-muted/40 p-3">
 					<p className="text-xs font-medium text-muted-foreground">
-						Projections touched
+						Effects &amp; near-misses
 					</p>
 					<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
 						{error && (
@@ -136,16 +141,17 @@ function EventRow({
 						)}
 						{!error && trace === null && <li>Loading…</li>}
 						{trace?.length === 0 && (
-							<li>No projections — this event fired no effects.</li>
+							<li>No effects — this event touched no projections.</li>
 						)}
 						{trace?.map((row) => {
-							const detail = row.detail ? JSON.parse(row.detail) : {};
+							const line = describeTraceRow(row);
 							return (
-								<li key={row.id}>
-									{row.projection}:{" "}
-									{detail.verb === "reset_counter"
-										? "reset → 0"
-										: `${detail.from} → ${detail.to}`}
+								<li
+									key={row.id}
+									className={line.nearMiss ? "italic opacity-70" : undefined}
+								>
+									{line.nearMiss ? "○ " : "• "}
+									{line.text}
 								</li>
 							);
 						})}
