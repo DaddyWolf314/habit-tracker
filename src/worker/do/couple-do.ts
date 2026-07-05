@@ -1,5 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { ulid } from "#/lib/ulid.ts";
+import {
+	type AnchorView,
+	anchorElapsedDays,
+	anchorElapsedMs,
+	resetAnchor,
+} from "#/shared/anchors.ts";
 import type {
 	Counter,
 	CounterDefinition,
@@ -126,6 +132,14 @@ interface RuleRow {
 	id: string;
 	definition: string;
 	enabled: number;
+	[key: string]: SqlStorageValue;
+}
+
+/** A row in the `anchors` table: one elapsed-since anchor's reset timestamp. */
+interface AnchorRow {
+	id: string;
+	/** The last reset's `occurred_at`; null until a rule first resets the anchor. */
+	since: number | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -630,6 +644,15 @@ export class CoupleDO extends DurableObject<Env> {
 				rule.enabled === false ? 0 : 1,
 			);
 		}
+		// Anchors are pure state (an id + reset timestamp); seed each unset, and on a
+		// version bump leave an existing anchor's `since` untouched — only the anchor
+		// *set* is policy, and its live timestamp is a projection to preserve.
+		for (const anchor of DEFAULT_ANCHORS) {
+			this.sql.exec(
+				`INSERT INTO anchors (id, since) VALUES (?, NULL) ON CONFLICT(id) DO NOTHING`,
+				anchor,
+			);
+		}
 		this.setSetting("rule_pack_version", String(RULE_PACK_VERSION));
 	}
 
@@ -961,6 +984,10 @@ export class CoupleDO extends DurableObject<Env> {
 		this.sql.exec(
 			`UPDATE timers SET status = NULL, closed_at = NULL WHERE kind = 'countdown'`,
 		);
+		// Anchors are event-derived (reset by R7/R11/R12/R17), so clear them and let
+		// replay re-fold each reset. `resetAnchor` is commutative, so the rebuilt
+		// value is independent of replay order.
+		this.sql.exec(`UPDATE anchors SET since = NULL`);
 		this.sql.exec(`DELETE FROM trace`);
 		const awaitingByType = new Map(
 			this.eventTypes().map((t) => [t.id, t.awaiting]),
@@ -1122,12 +1149,28 @@ export class CoupleDO extends DurableObject<Env> {
 				});
 				return;
 			}
-			case "anchor":
+			case "anchor": {
+				// Fold the reset into the anchor's `since` (handoff §4.2 — anchored to
+				// the event's occurred_at, carried on `op.at`, not the log time). A
+				// missing anchor row is inert, mirroring the counter path. `resetAnchor`
+				// keeps the later timestamp so a backdated amendment can't drag it back.
+				const row = this.anchorById(op.anchor);
+				if (!row) return;
+				const from = row.since;
+				const to = resetAnchor(from, op.at);
+				this.sql.exec(
+					`UPDATE anchors SET since = ? WHERE id = ?`,
+					to,
+					op.anchor,
+				);
 				this.recordTrace(event, ruleId, `anchor:${op.anchor}`, {
 					verb: "reset_anchor",
 					at: op.at,
+					from,
+					to,
 				});
 				return;
+			}
 			case "timer":
 				if (op.op === "open") {
 					this.openTimer(event, ruleId, op);
@@ -1628,6 +1671,40 @@ export class CoupleDO extends DurableObject<Env> {
 			paused_at: state.paused_at ?? null,
 			remaining_ms: state.remaining_ms ?? null,
 		};
+	}
+
+	// ── Elapsed-since anchors (handoff §4.5, #31) ─────────────────────────────
+
+	/**
+	 * The couple's anchors as live views for the today screen (handoff §4.5). Each
+	 * carries its `since` timestamp plus a read-time elapsed snapshot; the client
+	 * ticks the "days since" display forward against `since` between reads. Resets
+	 * are event-driven (R7/R11/R12/R17), so this is a pure read.
+	 */
+	async listAnchors(identityHash: string): Promise<AnchorView[]> {
+		this.requireMember(identityHash);
+		const now = Date.now();
+		return this.anchorRows().map((row) => {
+			const elapsed_ms = anchorElapsedMs(row.since, now);
+			return {
+				anchor: row.id,
+				since: row.since,
+				elapsed_ms,
+				elapsed_days: anchorElapsedDays(elapsed_ms),
+			};
+		});
+	}
+
+	private anchorRows(): AnchorRow[] {
+		return this.sql
+			.exec<AnchorRow>(`SELECT id, since FROM anchors ORDER BY id ASC`)
+			.toArray();
+	}
+
+	private anchorById(id: string): AnchorRow | undefined {
+		return this.sql
+			.exec<AnchorRow>(`SELECT id, since FROM anchors WHERE id = ?`, id)
+			.toArray()[0];
 	}
 
 	/**
