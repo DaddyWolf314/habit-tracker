@@ -7,7 +7,7 @@ import {
 	STARTER_EVENT_TYPES,
 } from "#/templates/index.ts";
 import { type RuleValidationContext, validateRule } from "./rule-validation.ts";
-import type { Rule } from "./rules.ts";
+import { type Rule, ruleSchema } from "./rules.ts";
 
 const ctx: RuleValidationContext = {
 	eventTypes: new Map(STARTER_EVENT_TYPES.map((t) => [t.id, t])),
@@ -100,6 +100,15 @@ describe("rule creation-time validation (handoff §4.3)", () => {
 		expect(result.ok).toBe(false);
 		if (result.ok) throw new Error("unreachable");
 		expect(result.error).toContain("phantom_counter");
+	});
+
+	it("rejects a fractional counter `by` at the schema layer (createRule parses first)", () => {
+		const parsed = ruleSchema.safeParse({
+			id: "X",
+			condition: { type: "orgasm", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "demerits", by: 0.5 }],
+		});
+		expect(parsed.success).toBe(false);
 	});
 
 	it("accepts a valid custom rule that installs cleanly", () => {

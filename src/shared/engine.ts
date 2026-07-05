@@ -23,6 +23,14 @@ export interface RuleEventContext {
 	metadata: Record<string, MetadataValue>;
 	/** Time-anchored effects (anchor resets) use `occurred_at`, not the log time. */
 	occurred_at: number;
+	/**
+	 * The event type's `awaiting` keys (handoff §5). When provided, only near-
+	 * misses that are *pending* on one of these keys are surfaced — a rule waiting
+	 * on `permitted` is genuine pending-adjudication signal ("R11/R12 waiting on:
+	 * permitted"), whereas one waiting on an optional key like `late`, or one that
+	 * simply saw a wrong value, is noise. Omit to surface every near-miss.
+	 */
+	awaiting?: string[];
 }
 
 /**
@@ -115,7 +123,7 @@ export function evaluateRules(
 				rule_id: rule.id,
 				ops: rule.effects.map((effect) => resolveEffect(effect, ctx)),
 			});
-		} else if (result.status === "near_miss") {
+		} else if (result.status === "near_miss" && isPending(result, ctx)) {
 			nearMisses.push({
 				rule_id: rule.id,
 				reason: result.reason,
@@ -124,6 +132,20 @@ export function evaluateRules(
 		}
 	}
 	return { fired, nearMisses };
+}
+
+/**
+ * Whether a near-miss is worth surfacing: it is *pending* on a key the event
+ * type is awaiting adjudication for. With no `awaiting` context, every near-miss
+ * is surfaced (used by the pure pack tests). This is what keeps routine events —
+ * a non-late ritual, a set-but-wrong value — from burying the trace in noise.
+ */
+function isPending(
+	nearMiss: { awaiting: string[] },
+	ctx: RuleEventContext,
+): boolean {
+	if (ctx.awaiting === undefined) return true;
+	return nearMiss.awaiting.some((key) => ctx.awaiting?.includes(key));
 }
 
 // ── Effect resolution (handoff §4.3 — "rules route values, never compute them")
@@ -252,6 +274,12 @@ export function routeClosedTimerDuration(
  * Resolves a ref match like `timer.session_id = event.session_id` (expressed as
  * `{ session_id: "session_id" }`) into concrete values pulled from the event —
  * the routing that lets a close find the matching open.
+ *
+ * A referenced key that is unset on the event is left out of the resolved match,
+ * so an incomplete match resolves to *fewer* constraints, never the intended
+ * ones. The Phase 4 timer matcher that consumes this must treat a match that
+ * fails to pin a required key as "no matching timer → trace note" (handoff §4.5,
+ * "ended with no matching started → reject"), NOT as "match any/all open timers".
  */
 function resolveMatchOn(
 	matchOn: Record<string, string> | undefined,
