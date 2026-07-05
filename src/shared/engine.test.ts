@@ -140,6 +140,34 @@ describe("evaluateRules", () => {
 		// R1 (ritual) is irrelevant to an orgasm event — absent from both lists.
 	});
 
+	it("with awaiting context, surfaces only near-misses pending on an awaiting key", () => {
+		// orgasm awaits `permitted`; R11/R12 wait on it, so both surface. A near-miss
+		// on a non-awaiting key (or a wrong value) would be noise and is dropped.
+		const noisy = [
+			...rules,
+			rule({
+				id: "RN",
+				condition: { type: "orgasm", metadata: { outcome: "ruined" } },
+			}),
+		];
+		const { nearMisses } = evaluateRules(noisy, {
+			type: "orgasm",
+			metadata: { outcome: "full" },
+			occurred_at: 1,
+			awaiting: ["permitted"],
+		});
+		// RN is a wrong-value miss on `outcome` (set, not awaiting) — dropped.
+		expect(nearMisses.map((n) => n.rule_id).sort()).toEqual(["R11", "R12"]);
+	});
+
+	it("without awaiting context, surfaces every near-miss (pure evaluation)", () => {
+		const { nearMisses } = evaluateRules(
+			rules,
+			ctx("orgasm", { outcome: "full" }),
+		);
+		expect(nearMisses.map((n) => n.rule_id).sort()).toEqual(["R11", "R12"]);
+	});
+
 	it("disabled rules never fire and are not evaluated", () => {
 		const withDisabled = [
 			...rules,

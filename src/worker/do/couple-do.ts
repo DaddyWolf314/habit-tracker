@@ -555,17 +555,24 @@ export class CoupleDO extends DurableObject<Env> {
 	private ensureRulePackSeeded(): void {
 		const seeded = Number(this.getSetting("rule_pack_version") ?? "0");
 		if (seeded >= RULE_PACK_VERSION) return;
+		// Upsert the *definition* on a version bump so a corrected default rule or
+		// counter actually reaches already-seeded couples — INSERT OR IGNORE would
+		// leave the stale body while advancing the version, silently stranding the
+		// fix. A counter's live value/updated_at is preserved (only policy changes),
+		// and a rule's `enabled` is preserved so a couple's toggle survives a bump.
 		for (const counter of DEFAULT_COUNTERS) {
 			this.sql.exec(
-				`INSERT OR IGNORE INTO counters (id, definition, value, updated_at)
-					VALUES (?, ?, 0, NULL)`,
+				`INSERT INTO counters (id, definition, value, updated_at)
+					VALUES (?, ?, 0, NULL)
+					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
 				counter.id,
 				JSON.stringify(counter),
 			);
 		}
 		for (const rule of DEFAULT_RULES) {
 			this.sql.exec(
-				`INSERT OR IGNORE INTO rules (id, definition, enabled) VALUES (?, ?, ?)`,
+				`INSERT INTO rules (id, definition, enabled) VALUES (?, ?, ?)
+					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
 				rule.id,
 				JSON.stringify(rule),
 				rule.enabled === false ? 0 : 1,
@@ -598,8 +605,26 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 		const rule = parsed.data;
+		// The default pack owns the `R<n>` id namespace; a custom rule may not squat
+		// an id a future pack version could ship (its reseed would then silently skip
+		// the shipped rule, diverging this couple from every other).
+		if (/^R\d+$/i.test(rule.id)) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"the R# id namespace is reserved for the default pack",
+			);
+		}
 		if (this.ruleById(rule.id)) {
 			throw coupleError("CONFLICT", "a rule with that id already exists");
+		}
+		// Conditioning on the internal `counter_*` sugar is a silent no-op: those
+		// events move counters via direct manipulation and never reach the engine,
+		// so reject it at creation rather than accept a rule that can never fire.
+		if (isReservedTypeId(rule.condition.type)) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"rules cannot condition on the reserved counter_ types",
+			);
 		}
 		const result = validateRule(rule, {
 			eventTypes: new Map(this.eventTypes().map((t) => [t.id, t])),
@@ -743,7 +768,7 @@ export class CoupleDO extends DurableObject<Env> {
 		this.applyDirectManipulation(event);
 		if (!isBuiltinType(event.type)) {
 			// No amendments at append time, so composite == the event's own metadata.
-			this.applyRules(event, event.metadata);
+			this.applyRules(event, event.metadata, type.awaiting);
 		}
 
 		return {
@@ -854,74 +879,38 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Rebuilds every counter's value by replaying the log from scratch and
-	 * overwrites the cache. The materialized value is only ever a cache (handoff
-	 * §4.4); this is the proof — after a rebuild the values are identical. Both
-	 * causes of a counter move are replayed: `counter_*` direct manipulation and
-	 * rule-driven effects (Phase 3), each in append order so the fold matches live
-	 * application exactly. Amendments (Phase 5) will fold into `composite` here.
+	 * Rebuilds the derived state from the immutable log: zeroes every counter,
+	 * clears the trace, then replays every event in append order through the *same*
+	 * apply-path used live (`applyDirectManipulation` + `applyRules`). Because it
+	 * reuses the live code, the rebuilt values and trace match live application by
+	 * construction — the proof that the materialized value is only ever a cache
+	 * (handoff §4.4) and that every change has a recorded cause (handoff §4.6).
+	 *
+	 * Semantics: the replay uses the *current* rule set (rules aren't effective-
+	 * dated yet), so after a rule is added or edited a rebuild re-derives history
+	 * under today's rules and may differ from the incrementally-maintained cache,
+	 * which only ever saw the rules in force at each append. That's the intended
+	 * meaning of rebuild here; proper per-event rule versioning is a later phase.
+	 * Amendments (Phase 5) will fold into the replayed composite metadata.
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
-		const rows = this.counterRows();
-		const values = new Map<string, number>(rows.map((r) => [r.id, 0]));
-		const rules = this.rules();
-		// Each counter's own last-event time, mirroring the incremental path;
-		// a counter with no events keeps `updated_at` null.
-		const lastAt = new Map<string, number>();
-		const bump = (counterId: string, value: number, at: number): void => {
-			if (!values.has(counterId)) return;
-			values.set(counterId, value);
-			lastAt.set(counterId, at);
-		};
-		// Replay in append order so the fold matches live application exactly.
+		// Reset both caches; they are rebuilt below purely from the event log.
+		this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
+		this.sql.exec(`DELETE FROM trace`);
+		const awaitingByType = new Map(
+			this.eventTypes().map((t) => [t.id, t.awaiting]),
+		);
 		for (const row of this.eventRows(undefined, "ASC")) {
-			const metadata = JSON.parse(row.metadata) as Record<
-				string,
-				MetadataValue
-			>;
-			if (
-				row.type === COUNTER_ADJUSTED_TYPE ||
-				row.type === COUNTER_RESET_TYPE
-			) {
-				const counterId = metadata.counter;
-				if (typeof counterId !== "string") continue;
-				bump(
-					counterId,
-					applyCounterEvent(values.get(counterId) ?? 0, {
-						type: row.type,
-						logged_at: row.logged_at,
-						id: row.id,
-						metadata,
-					}),
-					row.logged_at,
+			const event = this.rowToEvent(row);
+			this.applyDirectManipulation(event);
+			if (!isBuiltinType(event.type)) {
+				this.applyRules(
+					event,
+					event.metadata,
+					awaitingByType.get(event.type) ?? [],
 				);
-				continue;
 			}
-			// Real event: re-run the engine and fold its counter effects.
-			const { fired } = evaluateRules(rules, {
-				type: row.type,
-				metadata,
-				occurred_at: row.occurred_at,
-			});
-			for (const rule of fired) {
-				for (const op of rule.ops) {
-					if (op.kind !== "counter") continue;
-					bump(
-						op.counter,
-						applyCounterOp(values.get(op.counter) ?? 0, op),
-						row.logged_at,
-					);
-				}
-			}
-		}
-		for (const [id, value] of values) {
-			this.sql.exec(
-				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
-				value,
-				lastAt.get(id) ?? null,
-				id,
-			);
 		}
 		return this.counterRows().map((r) => this.rowToCounter(r));
 	}
@@ -1013,20 +1002,24 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Runs the rule engine over a freshly appended event (handoff §4.3, §7): the
-	 * fired rules' effects are applied and traced, and every conditional rule that
-	 * matched on type but is waiting on an unset key leaves a near-miss trace so
-	 * pending state is legible (handoff §4.6). Rules never create events, so this
+	 * Runs the rule engine over an event (handoff §4.3, §7): the fired rules'
+	 * effects are applied and traced, and every conditional rule waiting on one of
+	 * the type's `awaiting` keys leaves a near-miss trace so pending state is
+	 * legible (handoff §4.6). Passing `awaiting` keeps routine events (a non-late
+	 * ritual, a set-but-wrong value) from filling the trace with noise. Shared by
+	 * the append path and `rebuildCounters`; rules never create events, so this
 	 * only ever mutates projections — no cascades, no loops.
 	 */
 	private applyRules(
 		event: Event,
 		composite: Record<string, MetadataValue>,
+		awaiting: string[],
 	): void {
 		const { fired, nearMisses } = evaluateRules(this.rules(), {
 			type: event.type,
 			metadata: composite,
 			occurred_at: event.occurred_at,
+			awaiting,
 		});
 		for (const rule of fired) {
 			for (const op of rule.ops) {

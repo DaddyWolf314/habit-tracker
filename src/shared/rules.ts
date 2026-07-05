@@ -26,12 +26,14 @@ export const effectSchema = z.discriminatedUnion("verb", [
 	z.object({
 		verb: z.literal("increment_counter"),
 		counter: z.string(),
-		by: z.number().default(1),
+		// Integer only — counter values are integers (counterSchema.value.int()); a
+		// fractional `by` would drive the cache non-integer and break reads/export.
+		by: z.number().int().default(1),
 	}),
 	z.object({
 		verb: z.literal("decrement_counter"),
 		counter: z.string(),
-		by: z.number().default(1),
+		by: z.number().int().default(1),
 	}),
 	z.object({ verb: z.literal("reset_counter"), counter: z.string() }),
 	z.object({ verb: z.literal("reset_anchor"), anchor: z.string() }),

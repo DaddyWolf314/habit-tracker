@@ -133,7 +133,7 @@ function EventRow({
 			{open && (
 				<div className="mt-2 rounded-md border bg-muted/40 p-3">
 					<p className="text-xs font-medium text-muted-foreground">
-						Rules fired &amp; near-misses
+						Effects &amp; near-misses
 					</p>
 					<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
 						{error && (
@@ -141,7 +141,7 @@ function EventRow({
 						)}
 						{!error && trace === null && <li>Loading…</li>}
 						{trace?.length === 0 && (
-							<li>No rules fired — this event touched no projections.</li>
+							<li>No effects — this event touched no projections.</li>
 						)}
 						{trace?.map((row) => {
 							const line = describeTraceRow(row);
