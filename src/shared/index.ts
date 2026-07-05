@@ -4,6 +4,7 @@
  */
 
 export * from "./amendments.ts";
+export * from "./anchors.ts";
 export * from "./counters.ts";
 export * from "./engine.ts";
 export * from "./event-types.ts";

@@ -117,6 +117,16 @@ export const DO_MIGRATIONS: string[][] = [
 			detail TEXT
 		)`,
 	],
+	// v4 — Phase 4 #31: elapsed-since anchors. A materialized projection (a cache
+	// rebuildable by replay), each anchor is a single `since` reset timestamp;
+	// null until a rule effect first resets it. The live "days since" display is
+	// derived from `since` on read/tick.
+	[
+		`CREATE TABLE IF NOT EXISTS anchors (
+			id TEXT PRIMARY KEY,
+			since INTEGER
+		)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";
