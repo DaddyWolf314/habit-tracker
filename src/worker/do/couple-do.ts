@@ -10,6 +10,7 @@ import {
 	type EffectOp,
 	evaluateRules,
 	type NearMiss,
+	routeClosedTimerDuration,
 } from "#/shared/engine.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
@@ -33,6 +34,17 @@ import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
+import {
+	closeStopwatch,
+	DEFAULT_STOPWATCH_MAX_MS,
+	durationMinutes,
+	matchStopwatch,
+	type OpenStopwatch,
+	STOPWATCH_MAX_MS_BY_ACTIVITY,
+	stopwatchDurationMs,
+	stopwatchesToAutoClose,
+	type TimerView,
+} from "#/shared/timers.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import {
 	COUNTER_ADJUSTED_TYPE,
@@ -109,6 +121,39 @@ interface RuleRow {
 	enabled: number;
 	[key: string]: SqlStorageValue;
 }
+
+/** A row in the `timers` table: one in-flight or closed timer instance. */
+interface TimerRow {
+	id: string;
+	kind: string;
+	/** The timer definition name, e.g. `session_stopwatch`. */
+	definition: string;
+	/** JSON `TimerState` — the match keys, tag, and derived/countdown fields. */
+	state: string;
+	status: string | null;
+	opened_at: number | null;
+	closed_at: number | null;
+	[key: string]: SqlStorageValue;
+}
+
+/** The per-instance timer state carried in `TimerRow.state` (JSON). */
+interface TimerState {
+	/** The ref match the opening event pinned, e.g. `{ session_id: "s1" }`. */
+	match?: Record<string, MetadataValue>;
+	/** The opening `activity`, driving the per-activity max and duration routing. */
+	tag?: string;
+	/** Derived duration, set on close. */
+	duration_ms?: number;
+	/** Countdown deadline (#30). */
+	deadline_at?: number;
+	/** When a countdown was paused (#30); null/absent while running. */
+	paused_at?: number;
+	/** Remaining time captured at pause (#30). */
+	remaining_ms?: number;
+}
+
+/** The resolved timer effect op (open/close) produced by the rule engine. */
+type TimerOp = Extract<EffectOp, { kind: "timer" }>;
 
 /**
  * CoupleDO — one SQLite-backed Durable Object per couple (handoff §3.2). It owns
@@ -895,8 +940,12 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
-		// Reset both caches; they are rebuilt below purely from the event log.
+		// Reset every projection cache; all are rebuilt below purely from the log.
+		// Timers are torn down too (the rule engine reopens/closes them on replay),
+		// keeping them an honest cache — an over-max auto-close is re-derived by the
+		// next sweep rather than replayed (it is a system job, not a logged event).
 		this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
+		this.sql.exec(`DELETE FROM timers`);
 		this.sql.exec(`DELETE FROM trace`);
 		const awaitingByType = new Map(
 			this.eventTypes().map((t) => [t.id, t.awaiting]),
@@ -1065,15 +1114,11 @@ export class CoupleDO extends DurableObject<Env> {
 				});
 				return;
 			case "timer":
-				this.recordTrace(event, ruleId, `timer:${op.timer}`, {
-					verb: op.op === "open" ? "open_timer" : "close_timer",
-					match_on: op.match_on,
-					tag: op.tag,
-					status: op.status,
-					route_duration_to: op.route_duration_to,
-					// The stopwatch/countdown state machine and duration land in Phase 4.
-					deferred: true,
-				});
+				if (op.op === "open") {
+					this.openTimer(event, ruleId, op);
+				} else {
+					this.closeTimer(event, ruleId, op);
+				}
 				return;
 			case "notify":
 				this.recordTrace(event, ruleId, `notify:${op.target}`, {
@@ -1120,6 +1165,214 @@ export class CoupleDO extends DurableObject<Env> {
 			projection,
 			JSON.stringify(detail),
 		);
+	}
+
+	// ── Timers (handoff §4.5) ────────────────────────────────────────────────
+
+	/**
+	 * All timers, newest first, as live views for the today screen. The over-max
+	 * stopwatch sweep runs first so a session left running past its per-activity
+	 * max reads as auto-closed even on a couple that has been dormant — the alarm
+	 * (#32) makes this precise, but a read never shows a stale over-max as running.
+	 */
+	async listTimers(identityHash: string): Promise<TimerView[]> {
+		this.requireMember(identityHash);
+		this.sweepOverMaxStopwatches(Date.now());
+		return this.timerRows().map((row) => this.rowToTimerView(row));
+	}
+
+	/**
+	 * Opens a stopwatch (handoff §4.5, R15): records the in-flight instance keyed by
+	 * the opening event's ref match (e.g. `session_id`), tagged with its `activity`.
+	 * `opened_at` is the event's `occurred_at` so a backfilled session measures the
+	 * real elapsed span, not the log time.
+	 */
+	private openTimer(event: Event, ruleId: string, op: TimerOp): void {
+		const id = ulid(event.logged_at);
+		const state: TimerState = { match: op.match_on ?? {}, tag: op.tag };
+		this.sql.exec(
+			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
+				VALUES (?, 'stopwatch', ?, ?, NULL, ?, NULL)`,
+			id,
+			op.timer,
+			JSON.stringify(state),
+			event.occurred_at,
+		);
+		this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+			verb: "open_timer",
+			timer_id: id,
+			match_on: op.match_on,
+			tag: op.tag,
+		});
+	}
+
+	/**
+	 * Closes a timer (handoff §4.5, R16/R4/R14): finds the open instance by the
+	 * close event's resolved ref match, derives its duration, and — when the close
+	 * routes a duration into a counter (R16 → `service_minutes_week`) — folds that
+	 * in via the shared counter path. A close with no matching open is an orphan
+	 * (`session_ended` with no `session_started`): rejected with a trace note, never
+	 * a wildcard that would close an unrelated session.
+	 */
+	private closeTimer(event: Event, ruleId: string, op: TimerOp): void {
+		const target = this.matchOpenTimer(
+			this.openTimerRows(op.timer),
+			op.match_on,
+		);
+		if (!target) {
+			this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+				verb: "close_timer",
+				matched: false,
+				match_on: op.match_on,
+				note: "no matching open timer",
+			});
+			return;
+		}
+		const closedAt = event.occurred_at;
+		const durationMs = stopwatchDurationMs(
+			target.opened_at ?? closedAt,
+			closedAt,
+		);
+		const state = this.timerState(target);
+		state.duration_ms = durationMs;
+		this.sql.exec(
+			`UPDATE timers SET status = ?, closed_at = ?, state = ? WHERE id = ?`,
+			op.status ?? "completed",
+			closedAt,
+			JSON.stringify(state),
+			target.id,
+		);
+		this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+			verb: "close_timer",
+			matched: true,
+			timer_id: target.id,
+			status: op.status,
+			duration_ms: durationMs,
+			route_duration_to: op.route_duration_to,
+		});
+		// The rule routes the derived duration; the timer computed it (handoff §4.3).
+		const routed = routeClosedTimerDuration(op, durationMinutes(durationMs));
+		if (routed) this.applyEffectOp(event, ruleId, routed);
+	}
+
+	/**
+	 * Resolves which open timer a close targets. An undefined match is a singleton
+	 * close (R14's `denial_period`, no ref): the oldest open of that definition, or
+	 * none. A defined match (even empty) must pin its keys — an empty match is a
+	 * close whose ref key was unset, which is an orphan, not a wildcard.
+	 */
+	private matchOpenTimer(
+		rows: TimerRow[],
+		matchOn: Record<string, MetadataValue> | undefined,
+	): TimerRow | undefined {
+		if (matchOn === undefined) return rows[0];
+		const matched = matchStopwatch(
+			rows.map((r) => this.rowToOpenStopwatch(r)),
+			matchOn,
+		);
+		return matched ? rows.find((r) => r.id === matched.id) : undefined;
+	}
+
+	/**
+	 * Auto-closes any stopwatch that has run past its per-activity max (handoff
+	 * §4.5), flagged for review, attributed to the `system_job` in the trace. Idempotent
+	 * and cheap on a dormant couple (a single indexed read). Returns the count closed.
+	 */
+	private sweepOverMaxStopwatches(now: number): number {
+		const rows = this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE kind = 'stopwatch' AND status IS NULL`,
+			)
+			.toArray();
+		const due = stopwatchesToAutoClose(
+			rows.map((r) => this.rowToOpenStopwatch(r)),
+			now,
+			STOPWATCH_MAX_MS_BY_ACTIVITY,
+			DEFAULT_STOPWATCH_MAX_MS,
+		);
+		let closed = 0;
+		for (const inst of due) {
+			const closedSw = closeStopwatch(inst, now, { auto: true });
+			const row = rows.find((r) => r.id === inst.id);
+			if (!row) continue;
+			const state = this.timerState(row);
+			state.duration_ms = closedSw.duration_ms;
+			this.sql.exec(
+				`UPDATE timers SET status = 'auto_closed', closed_at = ?, state = ? WHERE id = ?`,
+				now,
+				JSON.stringify(state),
+				row.id,
+			);
+			this.sql.exec(
+				`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+					VALUES (?, NULL, 'system_job', ?, ?)`,
+				now,
+				`timer:${row.definition}`,
+				JSON.stringify({
+					verb: "auto_close_timer",
+					reason: "over_max",
+					flagged_for_review: true,
+					timer_id: row.id,
+					duration_ms: closedSw.duration_ms,
+				}),
+			);
+			closed++;
+		}
+		return closed;
+	}
+
+	private openTimerRows(definition: string): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE definition = ? AND status IS NULL
+					ORDER BY opened_at ASC, id ASC`,
+				definition,
+			)
+			.toArray();
+	}
+
+	private timerRows(): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers ORDER BY opened_at DESC, id DESC`,
+			)
+			.toArray();
+	}
+
+	private timerState(row: TimerRow): TimerState {
+		return JSON.parse(row.state) as TimerState;
+	}
+
+	private rowToOpenStopwatch(row: TimerRow): OpenStopwatch {
+		const state = this.timerState(row);
+		return {
+			id: row.id,
+			timer: row.definition,
+			match: state.match ?? {},
+			opened_at: row.opened_at ?? 0,
+			tag: state.tag,
+		};
+	}
+
+	private rowToTimerView(row: TimerRow): TimerView {
+		const state = this.timerState(row);
+		return {
+			id: row.id,
+			kind: row.kind as TimerView["kind"],
+			timer: row.definition,
+			tag: state.tag ?? null,
+			match: state.match ?? {},
+			opened_at: row.opened_at,
+			closed_at: row.closed_at,
+			status: row.status,
+			duration_ms: state.duration_ms ?? null,
+			deadline_at: state.deadline_at ?? null,
+			paused_at: state.paused_at ?? null,
+			remaining_ms: state.remaining_ms ?? null,
+		};
 	}
 
 	/**
