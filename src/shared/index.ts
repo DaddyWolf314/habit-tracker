@@ -14,6 +14,7 @@ export * from "./projections.ts";
 export * from "./roles.ts";
 export * from "./rule-validation.ts";
 export * from "./rules.ts";
+export * from "./scheduler.ts";
 export * from "./timers.ts";
 export * from "./trace.ts";
 export * from "./ws.ts";
