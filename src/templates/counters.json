@@ -1,17 +1,19 @@
 {
-	"version": 1,
+	"version": 2,
 	"counters": [
 		{
 			"id": "rituals_completed_today",
 			"name": "Rituals completed today",
 			"valence": "positive",
+			"daily_target": 1,
 			"reset": "daily"
 		},
 		{
 			"id": "ritual_streak_days",
 			"name": "Ritual streak (days)",
 			"valence": "positive",
-			"reset": "never"
+			"reset": "never",
+			"streak": { "counter": "rituals_completed_today", "period": "daily" }
 		},
 		{
 			"id": "tasks_completed",

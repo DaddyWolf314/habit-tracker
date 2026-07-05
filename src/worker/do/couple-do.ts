@@ -42,6 +42,14 @@ import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
 import { catchUpFireAt, dueItems, earliestFireAt } from "#/shared/scheduler.ts";
 import {
+	DAY_MS,
+	nextDailyRollover,
+	nextStreak,
+	nextWeeklyRollover,
+	targetMet,
+	WEEK_MS,
+} from "#/shared/streaks.ts";
+import {
 	assignCountdownInputSchema,
 	type Countdown,
 	closeStopwatch,
@@ -231,6 +239,10 @@ export class CoupleDO extends DurableObject<Env> {
 			runMigrations(this.sql);
 			this.ensureSeeded();
 			this.ensureRulePackSeeded();
+			// Backfill the rollover schedule for couples active before #33 shipped,
+			// and re-arm the single alarm on every wake so it survives eviction.
+			this.ensureRolloverScheduled();
+			this.armAlarm();
 		});
 	}
 
@@ -405,6 +417,9 @@ export class CoupleDO extends DurableObject<Env> {
 			Date.now(),
 			JSON.stringify({ assignment }),
 		);
+		// The dynamic is live: start the day/week rollover schedule and arm the alarm.
+		this.ensureRolloverScheduled();
+		this.armAlarm();
 	}
 
 	private roleState(identityHash: string): RoleConfirmationState {
@@ -1000,7 +1015,23 @@ export class CoupleDO extends DurableObject<Env> {
 		// rebuild. Only their event-driven close is re-derived, so reset each to
 		// running and let replay re-close via R4/R14; `expired` is re-derived by the
 		// countdown sweep, mirroring the stopwatch auto-close.
-		this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
+		// Zero the event-derived counters, but preserve streak counters: their value
+		// is folded by the alarm at rollover ("target met? +1 : 0"), not by any
+		// logged event, so replay cannot re-derive it — like a timer auto-close, it
+		// is system-job state carried across the rebuild and advanced by the next
+		// rollover, not reconstructed here.
+		const streakIds = new Set(
+			this.counterDefinitions()
+				.filter((def) => def.streak)
+				.map((def) => def.id),
+		);
+		for (const row of this.counterRows()) {
+			if (streakIds.has(row.id)) continue;
+			this.sql.exec(
+				`UPDATE counters SET value = 0, updated_at = NULL WHERE id = ?`,
+				row.id,
+			);
+		}
 		this.sql.exec(`DELETE FROM timers WHERE kind = 'stopwatch'`);
 		this.sql.exec(
 			`UPDATE timers SET status = NULL, closed_at = NULL WHERE kind = 'countdown'`,
@@ -2071,12 +2102,126 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Runs one due schedule job. The concrete jobs — daily/weekly counter resets and
-	 * streak rollover — arrive with #33; until then an unknown kind is a no-op, so a
-	 * scheduled item still reschedules and the alarm mechanism is exercised on its own.
+	 * Runs one due schedule job (handoff §3.2). The rollover jobs evaluate streaks
+	 * and clear scheduled counters; an unknown kind is an inert no-op so a stale or
+	 * future job type never throws mid-drain.
 	 */
-	private runScheduledJob(_item: ScheduleRow, _now: number): void {
-		// #33 dispatches on `_item.kind` (counter_reset, streak_eval) here.
+	private runScheduledJob(item: ScheduleRow, now: number): void {
+		switch (item.kind) {
+			case "daily_rollover":
+				this.runRollover("daily", now);
+				return;
+			case "weekly_rollover":
+				this.runRollover("weekly", now);
+				return;
+		}
+	}
+
+	/**
+	 * A day/week rollover (handoff §4.4, §3.2). Streaks first, *then* resets: each
+	 * streak counter reads its target-counter's end-of-period value to fold
+	 * `target met? +1 : 0`, so the reset that clears that target must come after.
+	 * Every outcome is written to the trace as a `system_job` (no causing event),
+	 * making the rollover legible in the same transparency log as rule effects.
+	 */
+	private runRollover(period: "daily" | "weekly", now: number): void {
+		const defs = this.counterDefinitions();
+		for (const def of defs) {
+			const streak = def.streak;
+			if (!streak || streak.period !== period) continue;
+			const streakRow = this.counterById(def.id);
+			const targetRow = this.counterById(streak.counter);
+			const targetDef = defs.find((d) => d.id === streak.counter);
+			if (!streakRow || !targetRow || !targetDef) continue;
+			const target =
+				period === "daily" ? targetDef.daily_target : targetDef.weekly_target;
+			const met = targetMet(targetRow.value, target);
+			const from = streakRow.value;
+			const to = nextStreak(from, met);
+			this.sql.exec(
+				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
+				to,
+				now,
+				def.id,
+			);
+			this.recordSystemJob(now, `counter:${def.id}`, {
+				verb: "streak_rollover",
+				period,
+				target_counter: streak.counter,
+				met,
+				from,
+				to,
+			});
+		}
+		for (const def of defs) {
+			if (def.reset !== period) continue;
+			const row = this.counterById(def.id);
+			if (!row || row.value === 0) continue;
+			this.sql.exec(
+				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ?`,
+				now,
+				def.id,
+			);
+			this.recordSystemJob(now, `counter:${def.id}`, {
+				verb: "scheduled_reset",
+				period,
+				from: row.value,
+				to: 0,
+			});
+		}
+	}
+
+	/**
+	 * Ensures the recurring rollover jobs exist (handoff §3.2). Idempotent — inserts
+	 * each only if absent, so an already-running rollover keeps its `next_fire_at`
+	 * rather than being dragged to a fresh boundary on every wake. A fixed interval
+	 * suffices because a UTC boundary plus DAY_MS/WEEK_MS is still a boundary. Only
+	 * for an active couple; a paused/pairing DO accrues no rollovers.
+	 */
+	private ensureRolloverScheduled(): void {
+		if (this.status() !== "active") return;
+		const now = Date.now();
+		this.insertScheduleIfAbsent("daily_rollover", nextDailyRollover(now), {
+			interval_ms: DAY_MS,
+		});
+		this.insertScheduleIfAbsent("weekly_rollover", nextWeeklyRollover(now), {
+			interval_ms: WEEK_MS,
+		});
+	}
+
+	private insertScheduleIfAbsent(
+		id: string,
+		nextFireAt: number,
+		payload: SchedulePayload,
+	): void {
+		this.sql.exec(
+			`INSERT INTO schedule (id, next_fire_at, kind, payload) VALUES (?, ?, ?, ?)
+				ON CONFLICT(id) DO NOTHING`,
+			id,
+			nextFireAt,
+			id,
+			JSON.stringify(payload),
+		);
+	}
+
+	private recordSystemJob(
+		at: number,
+		projection: string,
+		detail: Record<string, unknown>,
+	): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, NULL, 'system_job', ?, ?)`,
+			at,
+			projection,
+			JSON.stringify(detail),
+		);
+	}
+
+	private counterDefinitions(): CounterDefinition[] {
+		return this.counterRows().map(
+			(row) => JSON.parse(row.definition) as CounterDefinition,
+		);
 	}
 
 	/**
