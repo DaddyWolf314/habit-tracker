@@ -38,6 +38,26 @@ export const timerKindSchema = z.enum(["stopwatch", "countdown"]);
 export type TimerKind = z.infer<typeof timerKindSchema>;
 
 /**
+ * What the dom sends to assign a countdown (handoff §4.5 — "dom-started countdown
+ * = assignment"). `timer` is the countdown definition (e.g. `task_countdown`),
+ * `match` the ref keys a later close matches on (e.g. `{ task_id }`), and
+ * `duration_ms` the time allowed from assignment.
+ */
+export const assignCountdownInputSchema = z.object({
+	timer: z.string(),
+	duration_ms: z.number().int().positive(),
+	match: z.record(z.string(), metadataValueSchema).default({}),
+	tag: z.string().optional(),
+});
+export type AssignCountdownInput = z.infer<typeof assignCountdownInputSchema>;
+
+/** What the dom sends to extend a countdown — the extra time to grant. */
+export const extendTimerInputSchema = z.object({
+	by_ms: z.number().int().positive(),
+});
+export type ExtendTimerInput = z.infer<typeof extendTimerInputSchema>;
+
+/**
  * A timer as returned to clients (handoff §4.5, §9 today view). A running timer
  * has `status: null`; `duration_ms` is present once derived on close. Countdown
  * fields (`deadline_at`, `paused_at`, `remaining_ms`) fill in with #30.
@@ -170,4 +190,91 @@ function stopwatchMax(
 ): number {
 	const tagged = open.tag !== undefined ? maxMsByTag[open.tag] : undefined;
 	return tagged ?? defaultMaxMs;
+}
+
+// ── Countdowns (deadline) — handoff §4.5 ───────────────────────────────────────
+
+/**
+ * An in-flight countdown (handoff §4.5). Created at assignment with a `deadline_at`;
+ * the dom may pause it — freezing `remaining_ms` and stamping `paused_at` — and
+ * extend it. Life intrudes, and rigid timers punish people for having jobs, so
+ * pause/extend are day-one. Terminal `completed`/`failed` come from a rule close;
+ * `expired` from the alarm when a running countdown passes its deadline unresolved.
+ */
+export interface Countdown {
+	opened_at: number;
+	deadline_at: number;
+	/** Set while paused; the clock is frozen and cannot expire. */
+	paused_at?: number | null;
+	/** Time left, captured at pause; re-projected onto a fresh deadline on resume. */
+	remaining_ms?: number | null;
+}
+
+/** Whether a countdown is currently paused (clock frozen). */
+function isPaused(c: Countdown): boolean {
+	return c.paused_at !== undefined && c.paused_at !== null;
+}
+
+/**
+ * Time left on a countdown as of `now`. While paused this is the frozen
+ * `remaining_ms`; while running it counts toward the deadline, clamped at 0 so an
+ * overdue countdown reads as done, never negative.
+ */
+export function countdownRemainingMs(c: Countdown, now: number): number {
+	if (isPaused(c)) return Math.max(0, c.remaining_ms ?? 0);
+	return Math.max(0, c.deadline_at - now);
+}
+
+/**
+ * Whether a running countdown has passed its deadline and should be marked
+ * `expired` (handoff §4.5 — the future-consequence hook). A paused countdown
+ * never expires: pausing is exactly the "life intruded" escape valve.
+ */
+export function isCountdownExpired(c: Countdown, now: number): boolean {
+	return !isPaused(c) && now >= c.deadline_at;
+}
+
+/** Pauses a running countdown, freezing the time that was left at `now`. */
+export function pauseCountdown(
+	c: Countdown,
+	now: number,
+): { paused_at: number; remaining_ms: number } {
+	return { paused_at: now, remaining_ms: Math.max(0, c.deadline_at - now) };
+}
+
+/**
+ * Resumes a paused countdown at `now`, re-projecting the frozen remaining time
+ * onto a fresh deadline so the pause added no cost and stole no time.
+ */
+export function resumeCountdown(
+	c: Countdown,
+	now: number,
+): { deadline_at: number; paused_at: null; remaining_ms: null } {
+	return {
+		deadline_at: now + Math.max(0, c.remaining_ms ?? 0),
+		paused_at: null,
+		remaining_ms: null,
+	};
+}
+
+/**
+ * Extends a countdown by `byMs`. While running the deadline moves out; while
+ * paused the frozen remaining grows (re-projected onto a deadline on resume).
+ */
+export function extendCountdown(
+	c: Countdown,
+	byMs: number,
+): { deadline_at: number } | { remaining_ms: number } {
+	return isPaused(c)
+		? { remaining_ms: Math.max(0, (c.remaining_ms ?? 0) + byMs) }
+		: { deadline_at: c.deadline_at + byMs };
+}
+
+/**
+ * The timestamp the alarm should fire to expire this countdown, or null while
+ * paused (a paused countdown has no scheduled expiry). Feeds the single-alarm
+ * scheduler (#32).
+ */
+export function countdownExpiryAt(c: Countdown): number | null {
+	return isPaused(c) ? null : c.deadline_at;
 }

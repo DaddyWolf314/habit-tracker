@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+	type Countdown,
 	closeStopwatch,
+	countdownExpiryAt,
+	countdownRemainingMs,
 	durationMinutes,
+	extendCountdown,
+	isCountdownExpired,
 	matchStopwatch,
 	type OpenStopwatch,
+	pauseCountdown,
+	resumeCountdown,
 	stopwatchDurationMs,
 	stopwatchesToAutoClose,
 } from "./timers.ts";
@@ -96,5 +103,79 @@ describe("auto-closing over-max sessions (handoff §4.5)", () => {
 		expect(
 			stopwatchesToAutoClose(opens, 110_000, maxByTag, 120_000),
 		).toHaveLength(0);
+	});
+});
+
+describe("countdowns (handoff §4.5 — deadline timers)", () => {
+	/** A running countdown assigned at t=0 for 100s. */
+	function running(): Countdown {
+		return { opened_at: 0, deadline_at: 100_000 };
+	}
+
+	it("remaining time counts down toward the deadline (running)", () => {
+		expect(countdownRemainingMs(running(), 40_000)).toBe(60_000);
+	});
+
+	it("never reports negative remaining once past the deadline", () => {
+		expect(countdownRemainingMs(running(), 130_000)).toBe(0);
+	});
+
+	it("is expired only while running and past its deadline", () => {
+		expect(isCountdownExpired(running(), 90_000)).toBe(false);
+		expect(isCountdownExpired(running(), 100_000)).toBe(true);
+		// A paused countdown never expires — life intruded; the clock is frozen.
+		const paused = pauseCountdown(running(), 40_000);
+		expect(isCountdownExpired({ ...running(), ...paused }, 200_000)).toBe(
+			false,
+		);
+	});
+
+	it("pause freezes the remaining time", () => {
+		expect(pauseCountdown(running(), 40_000)).toEqual({
+			paused_at: 40_000,
+			remaining_ms: 60_000,
+		});
+	});
+
+	it("resume re-projects the frozen remaining onto a fresh deadline", () => {
+		const paused: Countdown = {
+			opened_at: 0,
+			deadline_at: 100_000,
+			paused_at: 40_000,
+			remaining_ms: 60_000,
+		};
+		// Resumed at t=500s: 60s remaining => new deadline 560s, clock running again.
+		expect(resumeCountdown(paused, 500_000)).toEqual({
+			deadline_at: 560_000,
+			paused_at: null,
+			remaining_ms: null,
+		});
+	});
+
+	it("extend pushes the deadline out while running", () => {
+		expect(extendCountdown(running(), 30_000)).toEqual({
+			deadline_at: 130_000,
+		});
+	});
+
+	it("extend adds to the frozen remaining while paused", () => {
+		const paused: Countdown = {
+			opened_at: 0,
+			deadline_at: 100_000,
+			paused_at: 40_000,
+			remaining_ms: 60_000,
+		};
+		expect(extendCountdown(paused, 30_000)).toEqual({ remaining_ms: 90_000 });
+	});
+
+	it("the alarm arms at the deadline while running, never while paused", () => {
+		expect(countdownExpiryAt(running())).toBe(100_000);
+		expect(
+			countdownExpiryAt({
+				...running(),
+				paused_at: 40_000,
+				remaining_ms: 60_000,
+			}),
+		).toBeNull();
 	});
 });

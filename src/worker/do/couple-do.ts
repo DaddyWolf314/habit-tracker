@@ -35,11 +35,18 @@ import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
 import {
+	assignCountdownInputSchema,
+	type Countdown,
 	closeStopwatch,
 	DEFAULT_STOPWATCH_MAX_MS,
 	durationMinutes,
+	extendCountdown,
+	extendTimerInputSchema,
+	isCountdownExpired,
 	matchStopwatch,
 	type OpenStopwatch,
+	pauseCountdown,
+	resumeCountdown,
 	STOPWATCH_MAX_MS_BY_ACTIVITY,
 	stopwatchDurationMs,
 	stopwatchesToAutoClose,
@@ -941,11 +948,19 @@ export class CoupleDO extends DurableObject<Env> {
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
 		// Reset every projection cache; all are rebuilt below purely from the log.
-		// Timers are torn down too (the rule engine reopens/closes them on replay),
-		// keeping them an honest cache — an over-max auto-close is re-derived by the
-		// next sweep rather than replayed (it is a system job, not a logged event).
+		// Stopwatches are torn down (R15/R16 reopen/close them on replay), keeping
+		// them an honest cache — an over-max auto-close is re-derived by the next
+		// sweep rather than replayed (a system job, not a logged event). Countdowns
+		// are dom *commands*, not event-derived, so the log cannot re-derive them:
+		// their assignment (and any pause/extend) is durable and survives the
+		// rebuild. Only their event-driven close is re-derived, so reset each to
+		// running and let replay re-close via R4/R14; `expired` is re-derived by the
+		// countdown sweep, mirroring the stopwatch auto-close.
 		this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
-		this.sql.exec(`DELETE FROM timers`);
+		this.sql.exec(`DELETE FROM timers WHERE kind = 'stopwatch'`);
+		this.sql.exec(
+			`UPDATE timers SET status = NULL, closed_at = NULL WHERE kind = 'countdown'`,
+		);
 		this.sql.exec(`DELETE FROM trace`);
 		const awaitingByType = new Map(
 			this.eventTypes().map((t) => [t.id, t.awaiting]),
@@ -1177,7 +1192,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	async listTimers(identityHash: string): Promise<TimerView[]> {
 		this.requireMember(identityHash);
-		this.sweepOverMaxStopwatches(Date.now());
+		const now = Date.now();
+		this.sweepOverMaxStopwatches(now);
+		this.sweepExpiredCountdowns(now);
 		return this.timerRows().map((row) => this.rowToTimerView(row));
 	}
 
@@ -1322,6 +1339,165 @@ export class CoupleDO extends DurableObject<Env> {
 		return closed;
 	}
 
+	// ── Countdowns (dom-assigned deadline timers) — handoff §4.5, #30 ─────────
+
+	/**
+	 * Assigns a countdown (handoff §4.5 — "dom-started countdown = assignment").
+	 * Unlike a stopwatch (opened by a `session_started` event via R15), a countdown
+	 * is a direct dom command: it has no opening event, so it is durable state that
+	 * a `rebuildCounters` replay preserves rather than re-derives. Its close *is*
+	 * event-driven (R4 `task_completed`, R14 `orgasm permitted=false`), and its
+	 * `expired` disposition comes from the alarm sweep. `session_stopwatch` is
+	 * reserved for the stopwatch flavor and cannot be assigned as a countdown —
+	 * R16 would otherwise try to close it by `session_id` and route a duration.
+	 */
+	async assignCountdown(
+		identityHash: string,
+		input: unknown,
+	): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const parsed = assignCountdownInputSchema.parse(input);
+		if (parsed.timer === "session_stopwatch") {
+			throw coupleError(
+				"BAD_REQUEST",
+				"session_stopwatch is reserved for stopwatches",
+			);
+		}
+		const now = Date.now();
+		const id = ulid(now);
+		const state: TimerState = {
+			match: parsed.match,
+			tag: parsed.tag,
+			deadline_at: now + parsed.duration_ms,
+		};
+		this.sql.exec(
+			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
+				VALUES (?, 'countdown', ?, ?, NULL, ?, NULL)`,
+			id,
+			parsed.timer,
+			JSON.stringify(state),
+			now,
+		);
+		this.recordTimerCommand(me.id, parsed.timer, now, {
+			verb: "assign_countdown",
+			timer_id: id,
+			match: parsed.match,
+			tag: parsed.tag,
+			deadline_at: state.deadline_at,
+		});
+		return this.rowToTimerView(this.requireTimerRow(id));
+	}
+
+	/**
+	 * Pauses a running countdown, freezing the time that was left (handoff §4.5 —
+	 * "pause and extend by the dom are day-one features"). A paused countdown never
+	 * expires; that is exactly the "life intruded" escape valve.
+	 */
+	async pauseTimer(identityHash: string, timerId: string): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const row = this.requireOpenCountdown(timerId);
+		if (this.timerState(row).paused_at != null) {
+			throw coupleError("BAD_REQUEST", "countdown is already paused");
+		}
+		const now = Date.now();
+		const patch = pauseCountdown(this.rowToCountdown(row), now);
+		this.patchTimerState(row, patch);
+		this.recordTimerCommand(me.id, row.definition, now, {
+			verb: "pause_countdown",
+			timer_id: row.id,
+			remaining_ms: patch.remaining_ms,
+		});
+		return this.rowToTimerView(this.requireTimerRow(row.id));
+	}
+
+	/**
+	 * Resumes a paused countdown, re-projecting the frozen remaining time onto a
+	 * fresh deadline so the pause added no cost and stole no time (handoff §4.5).
+	 */
+	async resumeTimer(identityHash: string, timerId: string): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const row = this.requireOpenCountdown(timerId);
+		if (this.timerState(row).paused_at == null) {
+			throw coupleError("BAD_REQUEST", "countdown is not paused");
+		}
+		const now = Date.now();
+		const patch = resumeCountdown(this.rowToCountdown(row), now);
+		this.patchTimerState(row, patch);
+		this.recordTimerCommand(me.id, row.definition, now, {
+			verb: "resume_countdown",
+			timer_id: row.id,
+			deadline_at: patch.deadline_at,
+		});
+		return this.rowToTimerView(this.requireTimerRow(row.id));
+	}
+
+	/**
+	 * Extends a countdown by the granted time (handoff §4.5). While running the
+	 * deadline moves out; while paused the frozen remaining grows, re-projected
+	 * onto a deadline on resume.
+	 */
+	async extendTimer(
+		identityHash: string,
+		timerId: string,
+		input: unknown,
+	): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const row = this.requireOpenCountdown(timerId);
+		const { by_ms } = extendTimerInputSchema.parse(input);
+		const now = Date.now();
+		const patch = extendCountdown(this.rowToCountdown(row), by_ms);
+		this.patchTimerState(row, patch);
+		this.recordTimerCommand(me.id, row.definition, now, {
+			verb: "extend_countdown",
+			timer_id: row.id,
+			by_ms,
+			...patch,
+		});
+		return this.rowToTimerView(this.requireTimerRow(row.id));
+	}
+
+	/**
+	 * Expires any running countdown past its deadline (handoff §4.5 — the future-
+	 * consequence hook), marked `expired`, attributed to the `system_job`. Like the
+	 * over-max stopwatch sweep this is idempotent and re-derived on read; the alarm
+	 * (#32) makes it precise, but a read never shows a stale running countdown as
+	 * live. A paused countdown is skipped — its clock is frozen.
+	 */
+	private sweepExpiredCountdowns(now: number): number {
+		const rows = this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE kind = 'countdown' AND status IS NULL`,
+			)
+			.toArray();
+		let expired = 0;
+		for (const row of rows) {
+			if (!isCountdownExpired(this.rowToCountdown(row), now)) continue;
+			this.sql.exec(
+				`UPDATE timers SET status = 'expired', closed_at = ? WHERE id = ?`,
+				now,
+				row.id,
+			);
+			this.sql.exec(
+				`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+					VALUES (?, NULL, 'system_job', ?, ?)`,
+				now,
+				`timer:${row.definition}`,
+				JSON.stringify({
+					verb: "expire_countdown",
+					reason: "past_deadline",
+					timer_id: row.id,
+				}),
+			);
+			expired++;
+		}
+		return expired;
+	}
+
 	private openTimerRows(definition: string): TimerRow[] {
 		return this.sql
 			.exec<TimerRow>(
@@ -1355,6 +1531,85 @@ export class CoupleDO extends DurableObject<Env> {
 			opened_at: row.opened_at ?? 0,
 			tag: state.tag,
 		};
+	}
+
+	private rowToCountdown(row: TimerRow): Countdown {
+		const state = this.timerState(row);
+		const opened_at = row.opened_at ?? 0;
+		return {
+			opened_at,
+			deadline_at: state.deadline_at ?? opened_at,
+			paused_at: state.paused_at ?? null,
+			remaining_ms: state.remaining_ms ?? null,
+		};
+	}
+
+	private timerRowById(id: string): TimerRow | undefined {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE id = ?`,
+				id,
+			)
+			.toArray()[0];
+	}
+
+	private requireTimerRow(id: string): TimerRow {
+		const row = this.timerRowById(id);
+		if (!row) throw coupleError("NOT_FOUND", "no such timer");
+		return row;
+	}
+
+	private requireOpenCountdown(timerId: string): TimerRow {
+		const row = this.timerRowById(timerId);
+		if (!row || row.kind !== "countdown") {
+			throw coupleError("NOT_FOUND", "no such countdown");
+		}
+		if (row.status !== null) {
+			throw coupleError("BAD_REQUEST", "countdown is already closed");
+		}
+		return row;
+	}
+
+	/**
+	 * Merges a countdown transition (from the pure `pauseCountdown`/`resumeCountdown`/
+	 * `extendCountdown`) into a timer's stored state. A `null` in the patch clears the
+	 * key (resume drops `paused_at`/`remaining_ms`), keeping the stored JSON clean.
+	 */
+	private patchTimerState(
+		row: TimerRow,
+		patch: Record<string, number | null>,
+	): void {
+		const state = this.timerState(row) as Record<string, unknown>;
+		for (const [key, value] of Object.entries(patch)) {
+			if (value === null) delete state[key];
+			else state[key] = value;
+		}
+		this.sql.exec(
+			`UPDATE timers SET state = ? WHERE id = ?`,
+			JSON.stringify(state),
+			row.id,
+		);
+	}
+
+	/**
+	 * Records a dom-issued timer command (assign/pause/resume/extend) in the trace.
+	 * These have no causing event (they are direct commands, not rule effects), so
+	 * `caused_by_event` is null and the cause is the acting member, not a rule.
+	 */
+	private recordTimerCommand(
+		actorId: string,
+		definition: string,
+		at: number,
+		detail: Record<string, unknown>,
+	): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, NULL, 'dom_command', ?, ?)`,
+			at,
+			`timer:${definition}`,
+			JSON.stringify({ actor: actorId, ...detail }),
+		);
 	}
 
 	private rowToTimerView(row: TimerRow): TimerView {
@@ -1437,6 +1692,21 @@ export class CoupleDO extends DurableObject<Env> {
 
 	private roleAllowed(role: Role | null, permitted: Role[]): boolean {
 		return role !== null && permitted.includes(role);
+	}
+
+	/**
+	 * Gates a dom-only command (countdown assign/pause/resume/extend — handoff §4.5,
+	 * §5: "dom-started countdown = assignment"). Requires a confirmed, active dynamic
+	 * and the actor in the `dom` role; a sub self-reporting cannot assign consequences.
+	 */
+	private assertDom(member: MemberRow): void {
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		if ((member.role as Role | null) !== "dom") {
+			throw coupleError("FORBIDDEN", "only the dom may manage countdowns");
+		}
 	}
 
 	private assertModifyAllowed(
