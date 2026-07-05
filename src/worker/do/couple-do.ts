@@ -40,10 +40,12 @@ import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
+import { catchUpFireAt, dueItems, earliestFireAt } from "#/shared/scheduler.ts";
 import {
 	assignCountdownInputSchema,
 	type Countdown,
 	closeStopwatch,
+	countdownExpiryAt,
 	DEFAULT_STOPWATCH_MAX_MS,
 	durationMinutes,
 	extendCountdown,
@@ -55,6 +57,7 @@ import {
 	resumeCountdown,
 	STOPWATCH_MAX_MS_BY_ACTIVITY,
 	stopwatchDurationMs,
+	stopwatchExpiryAt,
 	stopwatchesToAutoClose,
 	type TimerView,
 } from "#/shared/timers.ts";
@@ -141,6 +144,22 @@ interface AnchorRow {
 	/** The last reset's `occurred_at`; null until a rule first resets the anchor. */
 	since: number | null;
 	[key: string]: SqlStorageValue;
+}
+
+/** A row in the `schedule` table: one job the single alarm fires (handoff §3.2). */
+interface ScheduleRow {
+	id: string;
+	next_fire_at: number;
+	kind: string;
+	/** JSON job params; `{ interval_ms }` marks a recurring job (else one-shot). */
+	payload: string | null;
+	[key: string]: SqlStorageValue;
+}
+
+/** The parsed `ScheduleRow.payload`. A positive `interval_ms` makes the job recur. */
+interface SchedulePayload {
+	interval_ms?: number;
+	[key: string]: unknown;
 }
 
 /** A row in the `timers` table: one in-flight or closed timer instance. */
@@ -845,6 +864,8 @@ export class CoupleDO extends DurableObject<Env> {
 			// No amendments at append time, so composite == the event's own metadata.
 			this.applyRules(event, event.metadata, type.awaiting);
 		}
+		// Rules may have opened or closed a timer, moving the nearest consequence.
+		this.armAlarm();
 
 		return {
 			...event,
@@ -1003,6 +1024,8 @@ export class CoupleDO extends DurableObject<Env> {
 				);
 			}
 		}
+		// The replay rewrote the open-timer set, so re-arm at the new minimum.
+		this.armAlarm();
 		return this.counterRows().map((r) => this.rowToCounter(r));
 	}
 
@@ -1238,6 +1261,9 @@ export class CoupleDO extends DurableObject<Env> {
 		const now = Date.now();
 		this.sweepOverMaxStopwatches(now);
 		this.sweepExpiredCountdowns(now);
+		// A sweep may have closed a timer, retiring the consequence the alarm was
+		// armed for; re-arm at the new minimum so the single alarm stays honest.
+		this.armAlarm();
 		return this.timerRows().map((row) => this.rowToTimerView(row));
 	}
 
@@ -1429,6 +1455,7 @@ export class CoupleDO extends DurableObject<Env> {
 			tag: parsed.tag,
 			deadline_at: state.deadline_at,
 		});
+		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(id));
 	}
 
@@ -1452,6 +1479,7 @@ export class CoupleDO extends DurableObject<Env> {
 			timer_id: row.id,
 			remaining_ms: patch.remaining_ms,
 		});
+		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
 
@@ -1474,6 +1502,7 @@ export class CoupleDO extends DurableObject<Env> {
 			timer_id: row.id,
 			deadline_at: patch.deadline_at,
 		});
+		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
 
@@ -1500,6 +1529,7 @@ export class CoupleDO extends DurableObject<Env> {
 			by_ms,
 			...patch,
 		});
+		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
 
@@ -2004,8 +2034,114 @@ export class CoupleDO extends DurableObject<Env> {
 		// Skeleton: nothing to clean up yet.
 	}
 
+	// ── Single-alarm scheduler (handoff §3.2, #32) ────────────────────────────
+
+	/**
+	 * The one alarm fired (handoff §3.2). Cloudflare gives a DO a single alarm, so
+	 * on wake we drain *everything* due — not just the job that tripped it — then
+	 * re-arm at the new minimum. Order: process due schedule jobs (rescheduling
+	 * recurring ones, deleting one-shots), then run the timer sweeps so an over-max
+	 * stopwatch or a passed countdown deadline resolves precisely on the alarm
+	 * rather than waiting for the next read, then re-arm at MIN over all sources.
+	 */
 	override async alarm(): Promise<void> {
-		// Single-alarm scheduler (handoff §3.2): on fire, process everything due
-		// in `schedule`, then re-arm at MIN(next_fire_at). Built in Phase 4.
+		if (this.status() !== "active") {
+			this.ctx.storage.deleteAlarm();
+			return;
+		}
+		const now = Date.now();
+		for (const item of dueItems(this.scheduleRows(), now)) {
+			this.runScheduledJob(item, now);
+			const payload = this.schedulePayload(item);
+			const interval = payload.interval_ms ?? 0;
+			if (interval > 0) {
+				this.sql.exec(
+					`UPDATE schedule SET next_fire_at = ? WHERE id = ?`,
+					catchUpFireAt(item.next_fire_at, interval, now),
+					item.id,
+				);
+			} else {
+				this.sql.exec(`DELETE FROM schedule WHERE id = ?`, item.id);
+			}
+		}
+		// Timer consequences are future-dated too; the alarm makes them precise.
+		this.sweepOverMaxStopwatches(now);
+		this.sweepExpiredCountdowns(now);
+		this.armAlarm();
+	}
+
+	/**
+	 * Runs one due schedule job. The concrete jobs — daily/weekly counter resets and
+	 * streak rollover — arrive with #33; until then an unknown kind is a no-op, so a
+	 * scheduled item still reschedules and the alarm mechanism is exercised on its own.
+	 */
+	private runScheduledJob(_item: ScheduleRow, _now: number): void {
+		// #33 dispatches on `_item.kind` (counter_reset, streak_eval) here.
+	}
+
+	/**
+	 * Arms the single alarm at the earliest pending fire across every source
+	 * (handoff §3.2 — `MIN(next_fire_at)`): scheduled jobs plus the nearest timer
+	 * consequence (a stopwatch's per-activity max, a running countdown's deadline).
+	 * With nothing pending the alarm is cleared, so a dormant couple costs nothing.
+	 * Suspended while not active (pairing/dissolved) — no consequences accrue.
+	 */
+	private armAlarm(): void {
+		if (this.status() !== "active") {
+			this.ctx.storage.deleteAlarm();
+			return;
+		}
+		const scheduleMin = earliestFireAt(
+			this.scheduleRows().map((row) => row.next_fire_at),
+		);
+		const timerMin = this.nextTimerExpiryAt();
+		const at = earliestFireAt([scheduleMin, timerMin]);
+		if (at === null) this.ctx.storage.deleteAlarm();
+		else this.ctx.storage.setAlarm(at);
+	}
+
+	/**
+	 * The earliest future timer consequence to arm for, or null if none: over all
+	 * open timers, a stopwatch's per-activity max and a running countdown's deadline
+	 * (a paused countdown contributes none — its clock is frozen).
+	 */
+	private nextTimerExpiryAt(): number | null {
+		const expiries: (number | null)[] = [];
+		for (const row of this.openTimerRowsAll()) {
+			if (row.kind === "stopwatch") {
+				expiries.push(
+					stopwatchExpiryAt(
+						this.rowToOpenStopwatch(row),
+						STOPWATCH_MAX_MS_BY_ACTIVITY,
+						DEFAULT_STOPWATCH_MAX_MS,
+					),
+				);
+			} else if (row.kind === "countdown") {
+				expiries.push(countdownExpiryAt(this.rowToCountdown(row)));
+			}
+		}
+		return earliestFireAt(expiries);
+	}
+
+	private openTimerRowsAll(): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE status IS NULL`,
+			)
+			.toArray();
+	}
+
+	private scheduleRows(): ScheduleRow[] {
+		return this.sql
+			.exec<ScheduleRow>(
+				`SELECT id, next_fire_at, kind, payload FROM schedule
+					ORDER BY next_fire_at ASC, id ASC`,
+			)
+			.toArray();
+	}
+
+	private schedulePayload(row: ScheduleRow): SchedulePayload {
+		return row.payload ? (JSON.parse(row.payload) as SchedulePayload) : {};
 	}
 }
