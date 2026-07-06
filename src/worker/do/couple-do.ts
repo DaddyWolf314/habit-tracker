@@ -34,12 +34,7 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
-import {
-	applyCounterEvent,
-	compositeMetadata,
-	isPending,
-	isRetracted,
-} from "#/shared/projections.ts";
+import { applyCounterEvent, deriveEventView } from "#/shared/projections.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -916,29 +911,23 @@ export class CoupleDO extends DurableObject<Env> {
 		// then is a re-arm needed. Most events touch no timer, so skip the re-query.
 		if (this.timersDirty) this.armAlarm();
 
-		return {
-			...event,
-			amendments: [],
-			composite_metadata: event.metadata,
-			pending: isPending(type, event.metadata),
-		};
+		// A freshly-appended event has no amendments yet, so composite == its own
+		// metadata; the shape is built the same way it is read back (handoff §4.2).
+		return deriveEventView(event, [], type);
 	}
 
 	/** The event log, newest first, as composite views (handoff §4.6, §9). */
 	async listEvents(identityHash: string, limit = 200): Promise<EventView[]> {
 		this.requireMember(identityHash);
 		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
+		const amendmentsByEvent = this.amendmentsByEvent();
 		return this.eventRows(limit).map((row) => {
 			const event = this.rowToEvent(row);
-			const type = types.get(event.type);
-			// Amendments arrive in Phase 5; composite == original until then.
-			const composite = compositeMetadata(event, []);
-			return {
-				...event,
-				amendments: [],
-				composite_metadata: composite,
-				pending: type ? isPending(type, composite) : false,
-			};
+			return deriveEventView(
+				event,
+				amendmentsByEvent.get(event.id) ?? [],
+				types.get(event.type),
+			);
 		});
 	}
 
@@ -990,7 +979,7 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 
 		const amendment = this.writeAmendment(me.id, input);
-		return this.eventViewOf(event, type, [...priorAmendments, amendment]);
+		return deriveEventView(event, [...priorAmendments, amendment], type);
 	}
 
 	/** Inserts an amendment, assigning the server-owned id/created_at/actor. */
@@ -2164,23 +2153,23 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Builds the composite view of an event (handoff §4.2, §4.6): the raw event
-	 * plus its amendments, the derived composite metadata, and the derived
-	 * `pending`/`retracted` status. Nothing here is stored — it is folded on read.
+	 * Every event's amendments in one query, grouped by target and kept in
+	 * `created_at` order — so `listEvents` folds the whole log's composite state
+	 * without a per-event round trip.
 	 */
-	private eventViewOf(
-		event: Event,
-		type: EventType | undefined,
-		amendments: Amendment[],
-	): EventView {
-		const composite = compositeMetadata(event, amendments);
-		const retracted = isRetracted(amendments);
-		return {
-			...event,
-			amendments,
-			composite_metadata: composite,
-			pending: type ? isPending(type, composite, retracted) : false,
-		};
+	private amendmentsByEvent(): Map<string, Amendment[]> {
+		const byEvent = new Map<string, Amendment[]>();
+		for (const row of this.sql
+			.exec<AmendmentRow>(
+				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes
+					FROM amendments ORDER BY created_at ASC, id ASC`,
+			)
+			.toArray()) {
+			const list = byEvent.get(row.target_event_id) ?? [];
+			list.push(this.rowToAmendment(row));
+			byEvent.set(row.target_event_id, list);
+		}
+		return byEvent;
 	}
 
 	private counterRows(): CounterRow[] {

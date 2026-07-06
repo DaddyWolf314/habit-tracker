@@ -49,5 +49,11 @@ export const eventViewSchema = eventSchema.extend({
 	amendments: z.array(amendmentSchema).default([]),
 	composite_metadata: z.record(z.string(), metadataValueSchema).default({}),
 	pending: z.boolean(),
+	/**
+	 * Derived: the event carries a `retracted` amendment. Never pending, and shown
+	 * as withdrawn in the log — retraction is visible relationship data, not a
+	 * delete (handoff §4.2).
+	 */
+	retracted: z.boolean().default(false),
 });
 export type EventView = z.infer<typeof eventViewSchema>;
