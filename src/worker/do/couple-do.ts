@@ -1525,10 +1525,10 @@ export class CoupleDO extends DurableObject<Env> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
 		const parsed = assignCountdownInputSchema.parse(input);
-		if (parsed.timer === "session_stopwatch") {
+		if (this.stopwatchDefinitionNames().has(parsed.timer)) {
 			throw coupleError(
 				"BAD_REQUEST",
-				"session_stopwatch is reserved for stopwatches",
+				`${parsed.timer} is reserved for stopwatches`,
 			);
 		}
 		const now = Date.now();
@@ -1668,6 +1668,24 @@ export class CoupleDO extends DurableObject<Env> {
 			expired++;
 		}
 		return expired;
+	}
+
+	/**
+	 * The timer names any installed rule opens as a stopwatch. A countdown may not be
+	 * assigned under one of these: stopwatches and countdowns share the close matcher
+	 * (openTimerRows keys on definition + `status IS NULL`, not kind), so a countdown
+	 * sharing a stopwatch's name could be matched and closed by that stopwatch's rule
+	 * and route a bogus duration. Generalizes the former `session_stopwatch` reservation
+	 * to whatever the rules actually open.
+	 */
+	private stopwatchDefinitionNames(): Set<string> {
+		const names = new Set<string>();
+		for (const rule of this.rules()) {
+			for (const effect of rule.effects) {
+				if (effect.verb === "open_timer") names.add(effect.timer);
+			}
+		}
+		return names;
 	}
 
 	private openTimerRows(definition: string): TimerRow[] {
