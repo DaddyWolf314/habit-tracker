@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
+import { QueuePanel } from "#/components/log/queue-panel.tsx";
 import {
 	getRoles,
 	listCounters,
@@ -60,6 +61,9 @@ export function LogView() {
 		if (hasIdentity()) loadAll();
 	}, [loadAll]);
 
+	const self = members.find((m) => m.is_self);
+	const selfRole = self?.role ?? null;
+
 	if (!ready) return null;
 	if (!hasIdentity()) {
 		return (
@@ -86,6 +90,13 @@ export function LogView() {
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
+			<QueuePanel
+				events={events}
+				types={types}
+				members={members}
+				selfRole={selfRole}
+				onAmended={refreshLog}
+			/>
 			<CountersPanel counters={counters} onChange={refreshLog} />
 			<LogComposer types={types} members={members} onLogged={refreshLog} />
 			<EventStream events={events} types={types} members={members} />

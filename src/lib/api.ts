@@ -1,3 +1,4 @@
+import type { AmendmentInput } from "#/shared/amendments.ts";
 import type { Counter, CreateCounterBody } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView, LogEventInput } from "#/shared/events.ts";
@@ -152,6 +153,17 @@ export function listEvents(): Promise<{ events: EventView[] }> {
 /** Appends an event to the log (also the sugar target for counter taps). */
 export function logEvent(input: LogEventInput): Promise<EventView> {
 	return apiFetch<EventView>("/api/events", { method: "POST", body: input });
+}
+
+/**
+ * Records an amendment against an event (handoff §4.2): a ruling, a note, or a
+ * retraction. Returns the event's refreshed composite view.
+ */
+export function amendEvent(input: AmendmentInput): Promise<EventView> {
+	return apiFetch<EventView>("/api/events/amend", {
+		method: "POST",
+		body: input,
+	});
 }
 
 /** The projections a single event touched (trace drill-in). */

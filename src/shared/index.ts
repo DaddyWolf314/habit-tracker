@@ -3,6 +3,7 @@
  * routes, and the CoupleDO. Domain model per the technical handoff (§4–§7).
  */
 
+export * from "./adjudication.ts";
 export * from "./amendment-validation.ts";
 export * from "./amendments.ts";
 export * from "./anchors.ts";
