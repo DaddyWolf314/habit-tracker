@@ -232,6 +232,12 @@ type TimerOp = Extract<EffectOp, { kind: "timer" }>;
  */
 export class CoupleDO extends DurableObject<Env> {
 	private readonly sql: SqlStorage;
+	/**
+	 * Set by applyEffectOp's timer branch so appendEvent re-arms the alarm only when a
+	 * rule actually opened or closed a timer — the vast majority of events touch none,
+	 * and re-arming reads the schedule and every open-timer row.
+	 */
+	private timersDirty = false;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -884,13 +890,15 @@ export class CoupleDO extends DurableObject<Env> {
 		// every real event is run through the rule engine (Phase 3). A pending
 		// event still fires its unconditional rules and records near-misses for the
 		// conditional ones waiting on adjudication (handoff §7).
+		this.timersDirty = false;
 		this.applyDirectManipulation(event);
 		if (!isBuiltinType(event.type)) {
 			// No amendments at append time, so composite == the event's own metadata.
 			this.applyRules(event, event.metadata, type.awaiting);
 		}
-		// Rules may have opened or closed a timer, moving the nearest consequence.
-		this.armAlarm();
+		// A rule may have opened or closed a timer, moving the nearest consequence; only
+		// then is a re-arm needed. Most events touch no timer, so skip the re-query.
+		if (this.timersDirty) this.armAlarm();
 
 		return {
 			...event,
@@ -1271,6 +1279,8 @@ export class CoupleDO extends DurableObject<Env> {
 				return;
 			}
 			case "timer":
+				// The open-timer set moved, so the caller (appendEvent) must re-arm.
+				this.timersDirty = true;
 				if (op.op === "open") {
 					this.openTimer(event, ruleId, op);
 				} else {
