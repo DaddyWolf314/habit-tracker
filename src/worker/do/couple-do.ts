@@ -192,6 +192,12 @@ interface TimerState {
 	tag?: string;
 	/** Derived duration, set on close. */
 	duration_ms?: number;
+	/**
+	 * Real end time of a session whose stopwatch the over-max sweep had already
+	 * auto-closed, recorded when the genuine `session_ended` arrives so a review can
+	 * see the true span (handoff §4.5). Present only on reconciled auto-closes.
+	 */
+	actual_ended_at?: number;
 	/** Countdown deadline (#30). */
 	deadline_at?: number;
 	/** When a countdown was paused (#30); null/absent while running. */
@@ -1337,6 +1343,34 @@ export class CoupleDO extends DurableObject<Env> {
 			op.match_on,
 		);
 		if (!target) {
+			// No open timer matched. Before calling this an orphan, check whether the
+			// over-max sweep already auto-closed this session — the genuine session_ended
+			// then arrives after the fact. That is not an orphan: reconcile it by stamping
+			// the real end time on the auto-closed row (so a review sees the true span)
+			// and trace it as such. An auto-closed session is flagged for review, not
+			// auto-credited (handoff §4.5), so no duration is routed.
+			const autoClosed = this.matchOpenTimer(
+				this.autoClosedTimerRows(op.timer),
+				op.match_on,
+			);
+			if (autoClosed) {
+				const state = this.timerState(autoClosed);
+				state.actual_ended_at = event.occurred_at;
+				this.sql.exec(
+					`UPDATE timers SET state = ? WHERE id = ?`,
+					JSON.stringify(state),
+					autoClosed.id,
+				);
+				this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+					verb: "close_timer",
+					matched: true,
+					timer_id: autoClosed.id,
+					status: autoClosed.status,
+					reconciled_auto_closed: true,
+					note: "session already auto-closed past max; recorded actual end for review",
+				});
+				return;
+			}
 			this.recordTrace(event, ruleId, `timer:${op.timer}`, {
 				verb: "close_timer",
 				matched: false,
@@ -1614,6 +1648,22 @@ export class CoupleDO extends DurableObject<Env> {
 			.exec<TimerRow>(
 				`SELECT id, kind, definition, state, status, opened_at, closed_at
 					FROM timers WHERE definition = ? AND status IS NULL
+					ORDER BY opened_at ASC, id ASC`,
+				definition,
+			)
+			.toArray();
+	}
+
+	/**
+	 * The stopwatches of a definition already auto-closed by the over-max sweep, so a
+	 * genuine `session_ended` arriving after the sweep can be reconciled against the
+	 * session it belongs to (handoff §4.5) rather than dropped as an orphan.
+	 */
+	private autoClosedTimerRows(definition: string): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE definition = ? AND status = 'auto_closed'
 					ORDER BY opened_at ASC, id ASC`,
 				definition,
 			)
