@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeRuling, awaitedRulings } from "./adjudication.ts";
+import { activeRuling, awaitedRulings, isOwnPending } from "./adjudication.ts";
 import type { Amendment } from "./amendments.ts";
 import type { EventType } from "./event-types.ts";
 import type { EventView } from "./events.ts";
@@ -59,6 +59,16 @@ describe("awaitedRulings", () => {
 
 	it("is empty for a retracted event", () => {
 		expect(awaitedRulings(event({ retracted: true }), type, "dom")).toEqual([]);
+	});
+});
+
+describe("isOwnPending", () => {
+	it("is true only for the author's own still-pending, un-retracted event", () => {
+		expect(isOwnPending(event(), "sub-1")).toBe(true); // author, pending
+		expect(isOwnPending(event(), "dom-1")).toBe(false); // not the author
+		expect(isOwnPending(event({ pending: false }), "sub-1")).toBe(false);
+		expect(isOwnPending(event({ retracted: true }), "sub-1")).toBe(false);
+		expect(isOwnPending(event(), null)).toBe(false);
 	});
 });
 

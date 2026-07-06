@@ -99,7 +99,13 @@ export function LogView() {
 			/>
 			<CountersPanel counters={counters} onChange={refreshLog} />
 			<LogComposer types={types} members={members} onLogged={refreshLog} />
-			<EventStream events={events} types={types} members={members} />
+			<EventStream
+				events={events}
+				types={types}
+				members={members}
+				selfId={self?.member_id ?? null}
+				onAmended={refreshLog}
+			/>
 		</div>
 	);
 }

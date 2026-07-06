@@ -36,6 +36,23 @@ export function awaitedRulings(
 		.map((key) => ({ key, field: type.metadata[key] }));
 }
 
+/**
+ * Whether `memberId` may amend this event as its author — the gate for the sub-
+ * side note and retraction affordances (handoff §4.2). Both are the author
+ * acting on their own event while it is still pending and not yet retracted.
+ */
+export function isOwnPending(
+	event: Pick<EventView, "actor" | "pending" | "retracted">,
+	memberId: string | null,
+): boolean {
+	return (
+		memberId !== null &&
+		event.actor === memberId &&
+		event.pending &&
+		!event.retracted
+	);
+}
+
 /** The adjudication currently in force for a key (following corrections). */
 export function activeRuling(
 	amendments: Amendment[],
