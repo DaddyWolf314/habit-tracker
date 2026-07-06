@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { evaluateRules, matchRule, type RuleEventContext } from "./engine.ts";
+import {
+	evaluateRules,
+	matchRule,
+	type RuleEventContext,
+	reevaluate,
+} from "./engine.ts";
 import type { Rule } from "./rules.ts";
 
 /** A rule with sensible defaults for the fields a test doesn't care about. */
@@ -182,5 +187,73 @@ describe("evaluateRules", () => {
 			ctx("orgasm", { outcome: "full" }),
 		);
 		expect(fired.map((f) => f.rule_id)).not.toContain("RX");
+	});
+});
+
+describe("reevaluate on amendment (handoff §4.2, §7)", () => {
+	const rules = [
+		// Unconditional on the type — fires at append time, before any ruling.
+		rule({
+			id: "Runc",
+			condition: { type: "orgasm", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "orgasms", by: 1 }],
+		}),
+		// Conditional — waits (near-miss) until `permitted` is ruled true.
+		rule({
+			id: "Rperm",
+			condition: { type: "orgasm", metadata: { permitted: true } },
+			effects: [
+				{ verb: "increment_counter", counter: "permitted", by: 1 },
+				{ verb: "reset_anchor", anchor: "since_orgasm" },
+			],
+		}),
+		// Conditional — the opposite ruling.
+		rule({
+			id: "Runp",
+			condition: { type: "orgasm", metadata: { permitted: false } },
+			effects: [{ verb: "increment_counter", counter: "unpermitted", by: 1 }],
+		}),
+	];
+
+	it("fires a rule that was pending, not the ones already fired at append", () => {
+		const fired = reevaluate(
+			rules,
+			ctx("orgasm", {}), // permitted unset — only Runc had fired
+			ctx("orgasm", { permitted: true }),
+		);
+		expect(fired.map((f) => f.rule_id)).toEqual(["Rperm"]);
+	});
+
+	it("resolves anchor ops to the target's occurred_at, not the ruling time", () => {
+		const fired = reevaluate(
+			rules,
+			ctx("orgasm", {}),
+			ctx("orgasm", { permitted: true }),
+		);
+		const anchorOp = fired[0].ops.find((o) => o.kind === "anchor");
+		expect(anchorOp).toEqual({
+			kind: "anchor",
+			anchor: "since_orgasm",
+			at: 1000,
+		});
+	});
+
+	it("a correction fires the newly-matching rule, not the superseded one", () => {
+		const fired = reevaluate(
+			rules,
+			ctx("orgasm", { permitted: true }), // Rperm had fired
+			ctx("orgasm", { permitted: false }), // now Runp matches
+		);
+		expect(fired.map((f) => f.rule_id)).toEqual(["Runp"]);
+	});
+
+	it("fires nothing when composite state is unchanged", () => {
+		expect(
+			reevaluate(
+				rules,
+				ctx("orgasm", { permitted: true }),
+				ctx("orgasm", { permitted: true }),
+			),
+		).toEqual([]);
 	});
 });

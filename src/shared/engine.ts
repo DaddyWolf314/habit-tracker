@@ -135,6 +135,29 @@ export function evaluateRules(
 }
 
 /**
+ * Re-evaluation on amendment (handoff §4.2, §7). When a ruling changes an
+ * event's composite state, the engine re-runs over the *target* event and fires
+ * the rules that match now but did *not* match before — never re-firing what
+ * already fired at append time (or under an earlier ruling), so an adjudication
+ * only ever *adds* effects. It never creates events; a correction that removes a
+ * match does not un-fire prior effects (no retroactive surgery — the trace is an
+ * honest record of what happened). The returned ops resolve against `after`, so
+ * anchor resets carry the target's `occurred_at`, not the ruling time.
+ */
+export function reevaluate(
+	rules: Rule[],
+	before: RuleEventContext,
+	after: RuleEventContext,
+): FiredRule[] {
+	const firedBefore = new Set(
+		evaluateRules(rules, before).fired.map((f) => f.rule_id),
+	);
+	return evaluateRules(rules, after).fired.filter(
+		(f) => !firedBefore.has(f.rule_id),
+	);
+}
+
+/**
  * Whether a near-miss is worth surfacing: it is *pending* on a key the event
  * type is awaiting adjudication for. With no `awaiting` context, every near-miss
  * is surfaced (used by the pure pack tests). This is what keeps routine events —

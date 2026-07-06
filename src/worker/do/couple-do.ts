@@ -19,6 +19,7 @@ import {
 	type EffectOp,
 	evaluateRules,
 	type NearMiss,
+	reevaluate,
 	routeClosedTimerDuration,
 } from "#/shared/engine.ts";
 import type { EventType } from "#/shared/event-types.ts";
@@ -34,7 +35,11 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
-import { applyCounterEvent, deriveEventView } from "#/shared/projections.ts";
+import {
+	applyCounterEvent,
+	compositeMetadata,
+	deriveEventView,
+} from "#/shared/projections.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -979,7 +984,171 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 
 		const amendment = this.writeAmendment(me.id, input);
-		return deriveEventView(event, [...priorAmendments, amendment], type);
+		const amendments = [...priorAmendments, amendment];
+
+		// A ruling can resolve a conditional rule that was waiting on it (handoff
+		// §4.2, §7): re-evaluate the target with the merged metadata and fire the
+		// rules that match now but didn't before. Notes and retractions change no
+		// composite state, so only an adjudication re-evaluates.
+		if (amendment.kind === "adjudication") {
+			this.reevaluateOnAmendment(event, type, priorAmendments, amendment);
+		}
+		return deriveEventView(event, amendments, type);
+	}
+
+	/**
+	 * Applies the effects a ruling newly unlocks on its target event. Effect-only
+	 * — an amendment never creates an event (no cascades). Anchor resets carry the
+	 * target's `occurred_at`; timer effects apply only while the timer is still
+	 * active and otherwise leave a skip note rather than doing retroactive surgery
+	 * (handoff §4.2). Every change is traced to the target event, the rule, and
+	 * the ruling that unlocked it.
+	 */
+	private reevaluateOnAmendment(
+		event: Event,
+		type: EventType,
+		priorAmendments: Amendment[],
+		amendment: Amendment,
+	): void {
+		const before = compositeMetadata(event, priorAmendments);
+		const after = compositeMetadata(event, [...priorAmendments, amendment]);
+		const context = (metadata: Record<string, MetadataValue>) => ({
+			type: event.type,
+			metadata,
+			occurred_at: event.occurred_at,
+			awaiting: type.awaiting,
+		});
+		const fired = reevaluate(this.rules(), context(before), context(after));
+
+		this.timersDirty = false;
+		for (const rule of fired) {
+			for (const op of rule.ops) {
+				this.applyAmendmentEffect(event, amendment, rule.rule_id, op);
+			}
+		}
+		if (this.timersDirty) this.armAlarm();
+	}
+
+	/**
+	 * Applies one re-evaluated effect op, stamped at the ruling time and tagged
+	 * with the amendment that unlocked it. Counter/anchor/notify ops mutate the
+	 * cache as usual; a timer op applies only if its instance is still open, else
+	 * it records a skip note (handoff §4.2 — "no retroactive timer surgery").
+	 */
+	private applyAmendmentEffect(
+		event: Event,
+		amendment: Amendment,
+		ruleId: string,
+		op: EffectOp,
+	): void {
+		const at = amendment.created_at;
+		switch (op.kind) {
+			case "counter": {
+				const row = this.counterById(op.counter);
+				if (!row) return;
+				const from = row.value;
+				const to = applyCounterOp(from, op);
+				this.sql.exec(
+					`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
+					to,
+					at,
+					op.counter,
+				);
+				this.recordAmendmentTrace(
+					event,
+					amendment,
+					ruleId,
+					`counter:${op.counter}`,
+					{
+						verb: `${op.op}_counter`,
+						by: op.by ?? 1,
+						from,
+						to,
+					},
+				);
+				return;
+			}
+			case "anchor": {
+				const row = this.anchorById(op.anchor);
+				if (!row) return;
+				const from = row.since;
+				const to = resetAnchor(from, op.at); // op.at is the target's occurred_at
+				this.sql.exec(
+					`UPDATE anchors SET since = ? WHERE id = ?`,
+					to,
+					op.anchor,
+				);
+				this.recordAmendmentTrace(
+					event,
+					amendment,
+					ruleId,
+					`anchor:${op.anchor}`,
+					{
+						verb: "reset_anchor",
+						at: op.at,
+						from,
+						to,
+					},
+				);
+				return;
+			}
+			case "timer": {
+				const target = this.matchOpenTimer(
+					this.openTimerRows(op.timer),
+					op.match_on,
+				);
+				// No live instance to act on: record the skip, mutate nothing.
+				if (!target) {
+					this.recordAmendmentTrace(
+						event,
+						amendment,
+						ruleId,
+						`timer:${op.timer}`,
+						{
+							timer_skipped: true,
+							reason: `${ruleId} skipped: ${op.timer} already ended`,
+							op: op.op,
+						},
+					);
+					return;
+				}
+				this.timersDirty = true;
+				if (op.op === "open") this.openTimer(event, ruleId, op);
+				else this.closeTimer(event, ruleId, op);
+				return;
+			}
+			case "notify":
+				this.recordAmendmentTrace(
+					event,
+					amendment,
+					ruleId,
+					`notify:${op.target}`,
+					{
+						verb: "notify",
+						target: op.target,
+					},
+				);
+				return;
+		}
+	}
+
+	/** Trace row for an amendment-driven effect: cause is the ruling + the rule. */
+	private recordAmendmentTrace(
+		event: Event,
+		amendment: Amendment,
+		ruleId: string,
+		projection: string,
+		detail: Record<string, unknown>,
+	): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, ?, ?, ?, ?)`,
+			amendment.created_at,
+			event.id,
+			ruleId,
+			projection,
+			JSON.stringify({ ...detail, amendment_id: amendment.id }),
+		);
 	}
 
 	/** Inserts an amendment, assigning the server-owned id/created_at/actor. */
