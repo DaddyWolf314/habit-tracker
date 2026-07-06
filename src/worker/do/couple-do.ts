@@ -1498,11 +1498,18 @@ export class CoupleDO extends DurableObject<Env> {
 	async pauseTimer(identityHash: string, timerId: string): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		const now = Date.now();
+		// A countdown whose deadline has already passed but hasn't been swept yet must
+		// not be paused: pauseCountdown would freeze remaining_ms at 0, and because the
+		// expiry sweep skips paused countdowns the timer could then never be marked
+		// `expired` — it would linger open forever and the future-consequence hook for
+		// the missed deadline would never fire. Sweep first so an overdue countdown is
+		// expired here, and requireOpenCountdown then rejects it as already closed.
+		if (this.sweepExpiredCountdowns(now) > 0) this.armAlarm();
 		const row = this.requireOpenCountdown(timerId);
 		if (this.timerState(row).paused_at != null) {
 			throw coupleError("BAD_REQUEST", "countdown is already paused");
 		}
-		const now = Date.now();
 		const patch = pauseCountdown(this.rowToCountdown(row), now);
 		this.patchTimerState(row, patch);
 		this.recordTimerCommand(me.id, row.definition, now, {
