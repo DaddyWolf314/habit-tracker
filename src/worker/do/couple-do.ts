@@ -2228,6 +2228,10 @@ export class CoupleDO extends DurableObject<Env> {
 			const met = targetMet(targetRow.value, target);
 			const from = streakRow.value;
 			const to = nextStreak(from, met);
+			// A dormant streak (target unmet, already 0) folds 0 -> 0. Skip the no-op so
+			// we don't write an UPDATE and a trace row on every rollover forever, the way
+			// the reset loop below guards its own no-ops.
+			if (to === from) continue;
 			this.sql.exec(
 				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
 				to,
