@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { getEventTrace } from "#/lib/api.ts";
+import { Button } from "#/components/ui/button.tsx";
+import { Textarea } from "#/components/ui/textarea.tsx";
+import { amendEvent, getEventTrace } from "#/lib/api.ts";
+import { isOwnPending } from "#/shared/adjudication.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -22,10 +25,15 @@ export function EventStream({
 	events,
 	types,
 	members,
+	selfId = null,
+	onAmended,
 }: {
 	events: EventView[];
 	types: EventType[];
 	members: RoleMember[];
+	/** The viewer's member id, so they can note/retract their own pending events. */
+	selfId?: string | null;
+	onAmended?: () => void;
 }) {
 	const typeMap = new Map(types.map((t) => [t.id, t]));
 
@@ -44,6 +52,8 @@ export function EventStream({
 						event={event}
 						label={typeMap.get(event.type)?.label ?? event.type}
 						members={members}
+						selfId={selfId}
+						onAmended={onAmended}
 					/>
 				))}
 			</ul>
@@ -55,10 +65,14 @@ function EventRow({
 	event,
 	label,
 	members,
+	selfId,
+	onAmended,
 }: {
 	event: EventView;
 	label: string;
 	members: RoleMember[];
+	selfId: string | null;
+	onAmended?: () => void;
 }) {
 	const [trace, setTrace] = useState<TraceRow[] | null>(null);
 	const [open, setOpen] = useState(false);
@@ -91,10 +105,17 @@ function EventRow({
 			>
 				<div className="min-w-0">
 					<div className="flex items-center gap-2 text-sm font-medium">
-						{label}
+						<span className={event.retracted ? "line-through opacity-60" : ""}>
+							{label}
+						</span>
 						{event.pending && (
 							<span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">
 								awaiting ruling
+							</span>
+						)}
+						{event.retracted && (
+							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+								withdrawn
 							</span>
 						)}
 					</div>
@@ -130,6 +151,10 @@ function EventRow({
 				</div>
 			</button>
 
+			{isOwnPending(event, selfId) && (
+				<OwnEventActions eventId={event.id} onAmended={onAmended} />
+			)}
+
 			{open && (
 				<div className="mt-2 rounded-md border bg-muted/40 p-3">
 					<p className="text-xs font-medium text-muted-foreground">
@@ -159,5 +184,124 @@ function EventRow({
 				</div>
 			)}
 		</li>
+	);
+}
+
+/**
+ * Sub-side amendment controls for the author's own pending event (handoff §4.2):
+ * append a note (context, no rule effects) or retract it (removes it from the
+ * queue and marks it withdrawn — never a delete). Retraction is a two-tap inline
+ * confirm; a browser dialog would block the whole surface.
+ */
+function OwnEventActions({
+	eventId,
+	onAmended,
+}: {
+	eventId: string;
+	onAmended?: () => void;
+}) {
+	const [mode, setMode] = useState<"idle" | "note" | "confirm">("idle");
+	const [note, setNote] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function run(fn: () => Promise<unknown>) {
+		setBusy(true);
+		setError(null);
+		try {
+			await fn();
+			setMode("idle");
+			setNote("");
+			onAmended?.();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Couldn't do that.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	const addNote = () =>
+		run(() =>
+			amendEvent({
+				kind: "note_appended",
+				target_event_id: eventId,
+				note: note.trim(),
+			}),
+		);
+	const retract = () =>
+		run(() => amendEvent({ kind: "retracted", target_event_id: eventId }));
+
+	return (
+		<div className="mt-2 space-y-2">
+			{mode === "idle" && (
+				<div className="flex gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setMode("note")}
+						disabled={busy}
+					>
+						Add note
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setMode("confirm")}
+						disabled={busy}
+					>
+						Retract
+					</Button>
+				</div>
+			)}
+
+			{mode === "note" && (
+				<div className="space-y-2">
+					<Textarea
+						value={note}
+						onChange={(e) => setNote(e.target.value)}
+						placeholder="Add context to this pending event…"
+					/>
+					<div className="flex gap-2">
+						<Button size="sm" onClick={addNote} disabled={busy || !note.trim()}>
+							{busy ? "…" : "Save note"}
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => setMode("idle")}
+							disabled={busy}
+						>
+							Cancel
+						</Button>
+					</div>
+				</div>
+			)}
+
+			{mode === "confirm" && (
+				<div className="flex items-center gap-2 text-xs">
+					<span className="text-muted-foreground">
+						Retract this event? It stays visible as withdrawn.
+					</span>
+					<Button
+						variant="destructive"
+						size="sm"
+						onClick={retract}
+						disabled={busy}
+					>
+						{busy ? "…" : "Yes, retract"}
+					</Button>
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => setMode("idle")}
+						disabled={busy}
+					>
+						Cancel
+					</Button>
+				</div>
+			)}
+
+			{error && <p className="text-xs text-destructive">{error}</p>}
+		</div>
 	);
 }
