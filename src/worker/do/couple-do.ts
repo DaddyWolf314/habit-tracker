@@ -540,6 +540,10 @@ export class CoupleDO extends DurableObject<Env> {
 			daily_target: counter.daily_target ?? null,
 			weekly_target: counter.weekly_target ?? null,
 			reset: counter.reset,
+			// Serialized like modify_permission (ExportRow is flat). Dropping it would
+			// lose the streak binding, so a reconstructed ritual_streak_days would fall
+			// back to an ordinary counter the rollover never advances (handoff §4.4).
+			streak: counter.streak ? JSON.stringify(counter.streak) : null,
 			modify_permission: JSON.stringify(counter.modify_permission),
 			value: counter.value,
 			updated_at: counter.updated_at,
