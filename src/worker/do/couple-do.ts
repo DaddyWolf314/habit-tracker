@@ -1047,11 +1047,17 @@ export class CoupleDO extends DurableObject<Env> {
 		const weeklyResetIds = new Set(
 			defs.filter((def) => def.reset === "weekly").map((def) => def.id),
 		);
-		for (const row of this.counterRows()) {
-			if (streakIds.has(row.id)) continue;
+		// One set-based zeroing rather than an UPDATE per counter. Streak values are
+		// preserved (folded by the alarm, not the log), so exclude them; with no streak
+		// counters the NOT IN clause would be empty SQL, so zero everything instead.
+		const streakIdList = [...streakIds];
+		if (streakIdList.length === 0) {
+			this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
+		} else {
+			const placeholders = streakIdList.map(() => "?").join(", ");
 			this.sql.exec(
-				`UPDATE counters SET value = 0, updated_at = NULL WHERE id = ?`,
-				row.id,
+				`UPDATE counters SET value = 0, updated_at = NULL WHERE id NOT IN (${placeholders})`,
+				...streakIdList,
 			);
 		}
 		this.sql.exec(`DELETE FROM timers WHERE kind = 'stopwatch'`);
