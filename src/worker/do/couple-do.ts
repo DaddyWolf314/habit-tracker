@@ -1026,10 +1026,22 @@ export class CoupleDO extends DurableObject<Env> {
 		// logged event, so replay cannot re-derive it — like a timer auto-close, it
 		// is system-job state carried across the rebuild and advanced by the next
 		// rollover, not reconstructed here.
+		const defs = this.counterDefinitions();
 		const streakIds = new Set(
-			this.counterDefinitions()
-				.filter((def) => def.streak)
-				.map((def) => def.id),
+			defs.filter((def) => def.streak).map((def) => def.id),
+		);
+		// Daily/weekly counters are cleared by the off-log `scheduled_reset` alarm, not
+		// by any logged event. Replaying the whole log would therefore re-add every
+		// increment ever recorded and inflate them to lifetime totals. Repair this by
+		// replaying the resets alongside the events: whenever a day/week boundary falls
+		// between two consecutive appends (or after the last one, up to now) the
+		// matching counters are zeroed, so each ends the rebuild holding only its
+		// current period's increments — the same value the live cache carries.
+		const dailyResetIds = new Set(
+			defs.filter((def) => def.reset === "daily").map((def) => def.id),
+		);
+		const weeklyResetIds = new Set(
+			defs.filter((def) => def.reset === "weekly").map((def) => def.id),
 		);
 		for (const row of this.counterRows()) {
 			if (streakIds.has(row.id)) continue;
@@ -1050,8 +1062,21 @@ export class CoupleDO extends DurableObject<Env> {
 		const awaitingByType = new Map(
 			this.eventTypes().map((t) => [t.id, t.awaiting]),
 		);
+		const now = Date.now();
+		let cursor: number | null = null;
 		for (const row of this.eventRows(undefined, "ASC")) {
 			const event = this.rowToEvent(row);
+			// Clear any daily/weekly counters whose reset boundary the alarm would have
+			// crossed since the previous append, before folding this event in.
+			if (cursor !== null) {
+				this.replayScheduledResets(
+					cursor,
+					event.logged_at,
+					dailyResetIds,
+					weeklyResetIds,
+				);
+			}
+			cursor = event.logged_at;
 			this.applyDirectManipulation(event);
 			if (!isBuiltinType(event.type)) {
 				this.applyRules(
@@ -1060,6 +1085,10 @@ export class CoupleDO extends DurableObject<Env> {
 					awaitingByType.get(event.type) ?? [],
 				);
 			}
+		}
+		// Resets that fired after the last append (up to now) still cleared the caches.
+		if (cursor !== null) {
+			this.replayScheduledResets(cursor, now, dailyResetIds, weeklyResetIds);
 		}
 		// The replay rewrote the open-timer set, so re-arm at the new minimum.
 		this.armAlarm();
@@ -2259,6 +2288,41 @@ export class CoupleDO extends DurableObject<Env> {
 			id,
 			JSON.stringify(payload),
 		);
+	}
+
+	/**
+	 * Replays the alarm's scheduled resets across a time gap during a counter rebuild
+	 * (see {@link rebuildCounters}). If a daily and/or weekly UTC boundary falls in
+	 * `(from, to]`, the matching reset counters are zeroed — reproducing off-log
+	 * `scheduled_reset`s the event log itself never recorded. Multiple boundaries of
+	 * the same period in one gap collapse to a single zeroing: a gap spans no events,
+	 * so nothing accrues between them.
+	 */
+	private replayScheduledResets(
+		from: number,
+		to: number,
+		dailyResetIds: Set<string>,
+		weeklyResetIds: Set<string>,
+	): void {
+		const dailyAt = nextDailyRollover(from);
+		if (dailyAt <= to) this.zeroResetCounters(dailyResetIds, dailyAt);
+		const weeklyAt = nextWeeklyRollover(from);
+		if (weeklyAt <= to) this.zeroResetCounters(weeklyResetIds, weeklyAt);
+	}
+
+	/**
+	 * Zeroes the given reset counters at `at`, skipping any already at 0 — mirroring
+	 * the live rollover's no-op guard so an untouched counter keeps its prior
+	 * `updated_at` rather than being stamped by a reset that changed nothing.
+	 */
+	private zeroResetCounters(ids: Set<string>, at: number): void {
+		for (const id of ids) {
+			this.sql.exec(
+				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ? AND value != 0`,
+				at,
+				id,
+			);
+		}
 	}
 
 	private recordSystemJob(
