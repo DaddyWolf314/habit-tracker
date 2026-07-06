@@ -53,6 +53,60 @@ export function isOwnPending(
 	);
 }
 
+/** One amendment rendered for the chain view (handoff §4.6). */
+export interface AmendmentLine {
+	tone: "ruling" | "note" | "retraction";
+	/** What happened, minus the actor/time the row supplies. */
+	summary: string;
+	/** Any prose attached to the amendment. */
+	note?: string;
+	actor: string;
+	at: number;
+}
+
+/**
+ * Describes one amendment as a line in the event's chain drill-in (handoff
+ * §4.6): the original log → its amendments in order → the rules those unlocked.
+ * Pure and label-free — the row prepends who and when.
+ */
+export function describeAmendment(amendment: Amendment): AmendmentLine {
+	const base = { actor: amendment.actor, at: amendment.created_at };
+	switch (amendment.kind) {
+		case "adjudication": {
+			const patched = Object.entries(amendment.patch)
+				.map(([key, value]) => `${key}: ${formatValue(value)}`)
+				.join(", ");
+			const verb = amendment.supersedes ? "revised ruling" : "ruled";
+			return {
+				tone: "ruling",
+				summary: `${verb} — ${patched}`,
+				note: amendment.note,
+				...base,
+			};
+		}
+		case "note_appended":
+			return {
+				tone: "note",
+				summary: "added a note",
+				note: amendment.note,
+				...base,
+			};
+		case "retracted":
+			return {
+				tone: "retraction",
+				summary: "retracted this event",
+				note: amendment.note,
+				...base,
+			};
+	}
+}
+
+/** Booleans read as yes/no; everything else stringifies (mirrors the log UI). */
+function formatValue(value: MetadataValue): string {
+	if (typeof value === "boolean") return value ? "yes" : "no";
+	return String(value);
+}
+
 /** The adjudication currently in force for a key (following corrections). */
 export function activeRuling(
 	amendments: Amendment[],

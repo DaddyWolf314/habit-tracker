@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent, getEventTrace } from "#/lib/api.ts";
-import { isOwnPending } from "#/shared/adjudication.ts";
+import { describeAmendment, isOwnPending } from "#/shared/adjudication.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -14,12 +14,21 @@ import {
 	memberLabel,
 } from "./formatting.ts";
 
+/** Glyphs for the amendment tones in the chain view (ruling/note/retraction). */
+const TONE_MARK: Record<string, string> = {
+	ruling: "⚖",
+	note: "✎",
+	retraction: "✕",
+};
+
 /**
  * The event stream (handoff §4.6, §9 surface 3): the append-only log in reverse
  * chronological order. Each entry renders its composite state (original overlaid
- * by amendments — identical to the original until Phase 5), a pending chip when
- * an `awaiting` key is unset, both timestamps, and a tap-to-open trace chain of
- * the projections it touched.
+ * by amendments), a pending chip while an `awaiting` key is unset (or a withdrawn
+ * chip once retracted), both timestamps, and a tap-to-open chain drill-in: the
+ * original log → its amendments in order → the rules those fired and the
+ * near-misses still waiting → the projections touched. The consent-record view
+ * and the debugging view are the same screen.
  */
 export function EventStream({
 	events,
@@ -156,31 +165,55 @@ function EventRow({
 			)}
 
 			{open && (
-				<div className="mt-2 rounded-md border bg-muted/40 p-3">
-					<p className="text-xs font-medium text-muted-foreground">
-						Effects &amp; near-misses
-					</p>
-					<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
-						{error && (
-							<li className="text-destructive">{error} Tap to retry.</li>
-						)}
-						{!error && trace === null && <li>Loading…</li>}
-						{trace?.length === 0 && (
-							<li>No effects — this event touched no projections.</li>
-						)}
-						{trace?.map((row) => {
-							const line = describeTraceRow(row);
-							return (
-								<li
-									key={row.id}
-									className={line.nearMiss ? "italic opacity-70" : undefined}
-								>
-									{line.nearMiss ? "○ " : "• "}
-									{line.text}
-								</li>
-							);
-						})}
-					</ol>
+				<div className="mt-2 space-y-3 rounded-md border bg-muted/40 p-3">
+					<div>
+						<p className="text-xs font-medium text-muted-foreground">Chain</p>
+						<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
+							<li>
+								• Logged by {memberLabel(event.actor, members)} ·{" "}
+								{formatTime(event.logged_at)}
+							</li>
+							{event.amendments.map((amendment) => {
+								const line = describeAmendment(amendment);
+								return (
+									<li key={amendment.id}>
+										{TONE_MARK[line.tone]} {memberLabel(line.actor, members)}{" "}
+										{line.summary} · {formatTime(line.at)}
+										{line.note && (
+											<span className="italic"> — “{line.note}”</span>
+										)}
+									</li>
+								);
+							})}
+						</ol>
+					</div>
+
+					<div>
+						<p className="text-xs font-medium text-muted-foreground">
+							Effects &amp; near-misses
+						</p>
+						<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
+							{error && (
+								<li className="text-destructive">{error} Tap to retry.</li>
+							)}
+							{!error && trace === null && <li>Loading…</li>}
+							{trace?.length === 0 && (
+								<li>No effects — this event touched no projections.</li>
+							)}
+							{trace?.map((row) => {
+								const line = describeTraceRow(row);
+								return (
+									<li
+										key={row.id}
+										className={line.nearMiss ? "italic opacity-70" : undefined}
+									>
+										{line.nearMiss ? "○ " : "• "}
+										{line.text}
+									</li>
+								);
+							})}
+						</ol>
+					</div>
 				</div>
 			)}
 		</li>
