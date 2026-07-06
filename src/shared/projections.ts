@@ -104,6 +104,16 @@ export function compositeMetadata(
 }
 
 /**
+ * Whether an event has been retracted (handoff §4.2): it carries a `retracted`
+ * amendment. There is no deletion — retraction is a visible, terminal marker
+ * derived from the amendment log, and it drops the event from the queue via
+ * `isPending` below.
+ */
+export function isRetracted(amendments: Amendment[] = []): boolean {
+	return amendments.some((a) => a.kind === "retracted");
+}
+
+/**
  * Whether an event is *pending* (handoff §5): any of its type's `awaiting` keys
  * is unset in composite state. This single derivation is the adjudication-queue
  * mechanism; a retracted event is never pending.

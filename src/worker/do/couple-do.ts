@@ -1,5 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { ulid } from "#/lib/ulid.ts";
+import { validateAmendment } from "#/shared/amendment-validation.ts";
+import type { Amendment, AmendmentInput } from "#/shared/amendments.ts";
+import { amendmentInputSchema } from "#/shared/amendments.ts";
 import {
 	type AnchorView,
 	anchorElapsedDays,
@@ -35,6 +38,7 @@ import {
 	applyCounterEvent,
 	compositeMetadata,
 	isPending,
+	isRetracted,
 } from "#/shared/projections.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
@@ -128,6 +132,18 @@ interface EventRow {
 	logged_at: number;
 	metadata: string;
 	note: string | null;
+	[key: string]: SqlStorageValue;
+}
+
+interface AmendmentRow {
+	id: string;
+	target_event_id: string;
+	kind: string;
+	actor: string;
+	created_at: number;
+	patch: string | null;
+	note: string | null;
+	supersedes: string | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -923,6 +939,90 @@ export class CoupleDO extends DurableObject<Env> {
 				composite_metadata: composite,
 				pending: type ? isPending(type, composite) : false,
 			};
+		});
+	}
+
+	// ── Amendments (handoff §4.2) — rulings, notes, retractions ───────────────
+
+	/**
+	 * Records an amendment against an event: an `adjudication` (a ruling on the
+	 * awaited keys), a `note_appended` (the author annotating their own pending
+	 * event), or a `retracted` (the author withdrawing their own pending event).
+	 * Events are never mutated or deleted — this only ever *appends* an amendment,
+	 * and composite state is re-derived on read. The server owns `id`,
+	 * `created_at`, and `actor`; all semantics are gated by `validateAmendment`.
+	 */
+	async amend(identityHash: string, body: unknown): Promise<EventView> {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		const parsed = amendmentInputSchema.safeParse(body);
+		if (!parsed.success) {
+			throw coupleError(
+				"BAD_REQUEST",
+				parsed.error.issues[0]?.message ?? "invalid amendment",
+			);
+		}
+		const input = parsed.data;
+
+		const row = this.eventRowById(input.target_event_id);
+		if (!row) throw coupleError("NOT_FOUND", "no such event");
+		const event = this.rowToEvent(row);
+		const type = this.eventTypeById(event.type);
+		if (!type)
+			throw coupleError("BAD_REQUEST", `unknown event type: ${event.type}`);
+
+		const priorAmendments = this.amendmentsOf(event.id);
+		const check = validateAmendment(input, {
+			event,
+			eventType: type,
+			actorRole: me.role as Role | null,
+			actorMemberId: me.id,
+			amendments: priorAmendments,
+		});
+		if (!check.ok) {
+			throw coupleError(
+				check.forbidden ? "FORBIDDEN" : "BAD_REQUEST",
+				check.error,
+			);
+		}
+
+		const amendment = this.writeAmendment(me.id, input);
+		return this.eventViewOf(event, type, [...priorAmendments, amendment]);
+	}
+
+	/** Inserts an amendment, assigning the server-owned id/created_at/actor. */
+	private writeAmendment(actor: string, input: AmendmentInput): Amendment {
+		const createdAt = Date.now();
+		const id = ulid(createdAt);
+		const patch =
+			input.kind === "adjudication" ? JSON.stringify(input.patch) : null;
+		const supersedes =
+			input.kind === "adjudication" ? (input.supersedes ?? null) : null;
+		const note = "note" in input ? (input.note ?? null) : null;
+		this.sql.exec(
+			`INSERT INTO amendments (id, target_event_id, kind, actor, created_at, patch, note, supersedes)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id,
+			input.target_event_id,
+			input.kind,
+			actor,
+			createdAt,
+			patch,
+			note,
+			supersedes,
+		);
+		return this.rowToAmendment({
+			id,
+			target_event_id: input.target_event_id,
+			kind: input.kind,
+			actor,
+			created_at: createdAt,
+			patch,
+			note,
+			supersedes,
 		});
 	}
 
@@ -2015,6 +2115,71 @@ export class CoupleDO extends DurableObject<Env> {
 			logged_at: row.logged_at,
 			metadata: JSON.parse(row.metadata) as Record<string, MetadataValue>,
 			note: row.note ?? undefined,
+		};
+	}
+
+	private eventRowById(id: string): EventRow | undefined {
+		return this.sql
+			.exec<EventRow>(
+				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note
+					FROM events WHERE id = ?`,
+				id,
+			)
+			.toArray()[0];
+	}
+
+	/** An event's amendments in `created_at` order (the composite-fold order). */
+	private amendmentsOf(eventId: string): Amendment[] {
+		return this.sql
+			.exec<AmendmentRow>(
+				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes
+					FROM amendments WHERE target_event_id = ? ORDER BY created_at ASC, id ASC`,
+				eventId,
+			)
+			.toArray()
+			.map((row) => this.rowToAmendment(row));
+	}
+
+	private rowToAmendment(row: AmendmentRow): Amendment {
+		const base = {
+			id: row.id,
+			target_event_id: row.target_event_id,
+			actor: row.actor,
+			created_at: row.created_at,
+		};
+		switch (row.kind) {
+			case "adjudication":
+				return {
+					kind: "adjudication",
+					...base,
+					patch: JSON.parse(row.patch ?? "{}") as Record<string, MetadataValue>,
+					note: row.note ?? undefined,
+					supersedes: row.supersedes ?? undefined,
+				};
+			case "note_appended":
+				return { kind: "note_appended", ...base, note: row.note ?? "" };
+			default:
+				return { kind: "retracted", ...base, note: row.note ?? undefined };
+		}
+	}
+
+	/**
+	 * Builds the composite view of an event (handoff §4.2, §4.6): the raw event
+	 * plus its amendments, the derived composite metadata, and the derived
+	 * `pending`/`retracted` status. Nothing here is stored — it is folded on read.
+	 */
+	private eventViewOf(
+		event: Event,
+		type: EventType | undefined,
+		amendments: Amendment[],
+	): EventView {
+		const composite = compositeMetadata(event, amendments);
+		const retracted = isRetracted(amendments);
+		return {
+			...event,
+			amendments,
+			composite_metadata: composite,
+			pending: type ? isPending(type, composite, retracted) : false,
 		};
 	}
 

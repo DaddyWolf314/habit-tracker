@@ -44,3 +44,31 @@ export const amendmentSchema = z.discriminatedUnion("kind", [
 	}),
 ]);
 export type Amendment = z.infer<typeof amendmentSchema>;
+
+/**
+ * The payload a client submits to amend an event. The server assigns `id`,
+ * `created_at`, and the `actor` (the authenticated member) — a client can no
+ * more forge who ruled than it can forge who logged an event. Semantic checks
+ * (permitted keys, supersede rules, retraction-while-pending) live in
+ * `amendment-validation.ts`; this schema only fixes the shape.
+ */
+export const amendmentInputSchema = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("adjudication"),
+		target_event_id: z.string().min(1),
+		patch: z.record(z.string(), metadataValueSchema),
+		note: z.string().optional(),
+		supersedes: z.string().optional(),
+	}),
+	z.object({
+		kind: z.literal("note_appended"),
+		target_event_id: z.string().min(1),
+		note: z.string().min(1),
+	}),
+	z.object({
+		kind: z.literal("retracted"),
+		target_event_id: z.string().min(1),
+		note: z.string().optional(),
+	}),
+]);
+export type AmendmentInput = z.infer<typeof amendmentInputSchema>;
