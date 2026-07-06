@@ -140,6 +140,13 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				return json(event, 201);
 			});
 		}
+		if (path === "/api/events/amend" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const body = await request.json().catch(() => null);
+				const event = await stub.amend(auth.identityHash, body);
+				return json(event, 201);
+			});
+		}
 		if (path === "/api/events/trace" && method === "GET") {
 			const eventId = url.searchParams.get("event_id") ?? "";
 			return await withAuth(request, env, ({ auth, stub }) =>
