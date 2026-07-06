@@ -1488,19 +1488,13 @@ export class CoupleDO extends DurableObject<Env> {
 				JSON.stringify(state),
 				row.id,
 			);
-			this.sql.exec(
-				`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-					VALUES (?, NULL, 'system_job', ?, ?)`,
-				now,
-				`timer:${row.definition}`,
-				JSON.stringify({
-					verb: "auto_close_timer",
-					reason: "over_max",
-					flagged_for_review: true,
-					timer_id: row.id,
-					duration_ms: closedSw.duration_ms,
-				}),
-			);
+			this.recordSystemJob(now, `timer:${row.definition}`, {
+				verb: "auto_close_timer",
+				reason: "over_max",
+				flagged_for_review: true,
+				timer_id: row.id,
+				duration_ms: closedSw.duration_ms,
+			});
 			closed++;
 		}
 		return closed;
@@ -1660,17 +1654,11 @@ export class CoupleDO extends DurableObject<Env> {
 				now,
 				row.id,
 			);
-			this.sql.exec(
-				`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-					VALUES (?, NULL, 'system_job', ?, ?)`,
-				now,
-				`timer:${row.definition}`,
-				JSON.stringify({
-					verb: "expire_countdown",
-					reason: "past_deadline",
-					timer_id: row.id,
-				}),
-			);
+			this.recordSystemJob(now, `timer:${row.definition}`, {
+				verb: "expire_countdown",
+				reason: "past_deadline",
+				timer_id: row.id,
+			});
 			expired++;
 		}
 		return expired;
