@@ -2215,18 +2215,24 @@ export class CoupleDO extends DurableObject<Env> {
 	 * making the rollover legible in the same transparency log as rule effects.
 	 */
 	private runRollover(period: "daily" | "weekly", now: number): void {
-		const defs = this.counterDefinitions();
+		// One read of the counters covers everything: parse the definitions and keep a
+		// value map from the same rows, rather than re-querying each value back out with
+		// counterById. The streak loop reads its target's pre-reset value here, so the
+		// map is refreshed as streaks fold, keeping it consistent for the reset loop.
+		const rows = this.counterRows();
+		const defs = rows.map(
+			(row) => JSON.parse(row.definition) as CounterDefinition,
+		);
+		const valueById = new Map(rows.map((r) => [r.id, r.value]));
 		for (const def of defs) {
 			const streak = def.streak;
 			if (!streak || streak.period !== period) continue;
-			const streakRow = this.counterById(def.id);
-			const targetRow = this.counterById(streak.counter);
 			const targetDef = defs.find((d) => d.id === streak.counter);
-			if (!streakRow || !targetRow || !targetDef) continue;
+			if (!targetDef) continue;
 			const target =
 				period === "daily" ? targetDef.daily_target : targetDef.weekly_target;
-			const met = targetMet(targetRow.value, target);
-			const from = streakRow.value;
+			const met = targetMet(valueById.get(streak.counter) ?? 0, target);
+			const from = valueById.get(def.id) ?? 0;
 			const to = nextStreak(from, met);
 			// A dormant streak (target unmet, already 0) folds 0 -> 0. Skip the no-op so
 			// we don't write an UPDATE and a trace row on every rollover forever, the way
@@ -2238,6 +2244,7 @@ export class CoupleDO extends DurableObject<Env> {
 				now,
 				def.id,
 			);
+			valueById.set(def.id, to);
 			this.recordSystemJob(now, `counter:${def.id}`, {
 				verb: "streak_rollover",
 				period,
@@ -2249,8 +2256,8 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		for (const def of defs) {
 			if (def.reset !== period) continue;
-			const row = this.counterById(def.id);
-			if (!row || row.value === 0) continue;
+			const value = valueById.get(def.id) ?? 0;
+			if (value === 0) continue;
 			this.sql.exec(
 				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ?`,
 				now,
@@ -2259,7 +2266,7 @@ export class CoupleDO extends DurableObject<Env> {
 			this.recordSystemJob(now, `counter:${def.id}`, {
 				verb: "scheduled_reset",
 				period,
-				from: row.value,
+				from: value,
 				to: 0,
 			});
 		}
