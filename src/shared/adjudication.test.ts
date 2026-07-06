@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { activeRuling, awaitedRulings, isOwnPending } from "./adjudication.ts";
+import {
+	activeRuling,
+	awaitedRulings,
+	describeAmendment,
+	isOwnPending,
+} from "./adjudication.ts";
 import type { Amendment } from "./amendments.ts";
 import type { EventType } from "./event-types.ts";
 import type { EventView } from "./events.ts";
@@ -103,5 +108,54 @@ describe("activeRuling", () => {
 
 	it("is undefined when no ruling touches the key", () => {
 		expect(activeRuling([], "permitted")).toBeUndefined();
+	});
+});
+
+describe("describeAmendment — one line of the chain view (handoff §4.6)", () => {
+	const meta = {
+		id: "x",
+		target_event_id: "e1",
+		actor: "dom-1",
+		created_at: 5,
+	};
+
+	it("describes a ruling with its patched keys and values", () => {
+		const line = describeAmendment({
+			kind: "adjudication",
+			...meta,
+			patch: { permitted: true },
+			note: "as agreed",
+		});
+		expect(line.tone).toBe("ruling");
+		expect(line.summary).toContain("permitted: yes");
+		expect(line.note).toBe("as agreed");
+		expect(line.actor).toBe("dom-1");
+		expect(line.at).toBe(5);
+	});
+
+	it("marks a correction as a revised ruling", () => {
+		const line = describeAmendment({
+			kind: "adjudication",
+			...meta,
+			patch: { permitted: false },
+			supersedes: "a1",
+		});
+		expect(line.summary).toMatch(/revis/i);
+	});
+
+	it("describes an appended note", () => {
+		const line = describeAmendment({
+			kind: "note_appended",
+			...meta,
+			note: "context",
+		});
+		expect(line.tone).toBe("note");
+		expect(line.note).toBe("context");
+	});
+
+	it("describes a retraction", () => {
+		const line = describeAmendment({ kind: "retracted", ...meta });
+		expect(line.tone).toBe("retraction");
+		expect(line.summary).toMatch(/retract/i);
 	});
 });
