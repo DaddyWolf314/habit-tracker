@@ -35,6 +35,18 @@ export const counterDefinitionSchema = z.object({
 	daily_target: z.number().int().positive().optional(),
 	weekly_target: z.number().int().positive().optional(),
 	reset: counterResetSchema.default("never"),
+	/**
+	 * Marks this counter as a streak of another target-counter (handoff §4.4 —
+	 * "streaks are built into target-counters, not rules"). At each `period`
+	 * rollover the alarm reads `counter`'s target-met and folds this streak
+	 * `+1 : 0`. Absent for ordinary counters.
+	 */
+	streak: z
+		.object({
+			counter: z.string(),
+			period: z.enum(["daily", "weekly"]).default("daily"),
+		})
+		.optional(),
 	/** Roles permitted to adjust or reset the counter directly (handoff §4.4). */
 	modify_permission: permissionListSchema.default(["dom", "sub", "switch"]),
 });

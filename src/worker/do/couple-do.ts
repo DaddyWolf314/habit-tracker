@@ -1,5 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 import { ulid } from "#/lib/ulid.ts";
+import {
+	type AnchorView,
+	anchorElapsedDays,
+	anchorElapsedMs,
+	resetAnchor,
+} from "#/shared/anchors.ts";
 import type {
 	Counter,
 	CounterDefinition,
@@ -10,6 +16,7 @@ import {
 	type EffectOp,
 	evaluateRules,
 	type NearMiss,
+	routeClosedTimerDuration,
 } from "#/shared/engine.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
@@ -33,6 +40,35 @@ import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
+import { catchUpFireAt, dueItems, earliestFireAt } from "#/shared/scheduler.ts";
+import {
+	DAY_MS,
+	nextDailyRollover,
+	nextStreak,
+	nextWeeklyRollover,
+	targetMet,
+	WEEK_MS,
+} from "#/shared/streaks.ts";
+import {
+	assignCountdownInputSchema,
+	type Countdown,
+	closeStopwatch,
+	countdownExpiryAt,
+	DEFAULT_STOPWATCH_MAX_MS,
+	durationMinutes,
+	extendCountdown,
+	extendTimerInputSchema,
+	isCountdownExpired,
+	matchStopwatch,
+	type OpenStopwatch,
+	pauseCountdown,
+	resumeCountdown,
+	STOPWATCH_MAX_MS_BY_ACTIVITY,
+	stopwatchDurationMs,
+	stopwatchExpiryAt,
+	stopwatchesToAutoClose,
+	type TimerView,
+} from "#/shared/timers.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import {
 	COUNTER_ADJUSTED_TYPE,
@@ -110,6 +146,69 @@ interface RuleRow {
 	[key: string]: SqlStorageValue;
 }
 
+/** A row in the `anchors` table: one elapsed-since anchor's reset timestamp. */
+interface AnchorRow {
+	id: string;
+	/** The last reset's `occurred_at`; null until a rule first resets the anchor. */
+	since: number | null;
+	[key: string]: SqlStorageValue;
+}
+
+/** A row in the `schedule` table: one job the single alarm fires (handoff §3.2). */
+interface ScheduleRow {
+	id: string;
+	next_fire_at: number;
+	kind: string;
+	/** JSON job params; `{ interval_ms }` marks a recurring job (else one-shot). */
+	payload: string | null;
+	[key: string]: SqlStorageValue;
+}
+
+/** The parsed `ScheduleRow.payload`. A positive `interval_ms` makes the job recur. */
+interface SchedulePayload {
+	interval_ms?: number;
+	[key: string]: unknown;
+}
+
+/** A row in the `timers` table: one in-flight or closed timer instance. */
+interface TimerRow {
+	id: string;
+	kind: string;
+	/** The timer definition name, e.g. `session_stopwatch`. */
+	definition: string;
+	/** JSON `TimerState` — the match keys, tag, and derived/countdown fields. */
+	state: string;
+	status: string | null;
+	opened_at: number | null;
+	closed_at: number | null;
+	[key: string]: SqlStorageValue;
+}
+
+/** The per-instance timer state carried in `TimerRow.state` (JSON). */
+interface TimerState {
+	/** The ref match the opening event pinned, e.g. `{ session_id: "s1" }`. */
+	match?: Record<string, MetadataValue>;
+	/** The opening `activity`, driving the per-activity max and duration routing. */
+	tag?: string;
+	/** Derived duration, set on close. */
+	duration_ms?: number;
+	/**
+	 * Real end time of a session whose stopwatch the over-max sweep had already
+	 * auto-closed, recorded when the genuine `session_ended` arrives so a review can
+	 * see the true span (handoff §4.5). Present only on reconciled auto-closes.
+	 */
+	actual_ended_at?: number;
+	/** Countdown deadline (#30). */
+	deadline_at?: number;
+	/** When a countdown was paused (#30); null/absent while running. */
+	paused_at?: number;
+	/** Remaining time captured at pause (#30). */
+	remaining_ms?: number;
+}
+
+/** The resolved timer effect op (open/close) produced by the rule engine. */
+type TimerOp = Extract<EffectOp, { kind: "timer" }>;
+
 /**
  * CoupleDO — one SQLite-backed Durable Object per couple (handoff §3.2). It owns
  * all relationship data: members, roles, devices, the event log, amendments,
@@ -133,6 +232,12 @@ interface RuleRow {
  */
 export class CoupleDO extends DurableObject<Env> {
 	private readonly sql: SqlStorage;
+	/**
+	 * Set by applyEffectOp's timer branch so appendEvent re-arms the alarm only when a
+	 * rule actually opened or closed a timer — the vast majority of events touch none,
+	 * and re-arming reads the schedule and every open-timer row.
+	 */
+	private timersDirty = false;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -146,6 +251,10 @@ export class CoupleDO extends DurableObject<Env> {
 			runMigrations(this.sql);
 			this.ensureSeeded();
 			this.ensureRulePackSeeded();
+			// Backfill the rollover schedule for couples active before #33 shipped,
+			// and re-arm the single alarm on every wake so it survives eviction.
+			this.ensureRolloverScheduled();
+			this.armAlarm();
 		});
 	}
 
@@ -320,6 +429,9 @@ export class CoupleDO extends DurableObject<Env> {
 			Date.now(),
 			JSON.stringify({ assignment }),
 		);
+		// The dynamic is live: start the day/week rollover schedule and arm the alarm.
+		this.ensureRolloverScheduled();
+		this.armAlarm();
 	}
 
 	private roleState(identityHash: string): RoleConfirmationState {
@@ -434,6 +546,10 @@ export class CoupleDO extends DurableObject<Env> {
 			daily_target: counter.daily_target ?? null,
 			weekly_target: counter.weekly_target ?? null,
 			reset: counter.reset,
+			// Serialized like modify_permission (ExportRow is flat). Dropping it would
+			// lose the streak binding, so a reconstructed ritual_streak_days would fall
+			// back to an ordinary counter the rollover never advances (handoff §4.4).
+			streak: counter.streak ? JSON.stringify(counter.streak) : null,
 			modify_permission: JSON.stringify(counter.modify_permission),
 			value: counter.value,
 			updated_at: counter.updated_at,
@@ -576,6 +692,15 @@ export class CoupleDO extends DurableObject<Env> {
 				rule.id,
 				JSON.stringify(rule),
 				rule.enabled === false ? 0 : 1,
+			);
+		}
+		// Anchors are pure state (an id + reset timestamp); seed each unset, and on a
+		// version bump leave an existing anchor's `since` untouched — only the anchor
+		// *set* is policy, and its live timestamp is a projection to preserve.
+		for (const anchor of DEFAULT_ANCHORS) {
+			this.sql.exec(
+				`INSERT INTO anchors (id, since) VALUES (?, NULL) ON CONFLICT(id) DO NOTHING`,
+				anchor,
 			);
 		}
 		this.setSetting("rule_pack_version", String(RULE_PACK_VERSION));
@@ -765,11 +890,15 @@ export class CoupleDO extends DurableObject<Env> {
 		// every real event is run through the rule engine (Phase 3). A pending
 		// event still fires its unconditional rules and records near-misses for the
 		// conditional ones waiting on adjudication (handoff §7).
+		this.timersDirty = false;
 		this.applyDirectManipulation(event);
 		if (!isBuiltinType(event.type)) {
 			// No amendments at append time, so composite == the event's own metadata.
 			this.applyRules(event, event.metadata, type.awaiting);
 		}
+		// A rule may have opened or closed a timer, moving the nearest consequence; only
+		// then is a re-arm needed. Most events touch no timer, so skip the re-query.
+		if (this.timersDirty) this.armAlarm();
 
 		return {
 			...event,
@@ -895,14 +1024,77 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
-		// Reset both caches; they are rebuilt below purely from the event log.
-		this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
+		// Reset every projection cache; all are rebuilt below purely from the log.
+		// Stopwatches are torn down (R15/R16 reopen/close them on replay), keeping
+		// them an honest cache — an over-max auto-close is re-derived by the next
+		// sweep rather than replayed (a system job, not a logged event). Countdowns
+		// are dom *commands*, not event-derived, so the log cannot re-derive them:
+		// their assignment (and any pause/extend) is durable and survives the
+		// rebuild. Only their event-driven close is re-derived, so reset each to
+		// running and let replay re-close via R4/R14; `expired` is re-derived by the
+		// countdown sweep, mirroring the stopwatch auto-close.
+		// Zero the event-derived counters, but preserve streak counters: their value
+		// is folded by the alarm at rollover ("target met? +1 : 0"), not by any
+		// logged event, so replay cannot re-derive it — like a timer auto-close, it
+		// is system-job state carried across the rebuild and advanced by the next
+		// rollover, not reconstructed here.
+		const defs = this.counterDefinitions();
+		const streakIds = new Set(
+			defs.filter((def) => def.streak).map((def) => def.id),
+		);
+		// Daily/weekly counters are cleared by the off-log `scheduled_reset` alarm, not
+		// by any logged event. Replaying the whole log would therefore re-add every
+		// increment ever recorded and inflate them to lifetime totals. Repair this by
+		// replaying the resets alongside the events: whenever a day/week boundary falls
+		// between two consecutive appends (or after the last one, up to now) the
+		// matching counters are zeroed, so each ends the rebuild holding only its
+		// current period's increments — the same value the live cache carries.
+		const dailyResetIds = new Set(
+			defs.filter((def) => def.reset === "daily").map((def) => def.id),
+		);
+		const weeklyResetIds = new Set(
+			defs.filter((def) => def.reset === "weekly").map((def) => def.id),
+		);
+		// One set-based zeroing rather than an UPDATE per counter. Streak values are
+		// preserved (folded by the alarm, not the log), so exclude them; with no streak
+		// counters the NOT IN clause would be empty SQL, so zero everything instead.
+		const streakIdList = [...streakIds];
+		if (streakIdList.length === 0) {
+			this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
+		} else {
+			const placeholders = streakIdList.map(() => "?").join(", ");
+			this.sql.exec(
+				`UPDATE counters SET value = 0, updated_at = NULL WHERE id NOT IN (${placeholders})`,
+				...streakIdList,
+			);
+		}
+		this.sql.exec(`DELETE FROM timers WHERE kind = 'stopwatch'`);
+		this.sql.exec(
+			`UPDATE timers SET status = NULL, closed_at = NULL WHERE kind = 'countdown'`,
+		);
+		// Anchors are event-derived (reset by R7/R11/R12/R17), so clear them and let
+		// replay re-fold each reset. `resetAnchor` is commutative, so the rebuilt
+		// value is independent of replay order.
+		this.sql.exec(`UPDATE anchors SET since = NULL`);
 		this.sql.exec(`DELETE FROM trace`);
 		const awaitingByType = new Map(
 			this.eventTypes().map((t) => [t.id, t.awaiting]),
 		);
+		const now = Date.now();
+		let cursor: number | null = null;
 		for (const row of this.eventRows(undefined, "ASC")) {
 			const event = this.rowToEvent(row);
+			// Clear any daily/weekly counters whose reset boundary the alarm would have
+			// crossed since the previous append, before folding this event in.
+			if (cursor !== null) {
+				this.replayScheduledResets(
+					cursor,
+					event.logged_at,
+					dailyResetIds,
+					weeklyResetIds,
+				);
+			}
+			cursor = event.logged_at;
 			this.applyDirectManipulation(event);
 			if (!isBuiltinType(event.type)) {
 				this.applyRules(
@@ -912,6 +1104,12 @@ export class CoupleDO extends DurableObject<Env> {
 				);
 			}
 		}
+		// Resets that fired after the last append (up to now) still cleared the caches.
+		if (cursor !== null) {
+			this.replayScheduledResets(cursor, now, dailyResetIds, weeklyResetIds);
+		}
+		// The replay rewrote the open-timer set, so re-arm at the new minimum.
+		this.armAlarm();
 		return this.counterRows().map((r) => this.rowToCounter(r));
 	}
 
@@ -1058,22 +1256,36 @@ export class CoupleDO extends DurableObject<Env> {
 				});
 				return;
 			}
-			case "anchor":
+			case "anchor": {
+				// Fold the reset into the anchor's `since` (handoff §4.2 — anchored to
+				// the event's occurred_at, carried on `op.at`, not the log time). A
+				// missing anchor row is inert, mirroring the counter path. `resetAnchor`
+				// keeps the later timestamp so a backdated amendment can't drag it back.
+				const row = this.anchorById(op.anchor);
+				if (!row) return;
+				const from = row.since;
+				const to = resetAnchor(from, op.at);
+				this.sql.exec(
+					`UPDATE anchors SET since = ? WHERE id = ?`,
+					to,
+					op.anchor,
+				);
 				this.recordTrace(event, ruleId, `anchor:${op.anchor}`, {
 					verb: "reset_anchor",
 					at: op.at,
+					from,
+					to,
 				});
 				return;
+			}
 			case "timer":
-				this.recordTrace(event, ruleId, `timer:${op.timer}`, {
-					verb: op.op === "open" ? "open_timer" : "close_timer",
-					match_on: op.match_on,
-					tag: op.tag,
-					status: op.status,
-					route_duration_to: op.route_duration_to,
-					// The stopwatch/countdown state machine and duration land in Phase 4.
-					deferred: true,
-				});
+				// The open-timer set moved, so the caller (appendEvent) must re-arm.
+				this.timersDirty = true;
+				if (op.op === "open") {
+					this.openTimer(event, ruleId, op);
+				} else {
+					this.closeTimer(event, ruleId, op);
+				}
 				return;
 			case "notify":
 				this.recordTrace(event, ruleId, `notify:${op.target}`, {
@@ -1120,6 +1332,552 @@ export class CoupleDO extends DurableObject<Env> {
 			projection,
 			JSON.stringify(detail),
 		);
+	}
+
+	// ── Timers (handoff §4.5) ────────────────────────────────────────────────
+
+	/**
+	 * All timers, newest first, as live views for the today screen. The over-max
+	 * stopwatch sweep runs first so a session left running past its per-activity
+	 * max reads as auto-closed even on a couple that has been dormant — the alarm
+	 * (#32) makes this precise, but a read never shows a stale over-max as running.
+	 */
+	async listTimers(identityHash: string): Promise<TimerView[]> {
+		this.requireMember(identityHash);
+		const now = Date.now();
+		this.sweepOverMaxStopwatches(now);
+		this.sweepExpiredCountdowns(now);
+		// A sweep may have closed a timer, retiring the consequence the alarm was
+		// armed for; re-arm at the new minimum so the single alarm stays honest.
+		this.armAlarm();
+		return this.timerRows().map((row) => this.rowToTimerView(row));
+	}
+
+	/**
+	 * Opens a stopwatch (handoff §4.5, R15): records the in-flight instance keyed by
+	 * the opening event's ref match (e.g. `session_id`), tagged with its `activity`.
+	 * `opened_at` is the event's `occurred_at` so a backfilled session measures the
+	 * real elapsed span, not the log time.
+	 */
+	private openTimer(event: Event, ruleId: string, op: TimerOp): void {
+		const id = ulid(event.logged_at);
+		const state: TimerState = { match: op.match_on ?? {}, tag: op.tag };
+		this.sql.exec(
+			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
+				VALUES (?, 'stopwatch', ?, ?, NULL, ?, NULL)`,
+			id,
+			op.timer,
+			JSON.stringify(state),
+			event.occurred_at,
+		);
+		this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+			verb: "open_timer",
+			timer_id: id,
+			match_on: op.match_on,
+			tag: op.tag,
+		});
+	}
+
+	/**
+	 * Closes a timer (handoff §4.5, R16/R4/R14): finds the open instance by the
+	 * close event's resolved ref match, derives its duration, and — when the close
+	 * routes a duration into a counter (R16 → `service_minutes_week`) — folds that
+	 * in via the shared counter path. A close with no matching open is an orphan
+	 * (`session_ended` with no `session_started`): rejected with a trace note, never
+	 * a wildcard that would close an unrelated session.
+	 */
+	private closeTimer(event: Event, ruleId: string, op: TimerOp): void {
+		const target = this.matchOpenTimer(
+			this.openTimerRows(op.timer),
+			op.match_on,
+		);
+		if (!target) {
+			// No open timer matched. Before calling this an orphan, check whether the
+			// over-max sweep already auto-closed this session — the genuine session_ended
+			// then arrives after the fact. That is not an orphan: reconcile it by stamping
+			// the real end time on the auto-closed row (so a review sees the true span)
+			// and trace it as such. An auto-closed session is flagged for review, not
+			// auto-credited (handoff §4.5), so no duration is routed.
+			const autoClosed = this.matchOpenTimer(
+				this.autoClosedTimerRows(op.timer),
+				op.match_on,
+			);
+			if (autoClosed) {
+				const state = this.timerState(autoClosed);
+				state.actual_ended_at = event.occurred_at;
+				this.sql.exec(
+					`UPDATE timers SET state = ? WHERE id = ?`,
+					JSON.stringify(state),
+					autoClosed.id,
+				);
+				this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+					verb: "close_timer",
+					matched: true,
+					timer_id: autoClosed.id,
+					status: autoClosed.status,
+					reconciled_auto_closed: true,
+					note: "session already auto-closed past max; recorded actual end for review",
+				});
+				return;
+			}
+			this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+				verb: "close_timer",
+				matched: false,
+				match_on: op.match_on,
+				note: "no matching open timer",
+			});
+			return;
+		}
+		const closedAt = event.occurred_at;
+		const durationMs = stopwatchDurationMs(
+			target.opened_at ?? closedAt,
+			closedAt,
+		);
+		const state = this.timerState(target);
+		state.duration_ms = durationMs;
+		this.sql.exec(
+			`UPDATE timers SET status = ?, closed_at = ?, state = ? WHERE id = ?`,
+			op.status ?? "completed",
+			closedAt,
+			JSON.stringify(state),
+			target.id,
+		);
+		this.recordTrace(event, ruleId, `timer:${op.timer}`, {
+			verb: "close_timer",
+			matched: true,
+			timer_id: target.id,
+			status: op.status,
+			duration_ms: durationMs,
+			route_duration_to: op.route_duration_to,
+		});
+		// The rule routes the derived duration; the timer computed it (handoff §4.3).
+		const routed = routeClosedTimerDuration(op, durationMinutes(durationMs));
+		if (routed) this.applyEffectOp(event, ruleId, routed);
+	}
+
+	/**
+	 * Resolves which open timer a close targets. An undefined match is a singleton
+	 * close (R14's `denial_period`, no ref): the oldest open of that definition, or
+	 * none. A defined match (even empty) must pin its keys — an empty match is a
+	 * close whose ref key was unset, which is an orphan, not a wildcard.
+	 */
+	private matchOpenTimer(
+		rows: TimerRow[],
+		matchOn: Record<string, MetadataValue> | undefined,
+	): TimerRow | undefined {
+		if (matchOn === undefined) return rows[0];
+		const matched = matchStopwatch(
+			rows.map((r) => this.rowToOpenStopwatch(r)),
+			matchOn,
+		);
+		return matched ? rows.find((r) => r.id === matched.id) : undefined;
+	}
+
+	/**
+	 * Auto-closes any stopwatch that has run past its per-activity max (handoff
+	 * §4.5), flagged for review, attributed to the `system_job` in the trace. Idempotent
+	 * and cheap on a dormant couple (a single indexed read). Returns the count closed.
+	 */
+	private sweepOverMaxStopwatches(now: number): number {
+		const rows = this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE kind = 'stopwatch' AND status IS NULL`,
+			)
+			.toArray();
+		const due = stopwatchesToAutoClose(
+			rows.map((r) => this.rowToOpenStopwatch(r)),
+			now,
+			STOPWATCH_MAX_MS_BY_ACTIVITY,
+			DEFAULT_STOPWATCH_MAX_MS,
+		);
+		let closed = 0;
+		for (const inst of due) {
+			const closedSw = closeStopwatch(inst, now, { auto: true });
+			const row = rows.find((r) => r.id === inst.id);
+			if (!row) continue;
+			const state = this.timerState(row);
+			state.duration_ms = closedSw.duration_ms;
+			this.sql.exec(
+				`UPDATE timers SET status = 'auto_closed', closed_at = ?, state = ? WHERE id = ?`,
+				now,
+				JSON.stringify(state),
+				row.id,
+			);
+			this.recordSystemJob(now, `timer:${row.definition}`, {
+				verb: "auto_close_timer",
+				reason: "over_max",
+				flagged_for_review: true,
+				timer_id: row.id,
+				duration_ms: closedSw.duration_ms,
+			});
+			closed++;
+		}
+		return closed;
+	}
+
+	// ── Countdowns (dom-assigned deadline timers) — handoff §4.5, #30 ─────────
+
+	/**
+	 * Assigns a countdown (handoff §4.5 — "dom-started countdown = assignment").
+	 * Unlike a stopwatch (opened by a `session_started` event via R15), a countdown
+	 * is a direct dom command: it has no opening event, so it is durable state that
+	 * a `rebuildCounters` replay preserves rather than re-derives. Its close *is*
+	 * event-driven (R4 `task_completed`, R14 `orgasm permitted=false`), and its
+	 * `expired` disposition comes from the alarm sweep. `session_stopwatch` is
+	 * reserved for the stopwatch flavor and cannot be assigned as a countdown —
+	 * R16 would otherwise try to close it by `session_id` and route a duration.
+	 */
+	async assignCountdown(
+		identityHash: string,
+		input: unknown,
+	): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const parsed = assignCountdownInputSchema.parse(input);
+		if (this.stopwatchDefinitionNames().has(parsed.timer)) {
+			throw coupleError(
+				"BAD_REQUEST",
+				`${parsed.timer} is reserved for stopwatches`,
+			);
+		}
+		const now = Date.now();
+		const id = ulid(now);
+		const state: TimerState = {
+			match: parsed.match,
+			tag: parsed.tag,
+			deadline_at: now + parsed.duration_ms,
+		};
+		this.sql.exec(
+			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
+				VALUES (?, 'countdown', ?, ?, NULL, ?, NULL)`,
+			id,
+			parsed.timer,
+			JSON.stringify(state),
+			now,
+		);
+		this.recordTimerCommand(me.id, parsed.timer, now, {
+			verb: "assign_countdown",
+			timer_id: id,
+			match: parsed.match,
+			tag: parsed.tag,
+			deadline_at: state.deadline_at,
+		});
+		this.armAlarm();
+		return this.rowToTimerView(this.requireTimerRow(id));
+	}
+
+	/**
+	 * Pauses a running countdown, freezing the time that was left (handoff §4.5 —
+	 * "pause and extend by the dom are day-one features"). A paused countdown never
+	 * expires; that is exactly the "life intruded" escape valve.
+	 */
+	async pauseTimer(identityHash: string, timerId: string): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const now = Date.now();
+		// A countdown whose deadline has already passed but hasn't been swept yet must
+		// not be paused: pauseCountdown would freeze remaining_ms at 0, and because the
+		// expiry sweep skips paused countdowns the timer could then never be marked
+		// `expired` — it would linger open forever and the future-consequence hook for
+		// the missed deadline would never fire. Sweep first so an overdue countdown is
+		// expired here, and requireOpenCountdown then rejects it as already closed.
+		if (this.sweepExpiredCountdowns(now) > 0) this.armAlarm();
+		const row = this.requireOpenCountdown(timerId);
+		if (this.timerState(row).paused_at != null) {
+			throw coupleError("BAD_REQUEST", "countdown is already paused");
+		}
+		const patch = pauseCountdown(this.rowToCountdown(row), now);
+		this.patchTimerState(row, patch);
+		this.recordTimerCommand(me.id, row.definition, now, {
+			verb: "pause_countdown",
+			timer_id: row.id,
+			remaining_ms: patch.remaining_ms,
+		});
+		this.armAlarm();
+		return this.rowToTimerView(this.requireTimerRow(row.id));
+	}
+
+	/**
+	 * Resumes a paused countdown, re-projecting the frozen remaining time onto a
+	 * fresh deadline so the pause added no cost and stole no time (handoff §4.5).
+	 */
+	async resumeTimer(identityHash: string, timerId: string): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const row = this.requireOpenCountdown(timerId);
+		if (this.timerState(row).paused_at == null) {
+			throw coupleError("BAD_REQUEST", "countdown is not paused");
+		}
+		const now = Date.now();
+		const patch = resumeCountdown(this.rowToCountdown(row), now);
+		this.patchTimerState(row, patch);
+		this.recordTimerCommand(me.id, row.definition, now, {
+			verb: "resume_countdown",
+			timer_id: row.id,
+			deadline_at: patch.deadline_at,
+		});
+		this.armAlarm();
+		return this.rowToTimerView(this.requireTimerRow(row.id));
+	}
+
+	/**
+	 * Extends a countdown by the granted time (handoff §4.5). While running the
+	 * deadline moves out; while paused the frozen remaining grows, re-projected
+	 * onto a deadline on resume.
+	 */
+	async extendTimer(
+		identityHash: string,
+		timerId: string,
+		input: unknown,
+	): Promise<TimerView> {
+		const me = this.requireMember(identityHash);
+		this.assertDom(me);
+		const row = this.requireOpenCountdown(timerId);
+		const { by_ms } = extendTimerInputSchema.parse(input);
+		const now = Date.now();
+		const patch = extendCountdown(this.rowToCountdown(row), by_ms);
+		this.patchTimerState(row, patch);
+		this.recordTimerCommand(me.id, row.definition, now, {
+			verb: "extend_countdown",
+			timer_id: row.id,
+			by_ms,
+			...patch,
+		});
+		this.armAlarm();
+		return this.rowToTimerView(this.requireTimerRow(row.id));
+	}
+
+	/**
+	 * Expires any running countdown past its deadline (handoff §4.5 — the future-
+	 * consequence hook), marked `expired`, attributed to the `system_job`. Like the
+	 * over-max stopwatch sweep this is idempotent and re-derived on read; the alarm
+	 * (#32) makes it precise, but a read never shows a stale running countdown as
+	 * live. A paused countdown is skipped — its clock is frozen.
+	 */
+	private sweepExpiredCountdowns(now: number): number {
+		const rows = this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE kind = 'countdown' AND status IS NULL`,
+			)
+			.toArray();
+		let expired = 0;
+		for (const row of rows) {
+			if (!isCountdownExpired(this.rowToCountdown(row), now)) continue;
+			this.sql.exec(
+				`UPDATE timers SET status = 'expired', closed_at = ? WHERE id = ?`,
+				now,
+				row.id,
+			);
+			this.recordSystemJob(now, `timer:${row.definition}`, {
+				verb: "expire_countdown",
+				reason: "past_deadline",
+				timer_id: row.id,
+			});
+			expired++;
+		}
+		return expired;
+	}
+
+	/**
+	 * The timer names any installed rule opens as a stopwatch. A countdown may not be
+	 * assigned under one of these: stopwatches and countdowns share the close matcher
+	 * (openTimerRows keys on definition + `status IS NULL`, not kind), so a countdown
+	 * sharing a stopwatch's name could be matched and closed by that stopwatch's rule
+	 * and route a bogus duration. Generalizes the former `session_stopwatch` reservation
+	 * to whatever the rules actually open.
+	 */
+	private stopwatchDefinitionNames(): Set<string> {
+		const names = new Set<string>();
+		for (const rule of this.rules()) {
+			for (const effect of rule.effects) {
+				if (effect.verb === "open_timer") names.add(effect.timer);
+			}
+		}
+		return names;
+	}
+
+	private openTimerRows(definition: string): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE definition = ? AND status IS NULL
+					ORDER BY opened_at ASC, id ASC`,
+				definition,
+			)
+			.toArray();
+	}
+
+	/**
+	 * The stopwatches of a definition already auto-closed by the over-max sweep, so a
+	 * genuine `session_ended` arriving after the sweep can be reconciled against the
+	 * session it belongs to (handoff §4.5) rather than dropped as an orphan.
+	 */
+	private autoClosedTimerRows(definition: string): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE definition = ? AND status = 'auto_closed'
+					ORDER BY opened_at ASC, id ASC`,
+				definition,
+			)
+			.toArray();
+	}
+
+	private timerRows(): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers ORDER BY opened_at DESC, id DESC`,
+			)
+			.toArray();
+	}
+
+	private timerState(row: TimerRow): TimerState {
+		return JSON.parse(row.state) as TimerState;
+	}
+
+	private rowToOpenStopwatch(row: TimerRow): OpenStopwatch {
+		const state = this.timerState(row);
+		return {
+			id: row.id,
+			timer: row.definition,
+			match: state.match ?? {},
+			opened_at: row.opened_at ?? 0,
+			tag: state.tag,
+		};
+	}
+
+	private rowToCountdown(row: TimerRow): Countdown {
+		const state = this.timerState(row);
+		const opened_at = row.opened_at ?? 0;
+		return {
+			opened_at,
+			deadline_at: state.deadline_at ?? opened_at,
+			paused_at: state.paused_at ?? null,
+			remaining_ms: state.remaining_ms ?? null,
+		};
+	}
+
+	private timerRowById(id: string): TimerRow | undefined {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE id = ?`,
+				id,
+			)
+			.toArray()[0];
+	}
+
+	private requireTimerRow(id: string): TimerRow {
+		const row = this.timerRowById(id);
+		if (!row) throw coupleError("NOT_FOUND", "no such timer");
+		return row;
+	}
+
+	private requireOpenCountdown(timerId: string): TimerRow {
+		const row = this.timerRowById(timerId);
+		if (!row || row.kind !== "countdown") {
+			throw coupleError("NOT_FOUND", "no such countdown");
+		}
+		if (row.status !== null) {
+			throw coupleError("BAD_REQUEST", "countdown is already closed");
+		}
+		return row;
+	}
+
+	/**
+	 * Merges a countdown transition (from the pure `pauseCountdown`/`resumeCountdown`/
+	 * `extendCountdown`) into a timer's stored state. A `null` in the patch clears the
+	 * key (resume drops `paused_at`/`remaining_ms`), keeping the stored JSON clean.
+	 */
+	private patchTimerState(
+		row: TimerRow,
+		patch: Record<string, number | null>,
+	): void {
+		const state = this.timerState(row) as Record<string, unknown>;
+		for (const [key, value] of Object.entries(patch)) {
+			if (value === null) delete state[key];
+			else state[key] = value;
+		}
+		this.sql.exec(
+			`UPDATE timers SET state = ? WHERE id = ?`,
+			JSON.stringify(state),
+			row.id,
+		);
+	}
+
+	/**
+	 * Records a dom-issued timer command (assign/pause/resume/extend) in the trace.
+	 * These have no causing event (they are direct commands, not rule effects), so
+	 * `caused_by_event` is null and the cause is the acting member, not a rule.
+	 */
+	private recordTimerCommand(
+		actorId: string,
+		definition: string,
+		at: number,
+		detail: Record<string, unknown>,
+	): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, NULL, 'dom_command', ?, ?)`,
+			at,
+			`timer:${definition}`,
+			JSON.stringify({ actor: actorId, ...detail }),
+		);
+	}
+
+	private rowToTimerView(row: TimerRow): TimerView {
+		const state = this.timerState(row);
+		return {
+			id: row.id,
+			kind: row.kind as TimerView["kind"],
+			timer: row.definition,
+			tag: state.tag ?? null,
+			match: state.match ?? {},
+			opened_at: row.opened_at,
+			closed_at: row.closed_at,
+			status: row.status,
+			duration_ms: state.duration_ms ?? null,
+			deadline_at: state.deadline_at ?? null,
+			paused_at: state.paused_at ?? null,
+			remaining_ms: state.remaining_ms ?? null,
+		};
+	}
+
+	// ── Elapsed-since anchors (handoff §4.5, #31) ─────────────────────────────
+
+	/**
+	 * The couple's anchors as live views for the today screen (handoff §4.5). Each
+	 * carries its `since` timestamp plus a read-time elapsed snapshot; the client
+	 * ticks the "days since" display forward against `since` between reads. Resets
+	 * are event-driven (R7/R11/R12/R17), so this is a pure read.
+	 */
+	async listAnchors(identityHash: string): Promise<AnchorView[]> {
+		this.requireMember(identityHash);
+		const now = Date.now();
+		return this.anchorRows().map((row) => {
+			const elapsed_ms = anchorElapsedMs(row.since, now);
+			return {
+				anchor: row.id,
+				since: row.since,
+				elapsed_ms,
+				elapsed_days: anchorElapsedDays(elapsed_ms),
+			};
+		});
+	}
+
+	private anchorRows(): AnchorRow[] {
+		return this.sql
+			.exec<AnchorRow>(`SELECT id, since FROM anchors ORDER BY id ASC`)
+			.toArray();
+	}
+
+	private anchorById(id: string): AnchorRow | undefined {
+		return this.sql
+			.exec<AnchorRow>(`SELECT id, since FROM anchors WHERE id = ?`, id)
+			.toArray()[0];
 	}
 
 	/**
@@ -1184,6 +1942,21 @@ export class CoupleDO extends DurableObject<Env> {
 
 	private roleAllowed(role: Role | null, permitted: Role[]): boolean {
 		return role !== null && permitted.includes(role);
+	}
+
+	/**
+	 * Gates a dom-only command (countdown assign/pause/resume/extend — handoff §4.5,
+	 * §5: "dom-started countdown = assignment"). Requires a confirmed, active dynamic
+	 * and the actor in the `dom` role; a sub self-reporting cannot assign consequences.
+	 */
+	private assertDom(member: MemberRow): void {
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		if ((member.role as Role | null) !== "dom") {
+			throw coupleError("FORBIDDEN", "only the dom may manage countdowns");
+		}
 	}
 
 	private assertModifyAllowed(
@@ -1404,8 +2177,274 @@ export class CoupleDO extends DurableObject<Env> {
 		// Skeleton: nothing to clean up yet.
 	}
 
+	// ── Single-alarm scheduler (handoff §3.2, #32) ────────────────────────────
+
+	/**
+	 * The one alarm fired (handoff §3.2). Cloudflare gives a DO a single alarm, so
+	 * on wake we drain *everything* due — not just the job that tripped it — then
+	 * re-arm at the new minimum. Order: process due schedule jobs (rescheduling
+	 * recurring ones, deleting one-shots), then run the timer sweeps so an over-max
+	 * stopwatch or a passed countdown deadline resolves precisely on the alarm
+	 * rather than waiting for the next read, then re-arm at MIN over all sources.
+	 */
 	override async alarm(): Promise<void> {
-		// Single-alarm scheduler (handoff §3.2): on fire, process everything due
-		// in `schedule`, then re-arm at MIN(next_fire_at). Built in Phase 4.
+		if (this.status() !== "active") {
+			this.ctx.storage.deleteAlarm();
+			return;
+		}
+		const now = Date.now();
+		for (const item of dueItems(this.scheduleRows(), now)) {
+			this.runScheduledJob(item, now);
+			const payload = this.schedulePayload(item);
+			const interval = payload.interval_ms ?? 0;
+			if (interval > 0) {
+				this.sql.exec(
+					`UPDATE schedule SET next_fire_at = ? WHERE id = ?`,
+					catchUpFireAt(item.next_fire_at, interval, now),
+					item.id,
+				);
+			} else {
+				this.sql.exec(`DELETE FROM schedule WHERE id = ?`, item.id);
+			}
+		}
+		// Timer consequences are future-dated too; the alarm makes them precise.
+		this.sweepOverMaxStopwatches(now);
+		this.sweepExpiredCountdowns(now);
+		this.armAlarm();
+	}
+
+	/**
+	 * Runs one due schedule job (handoff §3.2). The rollover jobs evaluate streaks
+	 * and clear scheduled counters; an unknown kind is an inert no-op so a stale or
+	 * future job type never throws mid-drain.
+	 */
+	private runScheduledJob(item: ScheduleRow, now: number): void {
+		switch (item.kind) {
+			case "daily_rollover":
+				this.runRollover("daily", now);
+				return;
+			case "weekly_rollover":
+				this.runRollover("weekly", now);
+				return;
+		}
+	}
+
+	/**
+	 * A day/week rollover (handoff §4.4, §3.2). Streaks first, *then* resets: each
+	 * streak counter reads its target-counter's end-of-period value to fold
+	 * `target met? +1 : 0`, so the reset that clears that target must come after.
+	 * Every outcome is written to the trace as a `system_job` (no causing event),
+	 * making the rollover legible in the same transparency log as rule effects.
+	 */
+	private runRollover(period: "daily" | "weekly", now: number): void {
+		// One read of the counters covers everything: parse the definitions and keep a
+		// value map from the same rows, rather than re-querying each value back out with
+		// counterById. The streak loop reads its target's pre-reset value here, so the
+		// map is refreshed as streaks fold, keeping it consistent for the reset loop.
+		const rows = this.counterRows();
+		const defs = rows.map(
+			(row) => JSON.parse(row.definition) as CounterDefinition,
+		);
+		const valueById = new Map(rows.map((r) => [r.id, r.value]));
+		for (const def of defs) {
+			const streak = def.streak;
+			if (!streak || streak.period !== period) continue;
+			const targetDef = defs.find((d) => d.id === streak.counter);
+			if (!targetDef) continue;
+			const target =
+				period === "daily" ? targetDef.daily_target : targetDef.weekly_target;
+			const met = targetMet(valueById.get(streak.counter) ?? 0, target);
+			const from = valueById.get(def.id) ?? 0;
+			const to = nextStreak(from, met);
+			// A dormant streak (target unmet, already 0) folds 0 -> 0. Skip the no-op so
+			// we don't write an UPDATE and a trace row on every rollover forever, the way
+			// the reset loop below guards its own no-ops.
+			if (to === from) continue;
+			this.sql.exec(
+				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
+				to,
+				now,
+				def.id,
+			);
+			valueById.set(def.id, to);
+			this.recordSystemJob(now, `counter:${def.id}`, {
+				verb: "streak_rollover",
+				period,
+				target_counter: streak.counter,
+				met,
+				from,
+				to,
+			});
+		}
+		for (const def of defs) {
+			if (def.reset !== period) continue;
+			const value = valueById.get(def.id) ?? 0;
+			if (value === 0) continue;
+			this.sql.exec(
+				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ?`,
+				now,
+				def.id,
+			);
+			this.recordSystemJob(now, `counter:${def.id}`, {
+				verb: "scheduled_reset",
+				period,
+				from: value,
+				to: 0,
+			});
+		}
+	}
+
+	/**
+	 * Ensures the recurring rollover jobs exist (handoff §3.2). Idempotent — inserts
+	 * each only if absent, so an already-running rollover keeps its `next_fire_at`
+	 * rather than being dragged to a fresh boundary on every wake. A fixed interval
+	 * suffices because a UTC boundary plus DAY_MS/WEEK_MS is still a boundary. Only
+	 * for an active couple; a paused/pairing DO accrues no rollovers.
+	 */
+	private ensureRolloverScheduled(): void {
+		if (this.status() !== "active") return;
+		const now = Date.now();
+		this.insertScheduleIfAbsent("daily_rollover", nextDailyRollover(now), {
+			interval_ms: DAY_MS,
+		});
+		this.insertScheduleIfAbsent("weekly_rollover", nextWeeklyRollover(now), {
+			interval_ms: WEEK_MS,
+		});
+	}
+
+	private insertScheduleIfAbsent(
+		id: string,
+		nextFireAt: number,
+		payload: SchedulePayload,
+	): void {
+		this.sql.exec(
+			`INSERT INTO schedule (id, next_fire_at, kind, payload) VALUES (?, ?, ?, ?)
+				ON CONFLICT(id) DO NOTHING`,
+			id,
+			nextFireAt,
+			id,
+			JSON.stringify(payload),
+		);
+	}
+
+	/**
+	 * Replays the alarm's scheduled resets across a time gap during a counter rebuild
+	 * (see {@link rebuildCounters}). If a daily and/or weekly UTC boundary falls in
+	 * `(from, to]`, the matching reset counters are zeroed — reproducing off-log
+	 * `scheduled_reset`s the event log itself never recorded. Multiple boundaries of
+	 * the same period in one gap collapse to a single zeroing: a gap spans no events,
+	 * so nothing accrues between them.
+	 */
+	private replayScheduledResets(
+		from: number,
+		to: number,
+		dailyResetIds: Set<string>,
+		weeklyResetIds: Set<string>,
+	): void {
+		const dailyAt = nextDailyRollover(from);
+		if (dailyAt <= to) this.zeroResetCounters(dailyResetIds, dailyAt);
+		const weeklyAt = nextWeeklyRollover(from);
+		if (weeklyAt <= to) this.zeroResetCounters(weeklyResetIds, weeklyAt);
+	}
+
+	/**
+	 * Zeroes the given reset counters at `at`, skipping any already at 0 — mirroring
+	 * the live rollover's no-op guard so an untouched counter keeps its prior
+	 * `updated_at` rather than being stamped by a reset that changed nothing.
+	 */
+	private zeroResetCounters(ids: Set<string>, at: number): void {
+		for (const id of ids) {
+			this.sql.exec(
+				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ? AND value != 0`,
+				at,
+				id,
+			);
+		}
+	}
+
+	private recordSystemJob(
+		at: number,
+		projection: string,
+		detail: Record<string, unknown>,
+	): void {
+		this.sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (?, NULL, 'system_job', ?, ?)`,
+			at,
+			projection,
+			JSON.stringify(detail),
+		);
+	}
+
+	private counterDefinitions(): CounterDefinition[] {
+		return this.counterRows().map(
+			(row) => JSON.parse(row.definition) as CounterDefinition,
+		);
+	}
+
+	/**
+	 * Arms the single alarm at the earliest pending fire across every source
+	 * (handoff §3.2 — `MIN(next_fire_at)`): scheduled jobs plus the nearest timer
+	 * consequence (a stopwatch's per-activity max, a running countdown's deadline).
+	 * With nothing pending the alarm is cleared, so a dormant couple costs nothing.
+	 * Suspended while not active (pairing/dissolved) — no consequences accrue.
+	 */
+	private armAlarm(): void {
+		if (this.status() !== "active") {
+			this.ctx.storage.deleteAlarm();
+			return;
+		}
+		const scheduleMin = earliestFireAt(
+			this.scheduleRows().map((row) => row.next_fire_at),
+		);
+		const timerMin = this.nextTimerExpiryAt();
+		const at = earliestFireAt([scheduleMin, timerMin]);
+		if (at === null) this.ctx.storage.deleteAlarm();
+		else this.ctx.storage.setAlarm(at);
+	}
+
+	/**
+	 * The earliest future timer consequence to arm for, or null if none: over all
+	 * open timers, a stopwatch's per-activity max and a running countdown's deadline
+	 * (a paused countdown contributes none — its clock is frozen).
+	 */
+	private nextTimerExpiryAt(): number | null {
+		const expiries: (number | null)[] = [];
+		for (const row of this.openTimerRowsAll()) {
+			if (row.kind === "stopwatch") {
+				expiries.push(
+					stopwatchExpiryAt(
+						this.rowToOpenStopwatch(row),
+						STOPWATCH_MAX_MS_BY_ACTIVITY,
+						DEFAULT_STOPWATCH_MAX_MS,
+					),
+				);
+			} else if (row.kind === "countdown") {
+				expiries.push(countdownExpiryAt(this.rowToCountdown(row)));
+			}
+		}
+		return earliestFireAt(expiries);
+	}
+
+	private openTimerRowsAll(): TimerRow[] {
+		return this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE status IS NULL`,
+			)
+			.toArray();
+	}
+
+	private scheduleRows(): ScheduleRow[] {
+		return this.sql
+			.exec<ScheduleRow>(
+				`SELECT id, next_fire_at, kind, payload FROM schedule
+					ORDER BY next_fire_at ASC, id ASC`,
+			)
+			.toArray();
+	}
+
+	private schedulePayload(row: ScheduleRow): SchedulePayload {
+		return row.payload ? (JSON.parse(row.payload) as SchedulePayload) : {};
 	}
 }
