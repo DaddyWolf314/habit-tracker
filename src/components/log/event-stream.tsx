@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { getEventTrace } from "#/lib/api.ts";
+import { Button } from "#/components/ui/button.tsx";
+import { Textarea } from "#/components/ui/textarea.tsx";
+import { amendEvent, getEventTrace } from "#/lib/api.ts";
+import {
+	type AmendmentLine,
+	describeAmendment,
+	isOwnPending,
+} from "#/shared/adjudication.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -11,21 +18,35 @@ import {
 	memberLabel,
 } from "./formatting.ts";
 
+/** Glyphs for the amendment tones in the chain view (ruling/note/retraction). */
+const TONE_MARK: Record<string, string> = {
+	ruling: "⚖",
+	note: "✎",
+	retraction: "✕",
+};
+
 /**
  * The event stream (handoff §4.6, §9 surface 3): the append-only log in reverse
  * chronological order. Each entry renders its composite state (original overlaid
- * by amendments — identical to the original until Phase 5), a pending chip when
- * an `awaiting` key is unset, both timestamps, and a tap-to-open trace chain of
- * the projections it touched.
+ * by amendments), a pending chip while an `awaiting` key is unset (or a withdrawn
+ * chip once retracted), both timestamps, and a tap-to-open chain drill-in: the
+ * original log → its amendments in order → the rules those fired and the
+ * near-misses still waiting → the projections touched. The consent-record view
+ * and the debugging view are the same screen.
  */
 export function EventStream({
 	events,
 	types,
 	members,
+	selfId = null,
+	onAmended,
 }: {
 	events: EventView[];
 	types: EventType[];
 	members: RoleMember[];
+	/** The viewer's member id, so they can note/retract their own pending events. */
+	selfId?: string | null;
+	onAmended?: () => void;
 }) {
 	const typeMap = new Map(types.map((t) => [t.id, t]));
 
@@ -44,6 +65,8 @@ export function EventStream({
 						event={event}
 						label={typeMap.get(event.type)?.label ?? event.type}
 						members={members}
+						selfId={selfId}
+						onAmended={onAmended}
 					/>
 				))}
 			</ul>
@@ -55,10 +78,14 @@ function EventRow({
 	event,
 	label,
 	members,
+	selfId,
+	onAmended,
 }: {
 	event: EventView;
 	label: string;
 	members: RoleMember[];
+	selfId: string | null;
+	onAmended?: () => void;
 }) {
 	const [trace, setTrace] = useState<TraceRow[] | null>(null);
 	const [open, setOpen] = useState(false);
@@ -81,6 +108,13 @@ function EventRow({
 	}
 
 	const meta = Object.entries(event.composite_metadata);
+	// The in-force ruling on the viewer's own event, if any (amendments arrive in
+	// created_at order, so the last adjudication is the current one). Drives the
+	// sub-side reveal below.
+	const ownRuling =
+		selfId !== null && event.actor === selfId && !event.retracted
+			? event.amendments.filter((a) => a.kind === "adjudication").at(-1)
+			: undefined;
 
 	return (
 		<li className="py-3">
@@ -91,10 +125,17 @@ function EventRow({
 			>
 				<div className="min-w-0">
 					<div className="flex items-center gap-2 text-sm font-medium">
-						{label}
+						<span className={event.retracted ? "line-through opacity-60" : ""}>
+							{label}
+						</span>
 						{event.pending && (
 							<span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">
 								awaiting ruling
+							</span>
+						)}
+						{event.retracted && (
+							<span className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+								withdrawn
 							</span>
 						)}
 					</div>
@@ -130,34 +171,219 @@ function EventRow({
 				</div>
 			</button>
 
+			{isOwnPending(event, selfId) && (
+				<OwnEventActions eventId={event.id} onAmended={onAmended} />
+			)}
+
+			{ownRuling && <RulingReveal line={describeAmendment(ownRuling)} />}
+
 			{open && (
-				<div className="mt-2 rounded-md border bg-muted/40 p-3">
-					<p className="text-xs font-medium text-muted-foreground">
-						Effects &amp; near-misses
-					</p>
-					<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
-						{error && (
-							<li className="text-destructive">{error} Tap to retry.</li>
-						)}
-						{!error && trace === null && <li>Loading…</li>}
-						{trace?.length === 0 && (
-							<li>No effects — this event touched no projections.</li>
-						)}
-						{trace?.map((row) => {
-							const line = describeTraceRow(row);
-							return (
-								<li
-									key={row.id}
-									className={line.nearMiss ? "italic opacity-70" : undefined}
-								>
-									{line.nearMiss ? "○ " : "• "}
-									{line.text}
-								</li>
-							);
-						})}
-					</ol>
+				<div className="mt-2 space-y-3 rounded-md border bg-muted/40 p-3">
+					<div>
+						<p className="text-xs font-medium text-muted-foreground">Chain</p>
+						<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
+							<li>
+								• Logged by {memberLabel(event.actor, members)} ·{" "}
+								{formatTime(event.logged_at)}
+							</li>
+							{event.amendments.map((amendment) => {
+								const line = describeAmendment(amendment);
+								return (
+									<li key={amendment.id}>
+										{TONE_MARK[line.tone]} {memberLabel(line.actor, members)}{" "}
+										{line.summary} · {formatTime(line.at)}
+										{line.note && (
+											<span className="italic"> — “{line.note}”</span>
+										)}
+									</li>
+								);
+							})}
+						</ol>
+					</div>
+
+					<div>
+						<p className="text-xs font-medium text-muted-foreground">
+							Effects &amp; near-misses
+						</p>
+						<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
+							{error && (
+								<li className="text-destructive">{error} Tap to retry.</li>
+							)}
+							{!error && trace === null && <li>Loading…</li>}
+							{trace?.length === 0 && (
+								<li>No effects — this event touched no projections.</li>
+							)}
+							{trace?.map((row) => {
+								const line = describeTraceRow(row);
+								return (
+									<li
+										key={row.id}
+										className={line.nearMiss ? "italic opacity-70" : undefined}
+									>
+										{line.nearMiss ? "○ " : "• "}
+										{line.text}
+									</li>
+								);
+							})}
+						</ol>
+					</div>
 				</div>
 			)}
 		</li>
+	);
+}
+
+/**
+ * Sub-side amendment controls for the author's own pending event (handoff §4.2):
+ * append a note (context, no rule effects) or retract it (removes it from the
+ * queue and marks it withdrawn — never a delete). Retraction is a two-tap inline
+ * confirm; a browser dialog would block the whole surface.
+ */
+function OwnEventActions({
+	eventId,
+	onAmended,
+}: {
+	eventId: string;
+	onAmended?: () => void;
+}) {
+	const [mode, setMode] = useState<"idle" | "note" | "confirm">("idle");
+	const [note, setNote] = useState("");
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function run(fn: () => Promise<unknown>) {
+		setBusy(true);
+		setError(null);
+		try {
+			await fn();
+			setMode("idle");
+			setNote("");
+			onAmended?.();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Couldn't do that.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	const addNote = () =>
+		run(() =>
+			amendEvent({
+				kind: "note_appended",
+				target_event_id: eventId,
+				note: note.trim(),
+			}),
+		);
+	const retract = () =>
+		run(() => amendEvent({ kind: "retracted", target_event_id: eventId }));
+
+	return (
+		<div className="mt-2 space-y-2">
+			{mode === "idle" && (
+				<div className="flex gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setMode("note")}
+						disabled={busy}
+					>
+						Add note
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setMode("confirm")}
+						disabled={busy}
+					>
+						Retract
+					</Button>
+				</div>
+			)}
+
+			{mode === "note" && (
+				<div className="space-y-2">
+					<Textarea
+						value={note}
+						onChange={(e) => setNote(e.target.value)}
+						placeholder="Add context to this pending event…"
+					/>
+					<div className="flex gap-2">
+						<Button size="sm" onClick={addNote} disabled={busy || !note.trim()}>
+							{busy ? "…" : "Save note"}
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => setMode("idle")}
+							disabled={busy}
+						>
+							Cancel
+						</Button>
+					</div>
+				</div>
+			)}
+
+			{mode === "confirm" && (
+				<div className="flex items-center gap-2 text-xs">
+					<span className="text-muted-foreground">
+						Retract this event? It stays visible as withdrawn.
+					</span>
+					<Button
+						variant="destructive"
+						size="sm"
+						onClick={retract}
+						disabled={busy}
+					>
+						{busy ? "…" : "Yes, retract"}
+					</Button>
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={() => setMode("idle")}
+						disabled={busy}
+					>
+						Cancel
+					</Button>
+				</div>
+			)}
+
+			{error && <p className="text-xs text-destructive">{error}</p>}
+		</div>
+	);
+}
+
+/**
+ * The sub-side ruling reveal (handoff §8, "Sub side"): receiving a ruling is
+ * emotionally load-bearing, so the dom's decision is not dumped inline — it sits
+ * behind a content-safe "You have an update" until the sub chooses to open it, a
+ * small deliberate interaction. Shown on the author's own resolved event.
+ *
+ * V1 reveals on tap and stays open for the session; persistent read-state (so an
+ * already-seen ruling stops announcing itself) rides in with content-free
+ * notifications in Phase 6.
+ */
+function RulingReveal({ line }: { line: AmendmentLine }) {
+	const [revealed, setRevealed] = useState(false);
+
+	if (!revealed) {
+		return (
+			<Button
+				variant="outline"
+				size="sm"
+				className="mt-2"
+				onClick={() => setRevealed(true)}
+			>
+				You have an update — reveal
+			</Button>
+		);
+	}
+
+	return (
+		<div className="mt-2 rounded-md border bg-muted/40 p-3 text-sm">
+			<p className="font-medium">{line.summary}</p>
+			{line.note && (
+				<p className="mt-1 italic text-muted-foreground">“{line.note}”</p>
+			)}
+		</div>
 	);
 }

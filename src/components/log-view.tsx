@@ -3,17 +3,20 @@ import { useCallback, useEffect, useState } from "react";
 import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
+import { QueuePanel } from "#/components/log/queue-panel.tsx";
 import {
 	getRoles,
 	listCounters,
 	listEvents,
 	listEventTypes,
+	listRules,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import type { Rule } from "#/shared/rules.ts";
 
 /**
  * The Log surface (handoff §9 surface 3, plus the counters/composer it needs to
@@ -24,6 +27,7 @@ import type { RoleMember } from "#/shared/identity.ts";
 export function LogView() {
 	const [ready, setReady] = useState(false);
 	const [types, setTypes] = useState<EventType[]>([]);
+	const [rules, setRules] = useState<Rule[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
@@ -40,13 +44,16 @@ export function LogView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [typeRes, counterRes, eventRes, roleRes] = await Promise.all([
-				listEventTypes(),
-				listCounters(),
-				listEvents(),
-				getRoles(),
-			]);
+			const [typeRes, ruleRes, counterRes, eventRes, roleRes] =
+				await Promise.all([
+					listEventTypes(),
+					listRules(),
+					listCounters(),
+					listEvents(),
+					getRoles(),
+				]);
 			setTypes(typeRes.types);
+			setRules(ruleRes.rules);
 			setCounters(counterRes.counters);
 			setEvents(eventRes.events);
 			setMembers(roleRes.members);
@@ -59,6 +66,9 @@ export function LogView() {
 		setReady(true);
 		if (hasIdentity()) loadAll();
 	}, [loadAll]);
+
+	const self = members.find((m) => m.is_self);
+	const selfRole = self?.role ?? null;
 
 	if (!ready) return null;
 	if (!hasIdentity()) {
@@ -86,9 +96,23 @@ export function LogView() {
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
+			<QueuePanel
+				events={events}
+				types={types}
+				rules={rules}
+				members={members}
+				selfRole={selfRole}
+				onAmended={refreshLog}
+			/>
 			<CountersPanel counters={counters} onChange={refreshLog} />
 			<LogComposer types={types} members={members} onLogged={refreshLog} />
-			<EventStream events={events} types={types} members={members} />
+			<EventStream
+				events={events}
+				types={types}
+				members={members}
+				selfId={self?.member_id ?? null}
+				onAmended={refreshLog}
+			/>
 		</div>
 	);
 }

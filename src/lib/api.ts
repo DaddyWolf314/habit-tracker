@@ -1,3 +1,4 @@
+import type { AmendmentInput } from "#/shared/amendments.ts";
 import type { Counter, CreateCounterBody } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView, LogEventInput } from "#/shared/events.ts";
@@ -12,6 +13,7 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type { Rule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
 
@@ -154,11 +156,31 @@ export function logEvent(input: LogEventInput): Promise<EventView> {
 	return apiFetch<EventView>("/api/events", { method: "POST", body: input });
 }
 
+/**
+ * Records an amendment against an event (handoff §4.2): a ruling, a note, or a
+ * retraction. Returns the event's refreshed composite view.
+ */
+export function amendEvent(input: AmendmentInput): Promise<EventView> {
+	return apiFetch<EventView>("/api/events/amend", {
+		method: "POST",
+		body: input,
+	});
+}
+
 /** The projections a single event touched (trace drill-in). */
 export function getEventTrace(eventId: string): Promise<{ rows: TraceRow[] }> {
 	return apiFetch<{ rows: TraceRow[] }>(
 		`/api/events/trace?event_id=${encodeURIComponent(eventId)}`,
 	);
+}
+
+/**
+ * The couple's installed rule set. The dom's confirm sheet re-runs the pure
+ * engine over these client-side to preview a ruling's effects before commit
+ * (handoff §8) — the same `reevaluate` the DO applies, so the two agree.
+ */
+export function listRules(): Promise<{ rules: Rule[] }> {
+	return apiFetch<{ rules: Rule[] }>("/api/rules");
 }
 
 export function listCounters(): Promise<{ counters: Counter[] }> {

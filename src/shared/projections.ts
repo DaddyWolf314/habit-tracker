@@ -4,7 +4,7 @@ import {
 } from "#/templates/index.ts";
 import type { Amendment } from "./amendments.ts";
 import type { EventType } from "./event-types.ts";
-import type { Event } from "./events.ts";
+import type { Event, EventView } from "./events.ts";
 import type { MetadataValue } from "./roles.ts";
 
 /**
@@ -104,6 +104,16 @@ export function compositeMetadata(
 }
 
 /**
+ * Whether an event has been retracted (handoff §4.2): it carries a `retracted`
+ * amendment. There is no deletion — retraction is a visible, terminal marker
+ * derived from the amendment log, and it drops the event from the queue via
+ * `isPending` below.
+ */
+export function isRetracted(amendments: Amendment[] = []): boolean {
+	return amendments.some((a) => a.kind === "retracted");
+}
+
+/**
  * Whether an event is *pending* (handoff §5): any of its type's `awaiting` keys
  * is unset in composite state. This single derivation is the adjudication-queue
  * mechanism; a retracted event is never pending.
@@ -115,4 +125,28 @@ export function isPending(
 ): boolean {
 	if (retracted) return false;
 	return eventType.awaiting.some((key) => composite[key] === undefined);
+}
+
+/**
+ * The composite read view of an event (handoff §4.2, §4.6): the raw event, its
+ * amendments, and the derived `composite_metadata`, `pending`, and `retracted`
+ * status — all folded on read, never stored. The single place the server, the
+ * DO, and the client agree on what an amended event *currently means*. A missing
+ * `eventType` (an event of a since-removed type) touches nothing, so it is never
+ * pending.
+ */
+export function deriveEventView(
+	event: Event,
+	amendments: Amendment[] = [],
+	eventType?: Pick<EventType, "awaiting">,
+): EventView {
+	const composite = compositeMetadata(event, amendments);
+	const retracted = isRetracted(amendments);
+	return {
+		...event,
+		amendments,
+		composite_metadata: composite,
+		pending: eventType ? isPending(eventType, composite, retracted) : false,
+		retracted,
+	};
 }

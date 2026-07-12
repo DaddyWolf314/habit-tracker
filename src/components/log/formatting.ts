@@ -1,6 +1,11 @@
+import type { EffectOp } from "#/shared/engine.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { MetadataValue } from "#/shared/roles.ts";
 import type { TraceRow } from "#/shared/trace.ts";
+
+// The metadata-value formatter is shared (client and DO agree how a value
+// reads); re-exported here so log components keep importing it alongside the
+// other display helpers.
+export { formatMetaValue } from "#/shared/roles.ts";
 
 /** A short absolute timestamp for the log ("Jul 2, 11:03 PM"). */
 export function formatTime(ms: number): string {
@@ -19,12 +24,6 @@ export function formatElapsed(sinceMs: number, nowMs: number): string {
 	const hours = Math.floor(mins / 60);
 	if (hours < 24) return `${hours}h`;
 	return `${Math.floor(hours / 24)}d`;
-}
-
-/** Renders a metadata value for display (booleans as yes/no). */
-export function formatMetaValue(value: MetadataValue): string {
-	if (typeof value === "boolean") return value ? "yes" : "no";
-	return String(value);
 }
 
 /** A trace row rendered for the chain view (handoff §4.6). */
@@ -76,6 +75,34 @@ export function describeTraceRow(row: TraceRow): TraceLine {
 				text: `${prefix}${where}: ${detail.from} → ${detail.to}`,
 				nearMiss: false,
 			};
+	}
+}
+
+/**
+ * A forward-running phrase for one effect a ruling would fire — the line the
+ * dom's confirm sheet lists before commit (handoff §8, "This will fire: +1
+ * unpermitted orgasms, +2 demerits, …"). Visibility only; the actual effects
+ * are applied server-side. Projection ids are humanized (underscores → spaces),
+ * so `orgasms_unpermitted` reads as "orgasms unpermitted". A timer close is
+ * phrased as intent — whether its instance is still live is a server-side
+ * question the preview can't answer.
+ */
+export function summarizeEffectOp(op: EffectOp): string {
+	const human = (id: string) => id.replace(/_/g, " ");
+	switch (op.kind) {
+		case "counter":
+			if (op.op === "reset") return `reset ${human(op.counter)}`;
+			return `${op.op === "increment" ? "+" : "−"}${op.by ?? 1} ${human(
+				op.counter,
+			)}`;
+		case "anchor":
+			return `reset ${human(op.anchor)} streak`;
+		case "timer":
+			return op.op === "open"
+				? `start ${human(op.timer)}`
+				: `mark ${human(op.timer)} ${op.status ?? "closed"}`;
+		case "notify":
+			return `notify ${human(op.target)}`;
 	}
 }
 

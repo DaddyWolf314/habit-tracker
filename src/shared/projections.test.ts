@@ -5,11 +5,14 @@ import {
 	COUNTER_RESET_TYPE,
 } from "#/templates/index.ts";
 import type { Amendment } from "./amendments.ts";
+import type { Event } from "./events.ts";
 import {
 	applyCounterEvent,
 	type CounterEventInput,
 	compositeMetadata,
+	deriveEventView,
 	isPending,
+	isRetracted,
 	replayCounterValue,
 } from "./projections.ts";
 
@@ -111,6 +114,100 @@ describe("composite state + pending", () => {
 		expect(isPending(type, { outcome: "full" })).toBe(true);
 		expect(isPending(type, { outcome: "full", permitted: true })).toBe(false);
 		expect(isPending(type, { outcome: "full" }, true)).toBe(false); // retracted
+	});
+});
+
+describe("isRetracted", () => {
+	const meta = { id: "a", target_event_id: "e", actor: "s", created_at: 1 };
+	const adjudication: Amendment = { kind: "adjudication", patch: {}, ...meta };
+	const note: Amendment = { kind: "note_appended", note: "hi", ...meta };
+	const retracted: Amendment = { kind: "retracted", ...meta };
+
+	it("is true only when a retracted amendment is present", () => {
+		expect(isRetracted([])).toBe(false);
+		expect(isRetracted([note])).toBe(false);
+		expect(isRetracted([adjudication])).toBe(false);
+		expect(isRetracted([retracted])).toBe(true);
+	});
+});
+
+describe("deriveEventView — the composite read view (handoff §4.2, §4.6)", () => {
+	const event: Event = {
+		id: "e1",
+		type: "orgasm",
+		actor: "sub-1",
+		occurred_at: 10,
+		logged_at: 10,
+		metadata: { outcome: "full" },
+	};
+	const type = { awaiting: ["permitted"] };
+
+	it("with no amendments, composite equals the original and is pending", () => {
+		const view = deriveEventView(event, [], type);
+		expect(view.composite_metadata).toEqual({ outcome: "full" });
+		expect(view.amendments).toEqual([]);
+		expect(view.pending).toBe(true);
+		expect(view.retracted).toBe(false);
+		// The raw event is carried through untouched — nothing is stored.
+		expect(view.metadata).toEqual({ outcome: "full" });
+	});
+
+	it("folds multiple amendments in created_at order, corrections winning per key", () => {
+		const amendments: Amendment[] = [
+			// Deliberately out of insertion order to prove sorting by created_at.
+			{
+				kind: "adjudication",
+				id: "a2",
+				target_event_id: "e1",
+				actor: "dom-1",
+				created_at: 3,
+				patch: { permitted: true },
+				supersedes: "a1",
+			},
+			{
+				kind: "adjudication",
+				id: "a1",
+				target_event_id: "e1",
+				actor: "dom-1",
+				created_at: 2,
+				patch: { permitted: false },
+			},
+			// A note never touches composite state.
+			{
+				kind: "note_appended",
+				id: "n1",
+				target_event_id: "e1",
+				actor: "sub-1",
+				created_at: 4,
+				note: "context",
+			},
+		];
+		const view = deriveEventView(event, amendments, type);
+		expect(view.composite_metadata).toEqual({
+			outcome: "full",
+			permitted: true,
+		});
+		expect(view.pending).toBe(false); // permitted is now set
+		expect(view.retracted).toBe(false);
+	});
+
+	it("a retracted event is not pending and is flagged retracted", () => {
+		const amendments: Amendment[] = [
+			{
+				kind: "retracted",
+				id: "r1",
+				target_event_id: "e1",
+				actor: "sub-1",
+				created_at: 2,
+			},
+		];
+		const view = deriveEventView(event, amendments, type);
+		expect(view.retracted).toBe(true);
+		expect(view.pending).toBe(false);
+	});
+
+	it("without a known type, pending is false (unknown types touch nothing)", () => {
+		expect(deriveEventView(event, [], undefined).pending).toBe(false);
 	});
 });
 

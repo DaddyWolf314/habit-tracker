@@ -1,5 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { ulid } from "#/lib/ulid.ts";
+import { validateAmendment } from "#/shared/amendment-validation.ts";
+import type { Amendment, AmendmentInput } from "#/shared/amendments.ts";
+import { amendmentInputSchema } from "#/shared/amendments.ts";
 import {
 	type AnchorView,
 	anchorElapsedDays,
@@ -16,6 +19,7 @@ import {
 	type EffectOp,
 	evaluateRules,
 	type NearMiss,
+	reevaluate,
 	routeClosedTimerDuration,
 } from "#/shared/engine.ts";
 import type { EventType } from "#/shared/event-types.ts";
@@ -34,7 +38,7 @@ import type {
 import {
 	applyCounterEvent,
 	compositeMetadata,
-	isPending,
+	deriveEventView,
 } from "#/shared/projections.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
@@ -128,6 +132,18 @@ interface EventRow {
 	logged_at: number;
 	metadata: string;
 	note: string | null;
+	[key: string]: SqlStorageValue;
+}
+
+interface AmendmentRow {
+	id: string;
+	target_event_id: string;
+	kind: string;
+	actor: string;
+	created_at: number;
+	patch: string | null;
+	note: string | null;
+	supersedes: string | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -900,29 +916,149 @@ export class CoupleDO extends DurableObject<Env> {
 		// then is a re-arm needed. Most events touch no timer, so skip the re-query.
 		if (this.timersDirty) this.armAlarm();
 
-		return {
-			...event,
-			amendments: [],
-			composite_metadata: event.metadata,
-			pending: isPending(type, event.metadata),
-		};
+		// A freshly-appended event has no amendments yet, so composite == its own
+		// metadata; the shape is built the same way it is read back (handoff §4.2).
+		return deriveEventView(event, [], type);
 	}
 
 	/** The event log, newest first, as composite views (handoff §4.6, §9). */
 	async listEvents(identityHash: string, limit = 200): Promise<EventView[]> {
 		this.requireMember(identityHash);
 		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
+		const amendmentsByEvent = this.amendmentsByEvent();
 		return this.eventRows(limit).map((row) => {
 			const event = this.rowToEvent(row);
-			const type = types.get(event.type);
-			// Amendments arrive in Phase 5; composite == original until then.
-			const composite = compositeMetadata(event, []);
-			return {
-				...event,
-				amendments: [],
-				composite_metadata: composite,
-				pending: type ? isPending(type, composite) : false,
-			};
+			return deriveEventView(
+				event,
+				amendmentsByEvent.get(event.id) ?? [],
+				types.get(event.type),
+			);
+		});
+	}
+
+	// ── Amendments (handoff §4.2) — rulings, notes, retractions ───────────────
+
+	/**
+	 * Records an amendment against an event: an `adjudication` (a ruling on the
+	 * awaited keys), a `note_appended` (the author annotating their own pending
+	 * event), or a `retracted` (the author withdrawing their own pending event).
+	 * Events are never mutated or deleted — this only ever *appends* an amendment,
+	 * and composite state is re-derived on read. The server owns `id`,
+	 * `created_at`, and `actor`; all semantics are gated by `validateAmendment`.
+	 */
+	async amend(identityHash: string, body: unknown): Promise<EventView> {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		const parsed = amendmentInputSchema.safeParse(body);
+		if (!parsed.success) {
+			throw coupleError(
+				"BAD_REQUEST",
+				parsed.error.issues[0]?.message ?? "invalid amendment",
+			);
+		}
+		const input = parsed.data;
+
+		const row = this.eventRowById(input.target_event_id);
+		if (!row) throw coupleError("NOT_FOUND", "no such event");
+		const event = this.rowToEvent(row);
+		const type = this.eventTypeById(event.type);
+		if (!type)
+			throw coupleError("BAD_REQUEST", `unknown event type: ${event.type}`);
+
+		const priorAmendments = this.amendmentsOf(event.id);
+		const check = validateAmendment(input, {
+			event,
+			eventType: type,
+			actorRole: me.role as Role | null,
+			actorMemberId: me.id,
+			amendments: priorAmendments,
+		});
+		if (!check.ok) {
+			throw coupleError(
+				check.forbidden ? "FORBIDDEN" : "BAD_REQUEST",
+				check.error,
+			);
+		}
+
+		const amendment = this.writeAmendment(me.id, input);
+		const amendments = [...priorAmendments, amendment];
+
+		// A ruling can resolve a conditional rule that was waiting on it (handoff
+		// §4.2, §7): re-evaluate the target with the merged metadata and fire the
+		// rules that match now but didn't before. Notes and retractions change no
+		// composite state, so only an adjudication re-evaluates.
+		if (amendment.kind === "adjudication") {
+			this.reevaluateOnAmendment(event, type, priorAmendments, amendment);
+		}
+		return deriveEventView(event, amendments, type);
+	}
+
+	/**
+	 * Applies the effects a ruling newly unlocks on its target event. Effect-only
+	 * — an amendment never creates an event (no cascades). Anchor resets carry the
+	 * target's `occurred_at`; timer effects apply only while the timer is still
+	 * active and otherwise leave a skip note rather than doing retroactive surgery
+	 * (handoff §4.2). Every change is traced to the target event, the rule, and
+	 * the ruling that unlocked it.
+	 */
+	private reevaluateOnAmendment(
+		event: Event,
+		type: EventType,
+		priorAmendments: Amendment[],
+		amendment: Amendment,
+	): void {
+		const before = compositeMetadata(event, priorAmendments);
+		const after = compositeMetadata(event, [...priorAmendments, amendment]);
+		const context = (metadata: Record<string, MetadataValue>) => ({
+			type: event.type,
+			metadata,
+			occurred_at: event.occurred_at,
+			awaiting: type.awaiting,
+		});
+		const fired = reevaluate(this.rules(), context(before), context(after));
+
+		this.timersDirty = false;
+		for (const rule of fired) {
+			for (const op of rule.ops) {
+				this.applyEffectOp(event, rule.rule_id, op, amendment);
+			}
+		}
+		if (this.timersDirty) this.armAlarm();
+	}
+
+	/** Inserts an amendment, assigning the server-owned id/created_at/actor. */
+	private writeAmendment(actor: string, input: AmendmentInput): Amendment {
+		const createdAt = Date.now();
+		const id = ulid(createdAt);
+		const patch =
+			input.kind === "adjudication" ? JSON.stringify(input.patch) : null;
+		const supersedes =
+			input.kind === "adjudication" ? (input.supersedes ?? null) : null;
+		const note = "note" in input ? (input.note ?? null) : null;
+		this.sql.exec(
+			`INSERT INTO amendments (id, target_event_id, kind, actor, created_at, patch, note, supersedes)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id,
+			input.target_event_id,
+			input.kind,
+			actor,
+			createdAt,
+			patch,
+			note,
+			supersedes,
+		);
+		return this.rowToAmendment({
+			id,
+			target_event_id: input.target_event_id,
+			kind: input.kind,
+			actor,
+			created_at: createdAt,
+			patch,
+			note,
+			supersedes,
 		});
 	}
 
@@ -1234,8 +1370,22 @@ export class CoupleDO extends DurableObject<Env> {
 	 * rule that fired it. Counter ops move the materialized cache now; anchor,
 	 * timer, and notify ops are recorded so the chain shows what the rule routed,
 	 * with their projection state machines landing in Phase 4 (timers + alarms).
+	 *
+	 * When `amendment` is set the op comes from re-evaluation on a ruling (handoff
+	 * §4.2, §7) rather than a fresh append: the counter write and trace row are
+	 * stamped at the ruling time and tagged with the amendment that unlocked them,
+	 * and — because an amendment never does retroactive timer surgery — a timer op
+	 * whose instance has already ended records a skip note and mutates nothing.
+	 * The append path passes no amendment and stamps at `event.logged_at`. A live
+	 * timer op takes the same `openTimer`/`closeTimer` path either way.
 	 */
-	private applyEffectOp(event: Event, ruleId: string, op: EffectOp): void {
+	private applyEffectOp(
+		event: Event,
+		ruleId: string,
+		op: EffectOp,
+		amendment?: Amendment,
+	): void {
+		const at = amendment?.created_at ?? event.logged_at;
 		switch (op.kind) {
 			case "counter": {
 				const row = this.counterById(op.counter);
@@ -1245,15 +1395,16 @@ export class CoupleDO extends DurableObject<Env> {
 				this.sql.exec(
 					`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
 					to,
-					event.logged_at,
+					at,
 					op.counter,
 				);
-				this.recordTrace(event, ruleId, `counter:${op.counter}`, {
-					verb: `${op.op}_counter`,
-					by: op.by ?? 1,
-					from,
-					to,
-				});
+				this.recordTrace(
+					event,
+					ruleId,
+					`counter:${op.counter}`,
+					{ verb: `${op.op}_counter`, by: op.by ?? 1, from, to },
+					amendment,
+				);
 				return;
 			}
 			case "anchor": {
@@ -1270,16 +1421,37 @@ export class CoupleDO extends DurableObject<Env> {
 					to,
 					op.anchor,
 				);
-				this.recordTrace(event, ruleId, `anchor:${op.anchor}`, {
-					verb: "reset_anchor",
-					at: op.at,
-					from,
-					to,
-				});
+				this.recordTrace(
+					event,
+					ruleId,
+					`anchor:${op.anchor}`,
+					{ verb: "reset_anchor", at: op.at, from, to },
+					amendment,
+				);
 				return;
 			}
 			case "timer":
-				// The open-timer set moved, so the caller (appendEvent) must re-arm.
+				// A ruling never performs retroactive timer surgery (handoff §4.2): if
+				// no live instance matches, record the skip and mutate nothing. A fresh
+				// append has no such guard — its timer op always acts.
+				if (
+					amendment &&
+					!this.matchOpenTimer(this.openTimerRows(op.timer), op.match_on)
+				) {
+					this.recordTrace(
+						event,
+						ruleId,
+						`timer:${op.timer}`,
+						{
+							timer_skipped: true,
+							reason: `${ruleId} skipped: ${op.timer} already ended`,
+							op: op.op,
+						},
+						amendment,
+					);
+					return;
+				}
+				// The open-timer set moved, so the caller (appendEvent/re-eval) re-arms.
 				this.timersDirty = true;
 				if (op.op === "open") {
 					this.openTimer(event, ruleId, op);
@@ -1288,10 +1460,13 @@ export class CoupleDO extends DurableObject<Env> {
 				}
 				return;
 			case "notify":
-				this.recordTrace(event, ruleId, `notify:${op.target}`, {
-					verb: "notify",
-					target: op.target,
-				});
+				this.recordTrace(
+					event,
+					ruleId,
+					`notify:${op.target}`,
+					{ verb: "notify", target: op.target },
+					amendment,
+				);
 				return;
 		}
 	}
@@ -1316,21 +1491,29 @@ export class CoupleDO extends DurableObject<Env> {
 		);
 	}
 
-	/** Inserts one rule-attributed projection trace row. */
+	/**
+	 * Inserts one rule-attributed projection trace row. When `amendment` is set
+	 * (an effect unlocked by re-evaluation), the row is stamped at the ruling time
+	 * and carries `amendment_id` so the chain shows which ruling caused it;
+	 * otherwise it is stamped at the event's log time (the append path).
+	 */
 	private recordTrace(
 		event: Event,
 		ruleId: string,
 		projection: string,
 		detail: Record<string, unknown>,
+		amendment?: Amendment,
 	): void {
 		this.sql.exec(
 			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
 				VALUES (?, ?, ?, ?, ?)`,
-			event.logged_at,
+			amendment?.created_at ?? event.logged_at,
 			event.id,
 			ruleId,
 			projection,
-			JSON.stringify(detail),
+			JSON.stringify(
+				amendment ? { ...detail, amendment_id: amendment.id } : detail,
+			),
 		);
 	}
 
@@ -2016,6 +2199,71 @@ export class CoupleDO extends DurableObject<Env> {
 			metadata: JSON.parse(row.metadata) as Record<string, MetadataValue>,
 			note: row.note ?? undefined,
 		};
+	}
+
+	private eventRowById(id: string): EventRow | undefined {
+		return this.sql
+			.exec<EventRow>(
+				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note
+					FROM events WHERE id = ?`,
+				id,
+			)
+			.toArray()[0];
+	}
+
+	/** An event's amendments in `created_at` order (the composite-fold order). */
+	private amendmentsOf(eventId: string): Amendment[] {
+		return this.sql
+			.exec<AmendmentRow>(
+				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes
+					FROM amendments WHERE target_event_id = ? ORDER BY created_at ASC, id ASC`,
+				eventId,
+			)
+			.toArray()
+			.map((row) => this.rowToAmendment(row));
+	}
+
+	private rowToAmendment(row: AmendmentRow): Amendment {
+		const base = {
+			id: row.id,
+			target_event_id: row.target_event_id,
+			actor: row.actor,
+			created_at: row.created_at,
+		};
+		switch (row.kind) {
+			case "adjudication":
+				return {
+					kind: "adjudication",
+					...base,
+					patch: JSON.parse(row.patch ?? "{}") as Record<string, MetadataValue>,
+					note: row.note ?? undefined,
+					supersedes: row.supersedes ?? undefined,
+				};
+			case "note_appended":
+				return { kind: "note_appended", ...base, note: row.note ?? "" };
+			default:
+				return { kind: "retracted", ...base, note: row.note ?? undefined };
+		}
+	}
+
+	/**
+	 * Every event's amendments in one query, grouped by target and kept in
+	 * `created_at` order — so `listEvents` folds the whole log's composite state
+	 * without a per-event round trip.
+	 */
+	private amendmentsByEvent(): Map<string, Amendment[]> {
+		const byEvent = new Map<string, Amendment[]>();
+		for (const row of this.sql
+			.exec<AmendmentRow>(
+				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes
+					FROM amendments ORDER BY created_at ASC, id ASC`,
+			)
+			.toArray()) {
+			const list = byEvent.get(row.target_event_id) ?? [];
+			list.push(this.rowToAmendment(row));
+			byEvent.set(row.target_event_id, list);
+		}
+		return byEvent;
 	}
 
 	private counterRows(): CounterRow[] {
