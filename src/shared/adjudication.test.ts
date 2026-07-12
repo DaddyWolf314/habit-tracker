@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-	activeRuling,
 	awaitedRulings,
 	describeAmendment,
 	isOwnPending,
 } from "./adjudication.ts";
-import type { Amendment } from "./amendments.ts";
 import type { EventType } from "./event-types.ts";
 import type { EventView } from "./events.ts";
 
@@ -74,40 +72,6 @@ describe("isOwnPending", () => {
 		expect(isOwnPending(event({ pending: false }), "sub-1")).toBe(false);
 		expect(isOwnPending(event({ retracted: true }), "sub-1")).toBe(false);
 		expect(isOwnPending(event(), null)).toBe(false);
-	});
-});
-
-describe("activeRuling", () => {
-	const adj = (
-		id: string,
-		created_at: number,
-		value: boolean,
-		supersedes?: string,
-	): Amendment => ({
-		kind: "adjudication",
-		id,
-		target_event_id: "e1",
-		actor: "dom-1",
-		created_at,
-		patch: { permitted: value },
-		supersedes,
-	});
-
-	it("returns the ruling currently in force for a key", () => {
-		const ruling = activeRuling([adj("a1", 10, false)], "permitted");
-		expect(ruling).toEqual({ id: "a1", value: false });
-	});
-
-	it("follows a correction to the superseding ruling", () => {
-		const ruling = activeRuling(
-			[adj("a1", 10, false), adj("a2", 20, true, "a1")],
-			"permitted",
-		);
-		expect(ruling).toEqual({ id: "a2", value: true });
-	});
-
-	it("is undefined when no ruling touches the key", () => {
-		expect(activeRuling([], "permitted")).toBeUndefined();
 	});
 });
 

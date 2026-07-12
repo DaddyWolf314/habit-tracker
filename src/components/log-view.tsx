@@ -9,12 +9,14 @@ import {
 	listCounters,
 	listEvents,
 	listEventTypes,
+	listRules,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import type { Rule } from "#/shared/rules.ts";
 
 /**
  * The Log surface (handoff §9 surface 3, plus the counters/composer it needs to
@@ -25,6 +27,7 @@ import type { RoleMember } from "#/shared/identity.ts";
 export function LogView() {
 	const [ready, setReady] = useState(false);
 	const [types, setTypes] = useState<EventType[]>([]);
+	const [rules, setRules] = useState<Rule[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
@@ -41,13 +44,16 @@ export function LogView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [typeRes, counterRes, eventRes, roleRes] = await Promise.all([
-				listEventTypes(),
-				listCounters(),
-				listEvents(),
-				getRoles(),
-			]);
+			const [typeRes, ruleRes, counterRes, eventRes, roleRes] =
+				await Promise.all([
+					listEventTypes(),
+					listRules(),
+					listCounters(),
+					listEvents(),
+					getRoles(),
+				]);
 			setTypes(typeRes.types);
+			setRules(ruleRes.rules);
 			setCounters(counterRes.counters);
 			setEvents(eventRes.events);
 			setMembers(roleRes.members);
@@ -93,6 +99,7 @@ export function LogView() {
 			<QueuePanel
 				events={events}
 				types={types}
+				rules={rules}
 				members={members}
 				selfRole={selfRole}
 				onAmended={refreshLog}

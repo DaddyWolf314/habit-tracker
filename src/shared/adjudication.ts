@@ -106,24 +106,3 @@ function formatValue(value: MetadataValue): string {
 	if (typeof value === "boolean") return value ? "yes" : "no";
 	return String(value);
 }
-
-/** The adjudication currently in force for a key (following corrections). */
-export function activeRuling(
-	amendments: Amendment[],
-	key: string,
-): { id: string; value: MetadataValue } | undefined {
-	const superseded = new Set(
-		amendments.flatMap((a) =>
-			a.kind === "adjudication" && a.supersedes ? [a.supersedes] : [],
-		),
-	);
-	let winner: { id: string; value: MetadataValue; at: number } | undefined;
-	for (const a of amendments) {
-		if (a.kind !== "adjudication" || superseded.has(a.id)) continue;
-		if (!(key in a.patch)) continue;
-		if (!winner || a.created_at >= winner.at) {
-			winner = { id: a.id, value: a.patch[key], at: a.created_at };
-		}
-	}
-	return winner ? { id: winner.id, value: winner.value } : undefined;
-}
