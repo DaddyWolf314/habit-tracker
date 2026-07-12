@@ -2,7 +2,7 @@ import { adjudicableKeys } from "./amendment-validation.ts";
 import type { Amendment } from "./amendments.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
 import type { EventView } from "./events.ts";
-import type { MetadataValue, Role } from "./roles.ts";
+import { formatMetaValue, type Role } from "./roles.ts";
 
 /**
  * The read model behind the adjudication queue UX (handoff §4.2, §9 surface 3).
@@ -74,7 +74,7 @@ export function describeAmendment(amendment: Amendment): AmendmentLine {
 	switch (amendment.kind) {
 		case "adjudication": {
 			const patched = Object.entries(amendment.patch)
-				.map(([key, value]) => `${key}: ${formatValue(value)}`)
+				.map(([key, value]) => `${key}: ${formatMetaValue(value)}`)
 				.join(", ");
 			const verb = amendment.supersedes ? "revised ruling" : "ruled";
 			return {
@@ -99,10 +99,4 @@ export function describeAmendment(amendment: Amendment): AmendmentLine {
 				...base,
 			};
 	}
-}
-
-/** Booleans read as yes/no; everything else stringifies (mirrors the log UI). */
-function formatValue(value: MetadataValue): string {
-	if (typeof value === "boolean") return value ? "yes" : "no";
-	return String(value);
 }

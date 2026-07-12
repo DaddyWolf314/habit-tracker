@@ -1,7 +1,11 @@
 import type { EffectOp } from "#/shared/engine.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { MetadataValue } from "#/shared/roles.ts";
 import type { TraceRow } from "#/shared/trace.ts";
+
+// The metadata-value formatter is shared (client and DO agree how a value
+// reads); re-exported here so log components keep importing it alongside the
+// other display helpers.
+export { formatMetaValue } from "#/shared/roles.ts";
 
 /** A short absolute timestamp for the log ("Jul 2, 11:03 PM"). */
 export function formatTime(ms: number): string {
@@ -20,12 +24,6 @@ export function formatElapsed(sinceMs: number, nowMs: number): string {
 	const hours = Math.floor(mins / 60);
 	if (hours < 24) return `${hours}h`;
 	return `${Math.floor(hours / 24)}d`;
-}
-
-/** Renders a metadata value for display (booleans as yes/no). */
-export function formatMetaValue(value: MetadataValue): string {
-	if (typeof value === "boolean") return value ? "yes" : "no";
-	return String(value);
 }
 
 /** A trace row rendered for the chain view (handoff §4.6). */

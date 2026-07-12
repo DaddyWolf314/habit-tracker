@@ -26,3 +26,13 @@ export const metadataValueSchema = z.union([
 	z.string(),
 ]);
 export type MetadataValue = z.infer<typeof metadataValueSchema>;
+
+/**
+ * Renders a metadata value for display: booleans read as yes/no, everything
+ * else stringifies. The one place client and shared code agree how a stored
+ * value reads, so the log chips, the queue, and the chain view can't diverge.
+ */
+export function formatMetaValue(value: MetadataValue): string {
+	if (typeof value === "boolean") return value ? "yes" : "no";
+	return String(value);
+}
