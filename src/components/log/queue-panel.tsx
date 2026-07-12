@@ -3,31 +3,43 @@ import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, awaitedRulings } from "#/shared/adjudication.ts";
+import { reevaluate } from "#/shared/engine.ts";
 import type { EventType, MetadataField } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
-import { formatMetaValue, formatTime, memberLabel } from "./formatting.ts";
+import type { Rule } from "#/shared/rules.ts";
+import {
+	formatElapsed,
+	formatMetaValue,
+	formatTime,
+	memberLabel,
+	summarizeEffectOp,
+} from "./formatting.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /**
- * The adjudication queue, dom side (handoff §4.2, §9 surface 3). Every pending
- * event with a key this member is `adjudicated_by` for surfaces here waiting on
- * a ruling. Submitting a ruling is an `adjudication` amendment — it patches only
- * the awaited keys, and the engine re-evaluates the event so any rule that was
- * waiting on that key fires. Empty (and hidden) when nothing awaits a ruling.
+ * The adjudication queue, dom side (handoff §4.2, §8, §9 surface 3). Every
+ * pending event with a key this member is `adjudicated_by` for surfaces here
+ * waiting on a ruling. Submitting a ruling is an `adjudication` amendment — it
+ * patches only the awaited keys, and the engine re-evaluates the event so any
+ * rule that was waiting on that key fires. Before commit the dom sees a confirm
+ * sheet listing the mechanical fallout (the same `reevaluate` the DO applies,
+ * run here over the couple's `rules`). Empty (and hidden) when nothing awaits.
  */
 export function QueuePanel({
 	events,
 	types,
+	rules,
 	members,
 	selfRole,
 	onAmended,
 }: {
 	events: EventView[];
 	types: EventType[];
+	rules: Rule[];
 	members: RoleMember[];
 	selfRole: Role | null;
 	onAmended: () => void;
@@ -56,6 +68,7 @@ export function QueuePanel({
 						key={event.id}
 						event={event}
 						type={type}
+						rules={rules}
 						rulings={rulings}
 						members={members}
 						onAmended={onAmended}
@@ -69,19 +82,23 @@ export function QueuePanel({
 function QueueItem({
 	event,
 	type,
+	rules,
 	rulings,
 	members,
 	onAmended,
 }: {
 	event: EventView;
 	type: EventType;
+	rules: Rule[];
 	rulings: AwaitedRuling[];
 	members: RoleMember[];
 	onAmended: () => void;
 }) {
 	const [values, setValues] = useState<Record<string, string>>({});
 	const [note, setNote] = useState("");
+	const [stage, setStage] = useState<"edit" | "confirm">("edit");
 	const [busy, setBusy] = useState(false);
+	const [dismissing, setDismissing] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
 	/** The awaited keys the dom has actually decided, coerced to typed values. */
@@ -100,8 +117,29 @@ function QueueItem({
 	const patch = buildPatch();
 	const ready = Object.keys(patch).length > 0;
 
-	async function submit() {
-		if (!ready) return;
+	/**
+	 * The forward-running effects this ruling would fire (handoff §8, step 4):
+	 * re-run the pure engine over the target with the ruling merged in and diff
+	 * against what already fired — exactly what the DO applies on commit. Visibility
+	 * only; no effect-waiving (a scoring-layer concern).
+	 */
+	function previewEffects(): string[] {
+		const before = {
+			type: event.type,
+			metadata: event.composite_metadata,
+			occurred_at: event.occurred_at,
+			awaiting: type.awaiting,
+		};
+		const after = {
+			...before,
+			metadata: { ...event.composite_metadata, ...patch },
+		};
+		return reevaluate(rules, before, after).flatMap((fired) =>
+			fired.ops.map(summarizeEffectOp),
+		);
+	}
+
+	async function commit() {
 		setBusy(true);
 		setError(null);
 		try {
@@ -111,6 +149,8 @@ function QueueItem({
 				patch,
 				note: note.trim() || undefined,
 			});
+			// Post-ruling: the card animates out, then the log refetch drops it.
+			setDismissing(true);
 			onAmended();
 		} catch (err) {
 			setError(
@@ -121,13 +161,19 @@ function QueueItem({
 	}
 
 	const context = Object.entries(event.composite_metadata);
+	const effects = stage === "confirm" ? previewEffects() : [];
 
 	return (
-		<li className="rounded-md border bg-background p-3">
+		<li
+			className={`rounded-md border bg-background p-3 transition-opacity duration-200 ${
+				dismissing ? "opacity-0" : ""
+			}`}
+		>
 			<div className="flex items-baseline justify-between gap-2">
 				<span className="text-sm font-medium">{type.label}</span>
-				<span className="text-xs text-muted-foreground">
-					{formatTime(event.occurred_at)}
+				<span className="text-right text-xs text-muted-foreground">
+					<div>{formatTime(event.occurred_at)}</div>
+					<div>waiting {formatElapsed(event.logged_at, Date.now())}</div>
 				</span>
 			</div>
 			<div className="text-xs text-muted-foreground">
@@ -149,33 +195,76 @@ function QueueItem({
 				</p>
 			)}
 
-			<div className="mt-3 space-y-3">
-				{rulings.map(({ key, field }) => (
-					<RulingInput
-						key={key}
-						field={field}
-						value={values[key] ?? ""}
-						onChange={(v) => setValues((s) => ({ ...s, [key]: v }))}
-					/>
-				))}
-				<div>
-					<span className="text-xs text-muted-foreground">Note (optional)</span>
-					<Textarea
-						className="mt-1"
-						value={note}
-						onChange={(e) => setNote(e.target.value)}
-					/>
+			{stage === "edit" ? (
+				<div className="mt-3 space-y-3">
+					{rulings.map(({ key, field }) => (
+						<RulingInput
+							key={key}
+							field={field}
+							value={values[key] ?? ""}
+							onChange={(v) => setValues((s) => ({ ...s, [key]: v }))}
+						/>
+					))}
+					<div>
+						<span className="text-xs text-muted-foreground">
+							Note (optional)
+						</span>
+						<Textarea
+							className="mt-1"
+							value={note}
+							onChange={(e) => setNote(e.target.value)}
+						/>
+					</div>
+					{error && <p className="text-sm text-destructive">{error}</p>}
+					<Button onClick={() => setStage("confirm")} disabled={!ready}>
+						Review ruling
+					</Button>
 				</div>
-				{error && <p className="text-sm text-destructive">{error}</p>}
-				<Button onClick={submit} disabled={busy || !ready}>
-					{busy ? "…" : "Record ruling"}
-				</Button>
-			</div>
+			) : (
+				<div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3">
+					<p className="text-xs font-medium text-muted-foreground">
+						This ruling will fire:
+					</p>
+					{effects.length > 0 ? (
+						<ul className="space-y-1 text-sm">
+							{effects.map((effect, i) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: a static, order-stable list rebuilt each render; two rules can phrase identically, so content is not a unique key
+								<li key={`${effect}-${i}`}>• {effect}</li>
+							))}
+						</ul>
+					) : (
+						<p className="text-sm text-muted-foreground">
+							No mechanical effects — this only records the ruling.
+						</p>
+					)}
+					{note.trim() && (
+						<p className="text-xs italic text-muted-foreground">
+							Your note: “{note.trim()}”
+						</p>
+					)}
+					{error && <p className="text-sm text-destructive">{error}</p>}
+					<div className="flex gap-2">
+						<Button onClick={commit} disabled={busy}>
+							{busy ? "…" : "Confirm ruling"}
+						</Button>
+						<Button
+							variant="ghost"
+							onClick={() => setStage("edit")}
+							disabled={busy}
+						>
+							Back
+						</Button>
+					</div>
+				</div>
+			)}
 		</li>
 	);
 }
 
-/** One awaited-key control, rendered by field kind (mirrors the log composer). */
+/**
+ * One awaited-key control, rendered by field kind (handoff §8, step 3): boolean
+ * as two large buttons, enum as a segmented control, number/text as an input.
+ */
 function RulingInput({
 	field,
 	value,
@@ -194,18 +283,19 @@ function RulingInput({
 		return (
 			<div>
 				{label}
-				<select
-					className={`${fieldClass} mt-1`}
-					value={value}
-					onChange={(e) => onChange(e.target.value)}
-				>
-					<option value="">— decide —</option>
+				<div className="mt-1 flex gap-2">
 					{options.map((o) => (
-						<option key={o} value={o}>
+						<Button
+							key={o}
+							type="button"
+							variant={value === o ? "default" : "outline"}
+							className={field.kind === "boolean" ? "flex-1" : undefined}
+							onClick={() => onChange(o)}
+						>
 							{o}
-						</option>
+						</Button>
 					))}
-				</select>
+				</div>
 			</div>
 		);
 	}

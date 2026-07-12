@@ -2,7 +2,11 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent, getEventTrace } from "#/lib/api.ts";
-import { describeAmendment, isOwnPending } from "#/shared/adjudication.ts";
+import {
+	type AmendmentLine,
+	describeAmendment,
+	isOwnPending,
+} from "#/shared/adjudication.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -104,6 +108,13 @@ function EventRow({
 	}
 
 	const meta = Object.entries(event.composite_metadata);
+	// The in-force ruling on the viewer's own event, if any (amendments arrive in
+	// created_at order, so the last adjudication is the current one). Drives the
+	// sub-side reveal below.
+	const ownRuling =
+		selfId !== null && event.actor === selfId && !event.retracted
+			? event.amendments.filter((a) => a.kind === "adjudication").at(-1)
+			: undefined;
 
 	return (
 		<li className="py-3">
@@ -163,6 +174,8 @@ function EventRow({
 			{isOwnPending(event, selfId) && (
 				<OwnEventActions eventId={event.id} onAmended={onAmended} />
 			)}
+
+			{ownRuling && <RulingReveal line={describeAmendment(ownRuling)} />}
 
 			{open && (
 				<div className="mt-2 space-y-3 rounded-md border bg-muted/40 p-3">
@@ -335,6 +348,42 @@ function OwnEventActions({
 			)}
 
 			{error && <p className="text-xs text-destructive">{error}</p>}
+		</div>
+	);
+}
+
+/**
+ * The sub-side ruling reveal (handoff §8, "Sub side"): receiving a ruling is
+ * emotionally load-bearing, so the dom's decision is not dumped inline — it sits
+ * behind a content-safe "You have an update" until the sub chooses to open it, a
+ * small deliberate interaction. Shown on the author's own resolved event.
+ *
+ * V1 reveals on tap and stays open for the session; persistent read-state (so an
+ * already-seen ruling stops announcing itself) rides in with content-free
+ * notifications in Phase 6.
+ */
+function RulingReveal({ line }: { line: AmendmentLine }) {
+	const [revealed, setRevealed] = useState(false);
+
+	if (!revealed) {
+		return (
+			<Button
+				variant="outline"
+				size="sm"
+				className="mt-2"
+				onClick={() => setRevealed(true)}
+			>
+				You have an update — reveal
+			</Button>
+		);
+	}
+
+	return (
+		<div className="mt-2 rounded-md border bg-muted/40 p-3 text-sm">
+			<p className="font-medium">{line.summary}</p>
+			{line.note && (
+				<p className="mt-1 italic text-muted-foreground">“{line.note}”</p>
+			)}
 		</div>
 	);
 }

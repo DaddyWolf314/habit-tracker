@@ -13,6 +13,7 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type { Rule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
 
@@ -171,6 +172,15 @@ export function getEventTrace(eventId: string): Promise<{ rows: TraceRow[] }> {
 	return apiFetch<{ rows: TraceRow[] }>(
 		`/api/events/trace?event_id=${encodeURIComponent(eventId)}`,
 	);
+}
+
+/**
+ * The couple's installed rule set. The dom's confirm sheet re-runs the pure
+ * engine over these client-side to preview a ruling's effects before commit
+ * (handoff §8) — the same `reevaluate` the DO applies, so the two agree.
+ */
+export function listRules(): Promise<{ rules: Rule[] }> {
+	return apiFetch<{ rules: Rule[] }>("/api/rules");
 }
 
 export function listCounters(): Promise<{ counters: Counter[] }> {
