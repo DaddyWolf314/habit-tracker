@@ -22,6 +22,72 @@ in and should not.
   rebuildable by replaying the log.
 - **Projection** — any derived, materialized view of the log (a counter, timer, or
   anchor). _Avoid_: "aggregate" (DDD-loaded), "view model".
+- **Stopwatch / Countdown** — the two timer flavors. A stopwatch *accumulates*
+  (paired `session_started`/`session_ended` sharing a `session_id`, duration
+  derived on close); a countdown is a *deadline* (created at assignment, terminal
+  `completed`/`failed`/`expired`, dom may pause and extend). _Avoid_: "session" for
+  the stopwatch itself — a session is the pair of events that opens and closes one.
+- **Target counter** — a counter carrying a daily/weekly target. A **streak** is a
+  property of one: a consecutive-target-met count the DO alarm evaluates at
+  rollover — never a rule. _Avoid_: modeling a streak as a rule.
+
+## Relationship & roles (handoff §2)
+
+- **Couple** — the two paired members and all their shared data; the unit of
+  isolation (one Durable Object per couple). _Avoid_: "account", "tenant",
+  "workspace".
+- **Member** — one partner's record inside a couple (identity, devices, role).
+  _Avoid_: "user" (routing-layer concept) and "partner" when you mean the record.
+- **Role** — one of `dom | sub | switch`: the three permission buckets that rules
+  and schemas gate on (`set_permission`, `adjudicated_by`, `log_permission`).
+  Custom labels are display-only. _Avoid_: inventing mechanical roles beyond these.
+- **Dynamic** — the *activated* D/s relationship. Inactive until both members
+  confirm roles (**mutual confirmation**); frozen by pause-everything, ended by
+  dissolve. _Avoid_: "relationship" when you specifically mean the live, activated
+  state.
+- **Pairing** — the flow that binds a second member into the couple and then
+  **permanently closes** to further invitations. _Avoid_: "signup"; "onboarding"
+  (the UI surface, not the binding).
+- **Dissolve** — either member's unilateral, unblockable termination: freeze →
+  export offer → delete. _Avoid_: "cancel", "unpair", "leave".
+- **Pause-everything** — either partner's one-tap freeze of all tracking (suspends
+  alarms and countdowns without logging failures). The *safeword* philosophy
+  expressed in the mechanics. _Avoid_: "safeword" as the feature/identifier name —
+  it names the philosophy, not the mechanism.
+- **Consent history** — the append-only record of agreement entries (role
+  confirmations and the like); the first entry is the mutual role confirmation.
+  Distinct from the log-as-consent-record framing (see Trace).
+
+## Event schema & adjudication (handoff §5, §8)
+
+- **Event type** — a per-couple typed schema for an event (label, valence,
+  permissions, metadata fields, `awaiting`). Custom types are identical in shape to
+  the built-ins. _Avoid_: "template" (a template is the *shipped default*, not the
+  schema).
+- **Starter Seven** — the seven default event types shipped in the template pack;
+  every default projection must derive from only these.
+- **Metadata** — an event's typed key/values (`boolean | enum | number | ref`
+  only; freeform prose lives in `note`). _Avoid_: "fields", "attributes", "props".
+- **Valence** — `positive | negative | neutral` on a type or counter; drives
+  display and the deferred scoring layer. Overridable per rule effect.
+- **Composite state** — an event's current metadata: original overlaid by
+  amendments in timestamp order, latest non-superseded winning per key. Derived,
+  never stored (`composite_metadata` in code). _Avoid_: "merged" / "effective"
+  metadata as competing names.
+- **Pending** — an event's derived status while any `awaiting` key is still unset
+  in composite state. The single mechanism behind the adjudication queue; never
+  stored. _Avoid_: "unresolved", "open", "in queue".
+- **Awaiting** — the event-type schema's list of metadata keys that gate pending
+  status. _Avoid_: "required" (a separate per-field flag: an awaited key can be
+  optional at logging time yet still gate the queue).
+- **Adjudication** — the amendment by which a role rules on an awaited key after
+  the fact (per `adjudicated_by`). One active ruling per key; corrections
+  supersede. **Ruling** is the UX-facing word for the same act. _Avoid_: "grade",
+  "approve/reject".
+- **Adjudication queue** — the lens over the log showing events pending a given
+  role's ruling. A view, **not a holding pen** — pending events are already in the
+  log and have already fired their unconditional rules. _Avoid_: "inbox",
+  "approval queue".
 
 ## Trace (handoff §4.6)
 
