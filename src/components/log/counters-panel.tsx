@@ -9,7 +9,7 @@ import {
 } from "#/lib/api.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { CounterTrace } from "#/shared/trace.ts";
-import { formatTime } from "./formatting.ts";
+import { describeTraceRow, formatTime } from "./formatting.ts";
 
 /**
  * Counters panel (handoff §4.4, §9 surface 2/6). Each counter shows its cached
@@ -181,14 +181,23 @@ function CounterTraceSheet({
 			<ol className="mt-2 space-y-1 text-xs text-muted-foreground">
 				{trace.rows.length === 0 && <li>No changes yet.</li>}
 				{trace.rows.map((row) => {
-					const detail = row.detail ? JSON.parse(row.detail) : {};
+					// The typed detail replaces the old ad-hoc JSON.parse: a counter change
+					// renders its compact +delta form here; anything else (a scheduled
+					// reset, a streak fold) borrows the ledger's own chain phrasing.
+					const d = row.detail;
+					let label: string;
+					if (d.kind === "counter") {
+						const delta = d.to - d.from;
+						label =
+							d.op === "reset"
+								? "reset → 0"
+								: `${delta >= 0 ? "+" : ""}${delta} (${d.from} → ${d.to})`;
+					} else {
+						label = describeTraceRow(row).summary;
+					}
 					return (
 						<li key={row.id} className="flex justify-between gap-2">
-							<span>
-								{detail.verb === "reset_counter"
-									? "reset → 0"
-									: `${detail.delta >= 0 ? "+" : ""}${detail.delta} (${detail.from} → ${detail.to})`}
-							</span>
+							<span>{label}</span>
 							<span className="shrink-0">{formatTime(row.at)}</span>
 						</li>
 					);

@@ -127,6 +127,15 @@ export const DO_MIGRATIONS: string[][] = [
 			since INTEGER
 		)`,
 	],
+	// v5 — Phase 5: the Trace ledger. Dedicated columns for the amendment that
+	// unlocked an effect and the actor behind a dom command, so a trace row's cause
+	// is fully derivable from columns — `caused_by_rule` stops doubling as a
+	// 'system_job'/'dom_command' sentinel and now holds only real rule ids. Nullable
+	// adds; any pre-existing rows read back as having neither (cause degrades cleanly).
+	[
+		`ALTER TABLE trace ADD COLUMN caused_by_amendment TEXT`,
+		`ALTER TABLE trace ADD COLUMN actor TEXT`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

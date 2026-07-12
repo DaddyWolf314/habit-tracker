@@ -215,13 +215,15 @@ function EventRow({
 							)}
 							{trace?.map((row) => {
 								const line = describeTraceRow(row);
+								const isNearMiss = line.tone === "near_miss";
 								return (
 									<li
 										key={row.id}
-										className={line.nearMiss ? "italic opacity-70" : undefined}
+										className={isNearMiss ? "italic opacity-70" : undefined}
 									>
-										{line.nearMiss ? "○ " : "• "}
-										{line.text}
+										{isNearMiss ? "○ " : "• "}
+										{line.summary}
+										{line.note ? ` — ${line.note}` : ""}
 									</li>
 								);
 							})}

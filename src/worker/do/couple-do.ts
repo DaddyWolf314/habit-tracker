@@ -18,7 +18,6 @@ import {
 	applyCounterOp,
 	type EffectOp,
 	evaluateRules,
-	type NearMiss,
 	reevaluate,
 	routeClosedTimerDuration,
 } from "#/shared/engine.ts";
@@ -73,7 +72,31 @@ import {
 	stopwatchesToAutoClose,
 	type TimerView,
 } from "#/shared/timers.ts";
-import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
+import {
+	amendmentCause,
+	type CounterTrace,
+	causeColumns,
+	decodeTraceRow,
+	directCause,
+	encodeDetail,
+	ruleCause,
+	type TraceCause,
+	type TraceEntry,
+	type TraceRow,
+	type TraceRowColumns,
+	traceAnchor,
+	traceAutoClose,
+	traceCounter,
+	traceExpire,
+	traceNearMiss,
+	traceNotify,
+	traceScheduledReset,
+	traceStreakRollover,
+	traceTimerClose,
+	traceTimerCommand,
+	traceTimerOpen,
+	traceTimerSkipped,
+} from "#/shared/trace.ts";
 import {
 	COUNTER_ADJUSTED_TYPE,
 	COUNTER_RESET_TYPE,
@@ -224,6 +247,15 @@ interface TimerState {
 
 /** The resolved timer effect op (open/close) produced by the rule engine. */
 type TimerOp = Extract<EffectOp, { kind: "timer" }>;
+
+/**
+ * The raw stored columns of a trace row. Kept here (not in the isomorphic shared
+ * module) because the SqlStorage index signature is a Workers type; it is
+ * structurally a `TraceRowColumns`, so `decodeTraceRow` reads it directly.
+ */
+interface TraceColumnsRow extends TraceRowColumns {
+	[key: string]: SqlStorageValue;
+}
 
 /**
  * CoupleDO — one SQLite-backed Durable Object per couple (handoff §3.2). It owns
@@ -1259,12 +1291,13 @@ export class CoupleDO extends DurableObject<Env> {
 		this.requireMember(identityHash);
 		const counter = this.requireCounterRow(counterId);
 		const rows = this.sql
-			.exec<TraceRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, projection, detail
+			.exec<TraceColumnsRow>(
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
 					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
 				`counter:${counterId}`,
 			)
-			.toArray();
+			.toArray()
+			.map(decodeTraceRow);
 		return { counter_id: counterId, value: counter.value, rows };
 	}
 
@@ -1275,12 +1308,13 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<TraceRow[]> {
 		this.requireMember(identityHash);
 		return this.sql
-			.exec<TraceRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, projection, detail
+			.exec<TraceColumnsRow>(
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
 					FROM trace WHERE caused_by_event = ? ORDER BY at ASC, id ASC`,
 				eventId,
 			)
-			.toArray();
+			.toArray()
+			.map(decodeTraceRow);
 	}
 
 	// ── Projection application + validation ──────────────────────────────────
@@ -1314,24 +1348,21 @@ export class CoupleDO extends DurableObject<Env> {
 			event.logged_at,
 			counterId,
 		);
-		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-				VALUES (?, ?, NULL, ?, ?)`,
-			event.logged_at,
-			event.id,
-			`counter:${counterId}`,
-			JSON.stringify({
-				verb:
-					event.type === COUNTER_RESET_TYPE
-						? "reset_counter"
-						: "adjust_counter",
-				delta:
-					event.type === COUNTER_ADJUSTED_TYPE
-						? event.metadata.delta
-						: undefined,
-				from,
-				to,
-			}),
+		// The event itself is the cause (direct manipulation, no rule). A reset is
+		// `reset`; an adjust is increment/decrement carrying the absolute delta.
+		const delta =
+			typeof event.metadata.delta === "number" ? event.metadata.delta : 0;
+		const change =
+			event.type === COUNTER_RESET_TYPE
+				? ({ op: "reset", from, to } as const)
+				: ({
+						op: delta >= 0 ? "increment" : "decrement",
+						by: Math.abs(delta),
+						from,
+						to,
+					} as const);
+		this.writeTrace(
+			traceCounter(directCause(event.id), event.logged_at, counterId, change),
 		);
 	}
 
@@ -1361,7 +1392,12 @@ export class CoupleDO extends DurableObject<Env> {
 			}
 		}
 		for (const nearMiss of nearMisses) {
-			this.recordNearMiss(event, nearMiss);
+			this.writeTrace(
+				traceNearMiss(ruleCause(event.id, nearMiss.rule_id), event.logged_at, {
+					reason: nearMiss.reason,
+					awaiting: nearMiss.awaiting,
+				}),
+			);
 		}
 	}
 
@@ -1386,6 +1422,7 @@ export class CoupleDO extends DurableObject<Env> {
 		amendment?: Amendment,
 	): void {
 		const at = amendment?.created_at ?? event.logged_at;
+		const cause = this.effectCause(event, ruleId, amendment);
 		switch (op.kind) {
 			case "counter": {
 				const row = this.counterById(op.counter);
@@ -1398,12 +1435,13 @@ export class CoupleDO extends DurableObject<Env> {
 					at,
 					op.counter,
 				);
-				this.recordTrace(
-					event,
-					ruleId,
-					`counter:${op.counter}`,
-					{ verb: `${op.op}_counter`, by: op.by ?? 1, from, to },
-					amendment,
+				this.writeTrace(
+					traceCounter(cause, at, op.counter, {
+						op: op.op,
+						by: op.by,
+						from,
+						to,
+					}),
 				);
 				return;
 			}
@@ -1421,12 +1459,8 @@ export class CoupleDO extends DurableObject<Env> {
 					to,
 					op.anchor,
 				);
-				this.recordTrace(
-					event,
-					ruleId,
-					`anchor:${op.anchor}`,
-					{ verb: "reset_anchor", at: op.at, from, to },
-					amendment,
+				this.writeTrace(
+					traceAnchor(cause, at, op.anchor, { at: op.at, from, to }),
 				);
 				return;
 			}
@@ -1438,16 +1472,11 @@ export class CoupleDO extends DurableObject<Env> {
 					amendment &&
 					!this.matchOpenTimer(this.openTimerRows(op.timer), op.match_on)
 				) {
-					this.recordTrace(
-						event,
-						ruleId,
-						`timer:${op.timer}`,
-						{
-							timer_skipped: true,
+					this.writeTrace(
+						traceTimerSkipped(cause, at, op.timer, {
 							reason: `${ruleId} skipped: ${op.timer} already ended`,
 							op: op.op,
-						},
-						amendment,
+						}),
 					);
 					return;
 				}
@@ -1460,60 +1489,38 @@ export class CoupleDO extends DurableObject<Env> {
 				}
 				return;
 			case "notify":
-				this.recordTrace(
-					event,
-					ruleId,
-					`notify:${op.target}`,
-					{ verb: "notify", target: op.target },
-					amendment,
-				);
+				this.writeTrace(traceNotify(cause, at, op.target));
 				return;
 		}
 	}
 
 	/**
-	 * Records a near-miss (handoff §4.6): a rule that matched on type but didn't
-	 * fire because a condition key was unset or wrong. `projection` is null (it
-	 * touched nothing); `awaiting` drives the "waiting on: …" pending hint.
+	 * The typed cause of a rule-driven effect: a plain rule fire on append, or an
+	 * amendment when re-evaluation on a ruling unlocked it (handoff §4.2, §7).
 	 */
-	private recordNearMiss(event: Event, nearMiss: NearMiss): void {
-		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-				VALUES (?, ?, ?, NULL, ?)`,
-			event.logged_at,
-			event.id,
-			nearMiss.rule_id,
-			JSON.stringify({
-				near_miss: true,
-				reason: nearMiss.reason,
-				awaiting: nearMiss.awaiting,
-			}),
-		);
-	}
-
-	/**
-	 * Inserts one rule-attributed projection trace row. When `amendment` is set
-	 * (an effect unlocked by re-evaluation), the row is stamped at the ruling time
-	 * and carries `amendment_id` so the chain shows which ruling caused it;
-	 * otherwise it is stamped at the event's log time (the append path).
-	 */
-	private recordTrace(
+	private effectCause(
 		event: Event,
 		ruleId: string,
-		projection: string,
-		detail: Record<string, unknown>,
 		amendment?: Amendment,
-	): void {
+	): TraceCause {
+		return amendment
+			? amendmentCause(event.id, ruleId, amendment.id)
+			: ruleCause(event.id, ruleId);
+	}
+
+	/** The one trace sink: encodes the detail and writes the single row. */
+	private writeTrace(entry: TraceEntry): void {
+		const cols = causeColumns(entry.cause);
 		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-				VALUES (?, ?, ?, ?, ?)`,
-			amendment?.created_at ?? event.logged_at,
-			event.id,
-			ruleId,
-			projection,
-			JSON.stringify(
-				amendment ? { ...detail, amendment_id: amendment.id } : detail,
-			),
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			entry.at,
+			cols.caused_by_event,
+			cols.caused_by_rule,
+			cols.caused_by_amendment,
+			cols.actor,
+			entry.projection,
+			encodeDetail(entry.detail),
 		);
 	}
 
@@ -1553,12 +1560,13 @@ export class CoupleDO extends DurableObject<Env> {
 			JSON.stringify(state),
 			event.occurred_at,
 		);
-		this.recordTrace(event, ruleId, `timer:${op.timer}`, {
-			verb: "open_timer",
-			timer_id: id,
-			match_on: op.match_on,
-			tag: op.tag,
-		});
+		this.writeTrace(
+			traceTimerOpen(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+				timer_id: id,
+				match_on: op.match_on,
+				tag: op.tag,
+			}),
+		);
 	}
 
 	/**
@@ -1593,22 +1601,34 @@ export class CoupleDO extends DurableObject<Env> {
 					JSON.stringify(state),
 					autoClosed.id,
 				);
-				this.recordTrace(event, ruleId, `timer:${op.timer}`, {
-					verb: "close_timer",
-					matched: true,
-					timer_id: autoClosed.id,
-					status: autoClosed.status,
-					reconciled_auto_closed: true,
-					note: "session already auto-closed past max; recorded actual end for review",
-				});
+				this.writeTrace(
+					traceTimerClose(
+						ruleCause(event.id, ruleId),
+						event.logged_at,
+						op.timer,
+						{
+							matched: true,
+							timer_id: autoClosed.id,
+							status: autoClosed.status ?? undefined,
+							reconciled_auto_closed: true,
+							note: "session already auto-closed past max; recorded actual end for review",
+						},
+					),
+				);
 				return;
 			}
-			this.recordTrace(event, ruleId, `timer:${op.timer}`, {
-				verb: "close_timer",
-				matched: false,
-				match_on: op.match_on,
-				note: "no matching open timer",
-			});
+			this.writeTrace(
+				traceTimerClose(
+					ruleCause(event.id, ruleId),
+					event.logged_at,
+					op.timer,
+					{
+						matched: false,
+						match_on: op.match_on,
+						note: "no matching open timer",
+					},
+				),
+			);
 			return;
 		}
 		const closedAt = event.occurred_at;
@@ -1625,14 +1645,15 @@ export class CoupleDO extends DurableObject<Env> {
 			JSON.stringify(state),
 			target.id,
 		);
-		this.recordTrace(event, ruleId, `timer:${op.timer}`, {
-			verb: "close_timer",
-			matched: true,
-			timer_id: target.id,
-			status: op.status,
-			duration_ms: durationMs,
-			route_duration_to: op.route_duration_to,
-		});
+		this.writeTrace(
+			traceTimerClose(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+				matched: true,
+				timer_id: target.id,
+				status: op.status,
+				duration_ms: durationMs,
+				route_duration_to: op.route_duration_to,
+			}),
+		);
 		// The rule routes the derived duration; the timer computed it (handoff §4.3).
 		const routed = routeClosedTimerDuration(op, durationMinutes(durationMs));
 		if (routed) this.applyEffectOp(event, ruleId, routed);
@@ -1687,13 +1708,13 @@ export class CoupleDO extends DurableObject<Env> {
 				JSON.stringify(state),
 				row.id,
 			);
-			this.recordSystemJob(now, `timer:${row.definition}`, {
-				verb: "auto_close_timer",
-				reason: "over_max",
-				flagged_for_review: true,
-				timer_id: row.id,
-				duration_ms: closedSw.duration_ms,
-			});
+			this.writeTrace(
+				traceAutoClose(now, row.definition, {
+					flagged_for_review: true,
+					timer_id: row.id,
+					duration_ms: closedSw.duration_ms,
+				}),
+			);
 			closed++;
 		}
 		return closed;
@@ -1739,13 +1760,15 @@ export class CoupleDO extends DurableObject<Env> {
 			JSON.stringify(state),
 			now,
 		);
-		this.recordTimerCommand(me.id, parsed.timer, now, {
-			verb: "assign_countdown",
-			timer_id: id,
-			match: parsed.match,
-			tag: parsed.tag,
-			deadline_at: state.deadline_at,
-		});
+		this.writeTrace(
+			traceTimerCommand(me.id, now, parsed.timer, {
+				command: "assign",
+				timer_id: id,
+				match: parsed.match,
+				tag: parsed.tag,
+				deadline_at: state.deadline_at,
+			}),
+		);
 		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(id));
 	}
@@ -1772,11 +1795,13 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		const patch = pauseCountdown(this.rowToCountdown(row), now);
 		this.patchTimerState(row, patch);
-		this.recordTimerCommand(me.id, row.definition, now, {
-			verb: "pause_countdown",
-			timer_id: row.id,
-			remaining_ms: patch.remaining_ms,
-		});
+		this.writeTrace(
+			traceTimerCommand(me.id, now, row.definition, {
+				command: "pause",
+				timer_id: row.id,
+				remaining_ms: patch.remaining_ms,
+			}),
+		);
 		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
@@ -1795,11 +1820,13 @@ export class CoupleDO extends DurableObject<Env> {
 		const now = Date.now();
 		const patch = resumeCountdown(this.rowToCountdown(row), now);
 		this.patchTimerState(row, patch);
-		this.recordTimerCommand(me.id, row.definition, now, {
-			verb: "resume_countdown",
-			timer_id: row.id,
-			deadline_at: patch.deadline_at,
-		});
+		this.writeTrace(
+			traceTimerCommand(me.id, now, row.definition, {
+				command: "resume",
+				timer_id: row.id,
+				deadline_at: patch.deadline_at,
+			}),
+		);
 		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
@@ -1821,12 +1848,14 @@ export class CoupleDO extends DurableObject<Env> {
 		const now = Date.now();
 		const patch = extendCountdown(this.rowToCountdown(row), by_ms);
 		this.patchTimerState(row, patch);
-		this.recordTimerCommand(me.id, row.definition, now, {
-			verb: "extend_countdown",
-			timer_id: row.id,
-			by_ms,
-			...patch,
-		});
+		this.writeTrace(
+			traceTimerCommand(me.id, now, row.definition, {
+				command: "extend",
+				timer_id: row.id,
+				by_ms,
+				...patch,
+			}),
+		);
 		this.armAlarm();
 		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
@@ -1853,11 +1882,7 @@ export class CoupleDO extends DurableObject<Env> {
 				now,
 				row.id,
 			);
-			this.recordSystemJob(now, `timer:${row.definition}`, {
-				verb: "expire_countdown",
-				reason: "past_deadline",
-				timer_id: row.id,
-			});
+			this.writeTrace(traceExpire(now, row.definition, { timer_id: row.id }));
 			expired++;
 		}
 		return expired;
@@ -1988,26 +2013,6 @@ export class CoupleDO extends DurableObject<Env> {
 			`UPDATE timers SET state = ? WHERE id = ?`,
 			JSON.stringify(state),
 			row.id,
-		);
-	}
-
-	/**
-	 * Records a dom-issued timer command (assign/pause/resume/extend) in the trace.
-	 * These have no causing event (they are direct commands, not rule effects), so
-	 * `caused_by_event` is null and the cause is the acting member, not a rule.
-	 */
-	private recordTimerCommand(
-		actorId: string,
-		definition: string,
-		at: number,
-		detail: Record<string, unknown>,
-	): void {
-		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-				VALUES (?, NULL, 'dom_command', ?, ?)`,
-			at,
-			`timer:${definition}`,
-			JSON.stringify({ actor: actorId, ...detail }),
 		);
 	}
 
@@ -2515,14 +2520,15 @@ export class CoupleDO extends DurableObject<Env> {
 				def.id,
 			);
 			valueById.set(def.id, to);
-			this.recordSystemJob(now, `counter:${def.id}`, {
-				verb: "streak_rollover",
-				period,
-				target_counter: streak.counter,
-				met,
-				from,
-				to,
-			});
+			this.writeTrace(
+				traceStreakRollover(now, def.id, {
+					period,
+					target_counter: streak.counter,
+					met,
+					from,
+					to,
+				}),
+			);
 		}
 		for (const def of defs) {
 			if (def.reset !== period) continue;
@@ -2533,12 +2539,9 @@ export class CoupleDO extends DurableObject<Env> {
 				now,
 				def.id,
 			);
-			this.recordSystemJob(now, `counter:${def.id}`, {
-				verb: "scheduled_reset",
-				period,
-				from: value,
-				to: 0,
-			});
+			this.writeTrace(
+				traceScheduledReset(now, def.id, { period, from: value, to: 0 }),
+			);
 		}
 	}
 
@@ -2608,20 +2611,6 @@ export class CoupleDO extends DurableObject<Env> {
 				id,
 			);
 		}
-	}
-
-	private recordSystemJob(
-		at: number,
-		projection: string,
-		detail: Record<string, unknown>,
-	): void {
-		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-				VALUES (?, NULL, 'system_job', ?, ?)`,
-			at,
-			projection,
-			JSON.stringify(detail),
-		);
 	}
 
 	private counterDefinitions(): CounterDefinition[] {
