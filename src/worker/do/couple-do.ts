@@ -1023,132 +1023,10 @@ export class CoupleDO extends DurableObject<Env> {
 		this.timersDirty = false;
 		for (const rule of fired) {
 			for (const op of rule.ops) {
-				this.applyAmendmentEffect(event, amendment, rule.rule_id, op);
+				this.applyEffectOp(event, rule.rule_id, op, amendment);
 			}
 		}
 		if (this.timersDirty) this.armAlarm();
-	}
-
-	/**
-	 * Applies one re-evaluated effect op, stamped at the ruling time and tagged
-	 * with the amendment that unlocked it. Counter/anchor/notify ops mutate the
-	 * cache as usual; a timer op applies only if its instance is still open, else
-	 * it records a skip note (handoff §4.2 — "no retroactive timer surgery").
-	 */
-	private applyAmendmentEffect(
-		event: Event,
-		amendment: Amendment,
-		ruleId: string,
-		op: EffectOp,
-	): void {
-		const at = amendment.created_at;
-		switch (op.kind) {
-			case "counter": {
-				const row = this.counterById(op.counter);
-				if (!row) return;
-				const from = row.value;
-				const to = applyCounterOp(from, op);
-				this.sql.exec(
-					`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
-					to,
-					at,
-					op.counter,
-				);
-				this.recordAmendmentTrace(
-					event,
-					amendment,
-					ruleId,
-					`counter:${op.counter}`,
-					{
-						verb: `${op.op}_counter`,
-						by: op.by ?? 1,
-						from,
-						to,
-					},
-				);
-				return;
-			}
-			case "anchor": {
-				const row = this.anchorById(op.anchor);
-				if (!row) return;
-				const from = row.since;
-				const to = resetAnchor(from, op.at); // op.at is the target's occurred_at
-				this.sql.exec(
-					`UPDATE anchors SET since = ? WHERE id = ?`,
-					to,
-					op.anchor,
-				);
-				this.recordAmendmentTrace(
-					event,
-					amendment,
-					ruleId,
-					`anchor:${op.anchor}`,
-					{
-						verb: "reset_anchor",
-						at: op.at,
-						from,
-						to,
-					},
-				);
-				return;
-			}
-			case "timer": {
-				const target = this.matchOpenTimer(
-					this.openTimerRows(op.timer),
-					op.match_on,
-				);
-				// No live instance to act on: record the skip, mutate nothing.
-				if (!target) {
-					this.recordAmendmentTrace(
-						event,
-						amendment,
-						ruleId,
-						`timer:${op.timer}`,
-						{
-							timer_skipped: true,
-							reason: `${ruleId} skipped: ${op.timer} already ended`,
-							op: op.op,
-						},
-					);
-					return;
-				}
-				this.timersDirty = true;
-				if (op.op === "open") this.openTimer(event, ruleId, op);
-				else this.closeTimer(event, ruleId, op);
-				return;
-			}
-			case "notify":
-				this.recordAmendmentTrace(
-					event,
-					amendment,
-					ruleId,
-					`notify:${op.target}`,
-					{
-						verb: "notify",
-						target: op.target,
-					},
-				);
-				return;
-		}
-	}
-
-	/** Trace row for an amendment-driven effect: cause is the ruling + the rule. */
-	private recordAmendmentTrace(
-		event: Event,
-		amendment: Amendment,
-		ruleId: string,
-		projection: string,
-		detail: Record<string, unknown>,
-	): void {
-		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
-				VALUES (?, ?, ?, ?, ?)`,
-			amendment.created_at,
-			event.id,
-			ruleId,
-			projection,
-			JSON.stringify({ ...detail, amendment_id: amendment.id }),
-		);
 	}
 
 	/** Inserts an amendment, assigning the server-owned id/created_at/actor. */
@@ -1492,8 +1370,22 @@ export class CoupleDO extends DurableObject<Env> {
 	 * rule that fired it. Counter ops move the materialized cache now; anchor,
 	 * timer, and notify ops are recorded so the chain shows what the rule routed,
 	 * with their projection state machines landing in Phase 4 (timers + alarms).
+	 *
+	 * When `amendment` is set the op comes from re-evaluation on a ruling (handoff
+	 * §4.2, §7) rather than a fresh append: the counter write and trace row are
+	 * stamped at the ruling time and tagged with the amendment that unlocked them,
+	 * and — because an amendment never does retroactive timer surgery — a timer op
+	 * whose instance has already ended records a skip note and mutates nothing.
+	 * The append path passes no amendment and stamps at `event.logged_at`. A live
+	 * timer op takes the same `openTimer`/`closeTimer` path either way.
 	 */
-	private applyEffectOp(event: Event, ruleId: string, op: EffectOp): void {
+	private applyEffectOp(
+		event: Event,
+		ruleId: string,
+		op: EffectOp,
+		amendment?: Amendment,
+	): void {
+		const at = amendment?.created_at ?? event.logged_at;
 		switch (op.kind) {
 			case "counter": {
 				const row = this.counterById(op.counter);
@@ -1503,15 +1395,16 @@ export class CoupleDO extends DurableObject<Env> {
 				this.sql.exec(
 					`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
 					to,
-					event.logged_at,
+					at,
 					op.counter,
 				);
-				this.recordTrace(event, ruleId, `counter:${op.counter}`, {
-					verb: `${op.op}_counter`,
-					by: op.by ?? 1,
-					from,
-					to,
-				});
+				this.recordTrace(
+					event,
+					ruleId,
+					`counter:${op.counter}`,
+					{ verb: `${op.op}_counter`, by: op.by ?? 1, from, to },
+					amendment,
+				);
 				return;
 			}
 			case "anchor": {
@@ -1528,16 +1421,37 @@ export class CoupleDO extends DurableObject<Env> {
 					to,
 					op.anchor,
 				);
-				this.recordTrace(event, ruleId, `anchor:${op.anchor}`, {
-					verb: "reset_anchor",
-					at: op.at,
-					from,
-					to,
-				});
+				this.recordTrace(
+					event,
+					ruleId,
+					`anchor:${op.anchor}`,
+					{ verb: "reset_anchor", at: op.at, from, to },
+					amendment,
+				);
 				return;
 			}
 			case "timer":
-				// The open-timer set moved, so the caller (appendEvent) must re-arm.
+				// A ruling never performs retroactive timer surgery (handoff §4.2): if
+				// no live instance matches, record the skip and mutate nothing. A fresh
+				// append has no such guard — its timer op always acts.
+				if (
+					amendment &&
+					!this.matchOpenTimer(this.openTimerRows(op.timer), op.match_on)
+				) {
+					this.recordTrace(
+						event,
+						ruleId,
+						`timer:${op.timer}`,
+						{
+							timer_skipped: true,
+							reason: `${ruleId} skipped: ${op.timer} already ended`,
+							op: op.op,
+						},
+						amendment,
+					);
+					return;
+				}
+				// The open-timer set moved, so the caller (appendEvent/re-eval) re-arms.
 				this.timersDirty = true;
 				if (op.op === "open") {
 					this.openTimer(event, ruleId, op);
@@ -1546,10 +1460,13 @@ export class CoupleDO extends DurableObject<Env> {
 				}
 				return;
 			case "notify":
-				this.recordTrace(event, ruleId, `notify:${op.target}`, {
-					verb: "notify",
-					target: op.target,
-				});
+				this.recordTrace(
+					event,
+					ruleId,
+					`notify:${op.target}`,
+					{ verb: "notify", target: op.target },
+					amendment,
+				);
 				return;
 		}
 	}
@@ -1574,21 +1491,29 @@ export class CoupleDO extends DurableObject<Env> {
 		);
 	}
 
-	/** Inserts one rule-attributed projection trace row. */
+	/**
+	 * Inserts one rule-attributed projection trace row. When `amendment` is set
+	 * (an effect unlocked by re-evaluation), the row is stamped at the ruling time
+	 * and carries `amendment_id` so the chain shows which ruling caused it;
+	 * otherwise it is stamped at the event's log time (the append path).
+	 */
 	private recordTrace(
 		event: Event,
 		ruleId: string,
 		projection: string,
 		detail: Record<string, unknown>,
+		amendment?: Amendment,
 	): void {
 		this.sql.exec(
 			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
 				VALUES (?, ?, ?, ?, ?)`,
-			event.logged_at,
+			amendment?.created_at ?? event.logged_at,
 			event.id,
 			ruleId,
 			projection,
-			JSON.stringify(detail),
+			JSON.stringify(
+				amendment ? { ...detail, amendment_id: amendment.id } : detail,
+			),
 		);
 	}
 
