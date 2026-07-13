@@ -24,12 +24,19 @@ import {
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
+import {
+	amendmentToExportRow,
+	anchorToExportRow,
+	counterToExportRow,
+	eventToExportRow,
+	ruleToExportRow,
+	timerToExportRow,
+} from "#/shared/export.ts";
 import type {
 	ConsentEntry,
 	CoupleExport,
 	CoupleStatus,
 	Device,
-	ExportRow,
 	RoleAssignment,
 	RoleConfirmationState,
 	Session,
@@ -537,11 +544,39 @@ export class CoupleDO extends DurableObject<Env> {
 		return { status: "dissolved" };
 	}
 
-	/** A member's exportable snapshot of the relationship. */
+	/**
+	 * Irreversibly deletes this couple's Durable Object storage — the final step
+	 * of dissolve → export → delete (handoff §3.5). Gated on a prior dissolve so a
+	 * member cannot skip the freeze-and-export-offer window; the abuse-edge
+	 * guarantee is that no one is trapped, not that anyone can nuke a live couple
+	 * out from under their partner without warning. `deleteAll` wipes every SQL
+	 * table, KV pair, and the alarm, so the DO retains no relationship data; the
+	 * caller (routing layer) then purges the credential/invite rows that point
+	 * here, making "the database ceases to exist" literally true.
+	 */
+	async purge(identityHash: string): Promise<{ couple_do_id: string }> {
+		this.requireMember(identityHash);
+		if (this.status() !== "dissolved") {
+			throw coupleError("BAD_REQUEST", "dissolve the couple before deleting");
+		}
+		const coupleDoId = this.ctx.id.toString();
+		await this.ctx.storage.deleteAll();
+		return { couple_do_id: coupleDoId };
+	}
+
+	/**
+	 * A member's exportable snapshot of the relationship — the abuse-edge escape
+	 * hatch (handoff §2). Carries the member's full view: the event log and its
+	 * amendments (which together reconstruct the composite truth), the installed
+	 * rules, and the counter/timer/anchor projections. The per-object flattening
+	 * lives in the shared `export` module so the shape is one testable seam.
+	 */
 	async exportData(identityHash: string): Promise<CoupleExport> {
 		const me = this.requireMember(identityHash);
+		const exportedAt = Date.now();
+		const amendments = [...this.amendmentsByEvent().values()].flat();
 		return {
-			exported_at: Date.now(),
+			exported_at: exportedAt,
 			couple_do_id: this.ctx.id.toString(),
 			status: this.status(),
 			self: {
@@ -560,47 +595,26 @@ export class CoupleDO extends DurableObject<Env> {
 				current: false,
 			})),
 			consent_history: await this.listConsentHistory(identityHash),
-			events: this.eventRows().map((row) => this.eventExportRow(row)),
-			counters: this.counterRows().map((row) => this.counterExportRow(row)),
-		};
-	}
-
-	/**
-	 * Flattens an event for the export (ExportRow is a flat, RPC-serializable
-	 * map, so nested metadata is carried as a JSON string). Reuses `rowToEvent`
-	 * so the parsing lives in one place.
-	 */
-	private eventExportRow(row: EventRow): ExportRow {
-		const event = this.rowToEvent(row);
-		return {
-			id: event.id,
-			type: event.type,
-			actor: event.actor,
-			subject: event.subject ?? null,
-			occurred_at: event.occurred_at,
-			logged_at: event.logged_at,
-			metadata: JSON.stringify(event.metadata),
-			note: event.note ?? null,
-		};
-	}
-
-	/** Flattens a counter for the export — full definition, nothing dropped. */
-	private counterExportRow(row: CounterRow): ExportRow {
-		const counter = this.rowToCounter(row);
-		return {
-			id: counter.id,
-			name: counter.name,
-			valence: counter.valence,
-			daily_target: counter.daily_target ?? null,
-			weekly_target: counter.weekly_target ?? null,
-			reset: counter.reset,
-			// Serialized like modify_permission (ExportRow is flat). Dropping it would
-			// lose the streak binding, so a reconstructed ritual_streak_days would fall
-			// back to an ordinary counter the rollover never advances (handoff §4.4).
-			streak: counter.streak ? JSON.stringify(counter.streak) : null,
-			modify_permission: JSON.stringify(counter.modify_permission),
-			value: counter.value,
-			updated_at: counter.updated_at,
+			events: this.eventRows().map((row) =>
+				eventToExportRow(this.rowToEvent(row)),
+			),
+			amendments: amendments.map(amendmentToExportRow),
+			rules: this.rules().map(ruleToExportRow),
+			counters: this.counterRows().map((row) =>
+				counterToExportRow(this.rowToCounter(row)),
+			),
+			timers: this.timerRows().map((row) =>
+				timerToExportRow(this.rowToTimerView(row)),
+			),
+			anchors: this.anchorRows().map((row) => {
+				const elapsedMs = anchorElapsedMs(row.since, exportedAt);
+				return anchorToExportRow({
+					anchor: row.id,
+					since: row.since,
+					elapsed_ms: elapsedMs,
+					elapsed_days: anchorElapsedDays(elapsedMs),
+				});
+			}),
 		};
 	}
 

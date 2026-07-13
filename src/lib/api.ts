@@ -139,6 +139,14 @@ export function dissolve(): Promise<{ status: CoupleStatus }> {
 	});
 }
 
+/**
+ * Permanently delete the couple after it has been dissolved: the DO wipes its
+ * storage and the routing rows are purged. Irreversible — offer an export first.
+ */
+export function deleteCouple(): Promise<{ ok: true }> {
+	return apiFetch<{ ok: true }>("/api/couple", { method: "DELETE" });
+}
+
 // ── Phase 2: event log + counters ──────────────────────────────────────────
 
 /** The couple's event-type schema set (starter seven + custom). */

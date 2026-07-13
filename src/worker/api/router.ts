@@ -113,6 +113,9 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				),
 			);
 		}
+		if (path === "/api/couple" && method === "DELETE") {
+			return await withAuth(request, env, (ctx) => deleteCouple(env, ctx));
+		}
 
 		// ── Phase 2: event log + counters ──────────────────────────────────────
 		if (path === "/api/event-types" && method === "GET") {
@@ -450,4 +453,25 @@ async function proposeRoles(
 		parsed.data.assignment,
 	);
 	return json(state);
+}
+
+/**
+ * DELETE /api/couple — the real teardown (handoff §3.5). The DO must already be
+ * dissolved (the freeze-and-export-offer gate); the DO wipes its own storage,
+ * then we purge every routing row that points at it — the two members' root
+ * credentials, any device credentials, and any live invite — so no bearer can
+ * ever resolve to this couple again. "Delete your account and the database
+ * containing your relationship's data ceases to exist" becomes literally true.
+ */
+async function deleteCouple(
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	await stub.purge(auth.identityHash);
+	const db = getRoutingDb(env.DB);
+	await db
+		.delete(credentials)
+		.where(eq(credentials.coupleDoId, auth.coupleDoId));
+	await db.delete(invites).where(eq(invites.coupleDoId, auth.coupleDoId));
+	return json({ ok: true });
 }
