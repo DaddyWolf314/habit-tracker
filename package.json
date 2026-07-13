@@ -17,6 +17,8 @@
     "deploy": "npm run build && wrangler deploy",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:local": "wrangler d1 migrations apply habit-tracker-routing --local",
+    "db:migrate:remote": "wrangler d1 migrations apply habit-tracker-routing --remote",
     "db:push": "drizzle-kit push",
     "db:pull": "drizzle-kit pull",
     "db:studio": "drizzle-kit studio",
