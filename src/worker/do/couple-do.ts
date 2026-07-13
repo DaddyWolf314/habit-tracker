@@ -806,10 +806,20 @@ export class CoupleDO extends DurableObject<Env> {
 		};
 	}
 
-	/** A member's view of the active recovery (for polling / the cancel prompt). */
+	/**
+	 * A member's view of the active recovery (for polling / the cancel prompt). The
+	 * redeemed fresh identity is *not* a member until `finalizeRecovery` rebinds the
+	 * slot, yet it must be able to poll the window it is waiting out (handoff §2) —
+	 * so allow either a member or that redeemed identity, mirroring how finalize
+	 * itself gates on `new_identity_hash` rather than membership.
+	 */
 	async getRecovery(identityHash: string): Promise<RecoveryView | null> {
-		this.requireMember(identityHash);
 		const state = this.recoveryState();
+		const isMember = this.memberByIdentity(identityHash) !== null;
+		const isRecovering = state?.new_identity_hash === identityHash;
+		if (!isMember && !isRecovering) {
+			throw coupleError("NOT_FOUND", "not a member of this couple");
+		}
 		return state ? recoveryView(state, Date.now()) : null;
 	}
 
@@ -820,13 +830,21 @@ export class CoupleDO extends DurableObject<Env> {
 	 * relationship content, so the notification badge it drives ("You have N new
 	 * items") reveals nothing. Counts the events awaiting an adjudication plus a
 	 * pending recovery worth noticing.
+	 *
+	 * The recovery signal is *targeted*, not broadcast: only the member whose slot
+	 * is being recovered — the old identity that can still cancel from a remaining
+	 * device — sees it, delivering the spec's "notice pushed to the old identity's
+	 * remaining devices" (#41) rather than a badge that fires identically for the
+	 * partner who started the takeover and already knows.
 	 */
 	async inboxCount(identityHash: string): Promise<{ unread: number }> {
+		const me = this.requireMember(identityHash);
 		const events = await this.listEvents(identityHash);
+		const recovery = this.recoveryState();
 		return {
 			unread: inboxUnreadCount({
 				pending_events: events.filter((e) => e.pending).length,
-				recovery_pending: this.recoveryState() !== null,
+				recovery_pending: recovery !== null && recovery.member_id === me.id,
 			}),
 		};
 	}

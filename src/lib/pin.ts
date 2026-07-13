@@ -11,8 +11,12 @@ import { sha256Base64url } from "./crypto.ts";
  * session, and the lock re-engages on the next fresh load while a PIN is set.
  */
 
-const PIN_HASH_KEY = "strawberry.pin_hash";
-const UNLOCKED_KEY = "strawberry.pin_unlocked";
+// Neutral, cover-name storage keys (#42): a casual glance at this device's
+// localStorage must not surface the "strawberry" codename the discretion feature
+// exists to hide. They sit under the same bland "habits" label as APP_NAME. (The
+// PIN hash's salt is never persisted, so it isn't a storage-inspection leak.)
+const PIN_HASH_KEY = "habits.pin_hash";
+const UNLOCKED_KEY = "habits.pin_unlocked";
 
 /** Hashes a PIN for storage. Salted by a fixed app label (see the caveat above). */
 export function hashPin(pin: string): Promise<string> {

@@ -512,9 +512,10 @@ async function proposeRoles(
  * DELETE /api/couple — the real teardown (handoff §3.5). The DO must already be
  * dissolved (the freeze-and-export-offer gate); the DO wipes its own storage,
  * then we purge every routing row that points at it — the two members' root
- * credentials, any device credentials, and any live invite — so no bearer can
- * ever resolve to this couple again. "Delete your account and the database
- * containing your relationship's data ceases to exist" becomes literally true.
+ * credentials, any device credentials, any live invite, and any in-flight
+ * recovery code — so no bearer can ever resolve to this couple again. "Delete
+ * your account and the database containing your relationship's data ceases to
+ * exist" becomes literally true.
  */
 async function deleteCouple(
 	env: Env,
@@ -526,6 +527,10 @@ async function deleteCouple(
 		.delete(credentials)
 		.where(eq(credentials.coupleDoId, auth.coupleDoId));
 	await db.delete(invites).where(eq(invites.coupleDoId, auth.coupleDoId));
+	// A recovery in flight at dissolve time leaves a routing row keyed to this
+	// couple (member id + dead DO id) — residual, identifying data. Purge it too,
+	// or "the database ceases to exist" would be a lie for a couple mid-recovery.
+	await db.delete(recoveries).where(eq(recoveries.coupleDoId, auth.coupleDoId));
 	return json({ ok: true });
 }
 
