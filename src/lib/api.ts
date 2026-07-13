@@ -144,6 +144,22 @@ export function dissolve(): Promise<{ status: CoupleStatus }> {
 }
 
 /**
+ * Safeword: either partner, one tap, freezes all tracking and suspends every
+ * consequence until {@link resume}. Idempotent (handoff §9, #40).
+ */
+export function pause(): Promise<{
+	paused: boolean;
+	paused_at: number | null;
+}> {
+	return apiFetch("/api/pause", { method: "POST" });
+}
+
+/** Lifts the safeword and restores prior state cleanly. Idempotent. */
+export function resume(): Promise<{ paused: boolean }> {
+	return apiFetch("/api/resume", { method: "POST" });
+}
+
+/**
  * Permanently delete the couple after it has been dissolved: the DO wipes its
  * storage and the routing rows are purged. Irreversible — offer an export first.
  */

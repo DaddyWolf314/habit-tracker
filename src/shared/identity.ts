@@ -29,6 +29,8 @@ export const sessionSchema = z.object({
 	member_count: z.number().int(),
 	invitations_closed: z.boolean(),
 	roles_active: z.boolean(),
+	/** Safeword engaged: all tracking frozen, no consequences accrue (#40). */
+	paused: z.boolean(),
 });
 export type Session = z.infer<typeof sessionSchema>;
 

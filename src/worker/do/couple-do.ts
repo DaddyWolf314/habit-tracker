@@ -77,6 +77,7 @@ import {
 	matchStopwatch,
 	type OpenStopwatch,
 	pauseCountdown,
+	reprojectAcrossPause,
 	resumeCountdown,
 	STOPWATCH_MAX_MS_BY_ACTIVITY,
 	stopwatchDurationMs,
@@ -384,6 +385,7 @@ export class CoupleDO extends DurableObject<Env> {
 			member_count: this.members().length,
 			invitations_closed: this.getSetting("invitations_closed") === "1",
 			roles_active: status === "active",
+			paused: this.isPaused(),
 		};
 	}
 
@@ -528,6 +530,29 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 	}
 
+	// ── Pause-everything / safeword (handoff §9, #40) ─────────────────────────
+
+	/** When the couple was paused (safeword), or null while running. */
+	private pausedAt(): number | null {
+		const raw = this.getSetting("paused_at");
+		return raw ? Number(raw) : null;
+	}
+
+	/** Whether the safeword is engaged: all tracking frozen, no consequences accrue. */
+	private isPaused(): boolean {
+		return this.pausedAt() !== null;
+	}
+
+	/** Freezes tracking mutations while the safeword is engaged. */
+	private assertNotPaused(): void {
+		if (this.isPaused()) {
+			throw coupleError(
+				"CONFLICT",
+				"everything is paused — resume to continue",
+			);
+		}
+	}
+
 	// ── Dissolve + export (handoff §2, abuse-edge) ───────────────────────────
 
 	/**
@@ -567,6 +592,69 @@ export class CoupleDO extends DurableObject<Env> {
 		const coupleDoId = this.ctx.id.toString();
 		await this.ctx.storage.deleteAll();
 		return { couple_do_id: coupleDoId };
+	}
+
+	/**
+	 * Pause-everything / safeword (handoff §9): either partner, one tap, no
+	 * questions. Freezes all tracking (mutations are refused until resume) and
+	 * suspends the single alarm so no consequence — a countdown expiry, an
+	 * over-max stopwatch, a rollover — can fire while paused. Nothing is *logged*
+	 * as a failure: the sweeps early-return while paused, so a countdown whose
+	 * deadline falls inside the paused window simply waits. One serialized DO
+	 * state transition; idempotent, so a double-tap is harmless.
+	 */
+	async pause(
+		identityHash: string,
+	): Promise<{ paused: boolean; paused_at: number | null }> {
+		this.requireMember(identityHash);
+		this.assertLive();
+		const existing = this.pausedAt();
+		if (existing !== null) return { paused: true, paused_at: existing };
+		const now = Date.now();
+		this.setSetting("paused_at", String(now));
+		this.ctx.storage.deleteAlarm();
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'paused', NULL)`,
+			crypto.randomUUID(),
+			now,
+		);
+		return { paused: true, paused_at: now };
+	}
+
+	/**
+	 * Lifts the safeword and restores prior state cleanly (handoff §9). The paused
+	 * wall-clock duration is handed back to every open timer so the freeze stole no
+	 * time: running countdowns shift their deadline out by exactly that long (an
+	 * individually dom-paused countdown is left frozen), and open stopwatches shift
+	 * `opened_at` so neither their elapsed nor their over-max expiry counts the
+	 * pause. The alarm is then re-armed at the new minimum. Idempotent.
+	 */
+	async resume(identityHash: string): Promise<{ paused: boolean }> {
+		this.requireMember(identityHash);
+		const pausedAt = this.pausedAt();
+		if (pausedAt === null) return { paused: false };
+		const now = Date.now();
+		const pausedMs = Math.max(0, now - pausedAt);
+		for (const row of this.openTimerRowsAll()) {
+			if (row.kind === "countdown") {
+				const patch = reprojectAcrossPause(this.rowToCountdown(row), pausedMs);
+				if (patch) this.patchTimerState(row, patch);
+			} else if (row.kind === "stopwatch" && row.opened_at !== null) {
+				this.sql.exec(
+					`UPDATE timers SET opened_at = ? WHERE id = ?`,
+					row.opened_at + pausedMs,
+					row.id,
+				);
+			}
+		}
+		this.sql.exec(`DELETE FROM settings WHERE key = ?`, "paused_at");
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'resumed', NULL)`,
+			crypto.randomUUID(),
+			now,
+		);
+		this.armAlarm();
+		return { paused: false };
 	}
 
 	/**
@@ -913,6 +1001,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private appendEvent(me: MemberRow, input: LogEventInput): EventView {
 		this.assertLive();
+		this.assertNotPaused();
 		if (this.status() !== "active") {
 			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
 		}
@@ -1000,6 +1089,7 @@ export class CoupleDO extends DurableObject<Env> {
 	async amend(identityHash: string, body: unknown): Promise<EventView> {
 		const me = this.requireMember(identityHash);
 		this.assertLive();
+		this.assertNotPaused();
 		if (this.status() !== "active") {
 			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
 		}
@@ -1771,6 +1861,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 * and cheap on a dormant couple (a single indexed read). Returns the count closed.
 	 */
 	private sweepOverMaxStopwatches(now: number): number {
+		// Paused (safeword): no auto-close may fire. `opened_at` is shifted forward
+		// by the paused span on resume, so the over-max clock never counts the pause.
+		if (this.isPaused()) return 0;
 		const rows = this.sql
 			.exec<TimerRow>(
 				`SELECT id, kind, definition, state, status, opened_at, closed_at
@@ -1826,6 +1919,7 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const parsed = assignCountdownInputSchema.parse(input);
 		if (this.stopwatchDefinitionNames().has(parsed.timer)) {
 			throw coupleError(
@@ -1869,6 +1963,7 @@ export class CoupleDO extends DurableObject<Env> {
 	async pauseTimer(identityHash: string, timerId: string): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const now = Date.now();
 		// A countdown whose deadline has already passed but hasn't been swept yet must
 		// not be paused: pauseCountdown would freeze remaining_ms at 0, and because the
@@ -1901,6 +1996,7 @@ export class CoupleDO extends DurableObject<Env> {
 	async resumeTimer(identityHash: string, timerId: string): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const row = this.requireOpenCountdown(timerId);
 		if (this.timerState(row).paused_at == null) {
 			throw coupleError("BAD_REQUEST", "countdown is not paused");
@@ -1931,6 +2027,7 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const row = this.requireOpenCountdown(timerId);
 		const { by_ms } = extendTimerInputSchema.parse(input);
 		const now = Date.now();
@@ -1956,6 +2053,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 * live. A paused countdown is skipped — its clock is frozen.
 	 */
 	private sweepExpiredCountdowns(now: number): number {
+		// Paused (safeword): no consequence may fire, even on a read. The paused
+		// span is reprojected out of every deadline on resume, so nothing is lost.
+		if (this.isPaused()) return 0;
 		const rows = this.sql
 			.exec<TimerRow>(
 				`SELECT id, kind, definition, state, status, opened_at, closed_at
@@ -2529,7 +2629,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 * rather than waiting for the next read, then re-arm at MIN over all sources.
 	 */
 	override async alarm(): Promise<void> {
-		if (this.status() !== "active") {
+		if (this.status() !== "active" || this.isPaused()) {
 			this.ctx.storage.deleteAlarm();
 			return;
 		}
@@ -2712,10 +2812,11 @@ export class CoupleDO extends DurableObject<Env> {
 	 * (handoff §3.2 — `MIN(next_fire_at)`): scheduled jobs plus the nearest timer
 	 * consequence (a stopwatch's per-activity max, a running countdown's deadline).
 	 * With nothing pending the alarm is cleared, so a dormant couple costs nothing.
-	 * Suspended while not active (pairing/dissolved) — no consequences accrue.
+	 * Suspended while not active (pairing/dissolved) or paused (safeword, #40) — no
+	 * consequences accrue.
 	 */
 	private armAlarm(): void {
-		if (this.status() !== "active") {
+		if (this.status() !== "active" || this.isPaused()) {
 			this.ctx.storage.deleteAlarm();
 			return;
 		}

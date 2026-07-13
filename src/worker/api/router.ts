@@ -104,6 +104,16 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				stub.dissolve(auth.identityHash).then((r) => json(r)),
 			);
 		}
+		if (path === "/api/pause" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.pause(auth.identityHash).then((r) => json(r)),
+			);
+		}
+		if (path === "/api/resume" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.resume(auth.identityHash).then((r) => json(r)),
+			);
+		}
 		if (path === "/api/export" && method === "GET") {
 			return await withAuth(request, env, ({ auth, stub }) =>
 				stub.exportData(auth.identityHash).then((data) =>
