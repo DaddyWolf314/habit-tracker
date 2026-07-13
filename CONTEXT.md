@@ -88,6 +88,12 @@ in and should not.
   role's ruling. A view, **not a holding pen** — pending events are already in the
   log and have already fired their unconditional rules. _Avoid_: "inbox",
   "approval queue".
+- **Notification** — the single content-free unread *count* a member polls, shown
+  as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): pending-
+  adjudication events plus a targeted recovery notice, composed in one place
+  (`shared/notifications.ts`). A number only, never any relationship content.
+  _Avoid_: "inbox" (a count, not a container — and the banned adjudication-queue
+  synonym).
 
 ## Trace (handoff §4.6)
 

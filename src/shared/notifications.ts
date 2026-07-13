@@ -8,7 +8,7 @@
  */
 
 /** The couple-side signals that feed the unread count. Counts only — no content. */
-export interface InboxSignals {
+export interface NotificationSignals {
 	/** Events currently awaiting an adjudication (the queue). */
 	pending_events: number;
 	/** A partner-assisted recovery is in progress and worth noticing (#41). */
@@ -16,6 +16,6 @@ export interface InboxSignals {
 }
 
 /** The single content-free unread count shown as "You have N new items". */
-export function inboxUnreadCount(signals: InboxSignals): number {
+export function unreadCount(signals: NotificationSignals): number {
 	return signals.pending_events + (signals.recovery_pending ? 1 : 0);
 }

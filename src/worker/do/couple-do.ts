@@ -41,12 +41,12 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
-import { inboxUnreadCount } from "#/shared/inbox.ts";
 import type {
 	AuditEntry,
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
 import { explainProjection } from "#/shared/introspection.ts";
+import { unreadCount } from "#/shared/notifications.ts";
 import {
 	applyCounterEvent,
 	compositeMetadata,
@@ -823,7 +823,7 @@ export class CoupleDO extends DurableObject<Env> {
 		return state ? recoveryView(state, Date.now()) : null;
 	}
 
-	// ── Content-free notifications / inbox (handoff §3.5, #42) ─────────────────
+	// ── Content-free notifications (handoff §3.5, #42) ─────────────────────────
 
 	/**
 	 * The content-free unread count for the caller (#42) — a number only, never any
@@ -837,12 +837,12 @@ export class CoupleDO extends DurableObject<Env> {
 	 * remaining devices" (#41) rather than a badge that fires identically for the
 	 * partner who started the takeover and already knows.
 	 */
-	async inboxCount(identityHash: string): Promise<{ unread: number }> {
+	async notificationCount(identityHash: string): Promise<{ unread: number }> {
 		const me = this.requireMember(identityHash);
 		const events = await this.listEvents(identityHash);
 		const recovery = this.recoveryState();
 		return {
-			unread: inboxUnreadCount({
+			unread: unreadCount({
 				pending_events: events.filter((e) => e.pending).length,
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
 			}),

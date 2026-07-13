@@ -9,7 +9,7 @@ import {
 	createInvite,
 	dissolve,
 	exportData,
-	getInbox,
+	getNotifications,
 	getRoles,
 	getSession,
 	proposeRoles,
@@ -337,7 +337,7 @@ function Home({
 	return (
 		<div className="mx-auto max-w-2xl p-8">
 			<h1 className="text-2xl font-bold">Your space</h1>
-			<InboxBadge />
+			<NotificationBadge />
 			<dl className="mt-6 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
 				<dt className="text-muted-foreground">Status</dt>
 				<dd className="font-medium">{session.status}</dd>
@@ -384,10 +384,10 @@ function Home({
  * count — "You have N new items" — never any relationship content, so a glance
  * reveals nothing. Hidden when there is nothing to report.
  */
-function InboxBadge() {
+function NotificationBadge() {
 	const [unread, setUnread] = useState(0);
 	useEffect(() => {
-		getInbox()
+		getNotifications()
 			.then((r) => setUnread(r.unread))
 			.catch(() => setUnread(0));
 	}, []);

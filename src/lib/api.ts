@@ -206,8 +206,8 @@ export function getRecovery(): Promise<{ recovery: RecoveryView | null }> {
  * The content-free unread count for the notification badge (#42): a number only,
  * "You have N new items" — never any relationship content.
  */
-export function getInbox(): Promise<{ unread: number }> {
-	return apiFetch("/api/inbox");
+export function getNotifications(): Promise<{ unread: number }> {
+	return apiFetch("/api/notifications");
 }
 
 /**

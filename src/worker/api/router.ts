@@ -133,9 +133,9 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((recovery) => json({ recovery })),
 			);
 		}
-		if (path === "/api/inbox" && method === "GET") {
+		if (path === "/api/notifications" && method === "GET") {
 			return await withAuth(request, env, ({ auth, stub }) =>
-				stub.inboxCount(auth.identityHash).then((r) => json(r)),
+				stub.notificationCount(auth.identityHash).then((r) => json(r)),
 			);
 		}
 		if (path === "/api/export" && method === "GET") {
