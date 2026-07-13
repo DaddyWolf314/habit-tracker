@@ -41,6 +41,7 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import { inboxUnreadCount } from "#/shared/inbox.ts";
 import type {
 	AuditEntry,
 	IntrospectionResult,
@@ -810,6 +811,24 @@ export class CoupleDO extends DurableObject<Env> {
 		this.requireMember(identityHash);
 		const state = this.recoveryState();
 		return state ? recoveryView(state, Date.now()) : null;
+	}
+
+	// ── Content-free notifications / inbox (handoff §3.5, #42) ─────────────────
+
+	/**
+	 * The content-free unread count for the caller (#42) — a number only, never any
+	 * relationship content, so the notification badge it drives ("You have N new
+	 * items") reveals nothing. Counts the events awaiting an adjudication plus a
+	 * pending recovery worth noticing.
+	 */
+	async inboxCount(identityHash: string): Promise<{ unread: number }> {
+		const events = await this.listEvents(identityHash);
+		return {
+			unread: inboxUnreadCount({
+				pending_events: events.filter((e) => e.pending).length,
+				recovery_pending: this.recoveryState() !== null,
+			}),
+		};
 	}
 
 	/**

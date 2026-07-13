@@ -203,6 +203,14 @@ export function getRecovery(): Promise<{ recovery: RecoveryView | null }> {
 }
 
 /**
+ * The content-free unread count for the notification badge (#42): a number only,
+ * "You have N new items" — never any relationship content.
+ */
+export function getInbox(): Promise<{ unread: number }> {
+	return apiFetch("/api/inbox");
+}
+
+/**
  * Permanently delete the couple after it has been dissolved: the DO wipes its
  * storage and the routing rows are purged. Irreversible — offer an export first.
  */

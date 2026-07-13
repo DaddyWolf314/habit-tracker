@@ -133,6 +133,11 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((recovery) => json({ recovery })),
 			);
 		}
+		if (path === "/api/inbox" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.inboxCount(auth.identityHash).then((r) => json(r)),
+			);
+		}
 		if (path === "/api/export" && method === "GET") {
 			return await withAuth(request, env, ({ auth, stub }) =>
 				stub.exportData(auth.identityHash).then((data) =>
