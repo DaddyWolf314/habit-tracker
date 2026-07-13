@@ -31,6 +31,8 @@ export const sessionSchema = z.object({
 	roles_active: z.boolean(),
 	/** Safeword engaged: all tracking frozen, no consequences accrue (#40). */
 	paused: z.boolean(),
+	/** A partner-assisted recovery is in progress; either member may cancel (#41). */
+	recovery_pending: z.boolean(),
 });
 export type Session = z.infer<typeof sessionSchema>;
 

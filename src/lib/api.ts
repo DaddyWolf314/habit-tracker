@@ -17,6 +17,7 @@ import type {
 	AuditEntry,
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
+import type { RecoveryView } from "#/shared/recovery.ts";
 import type { Rule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
@@ -157,6 +158,48 @@ export function pause(): Promise<{
 /** Lifts the safeword and restores prior state cleanly. Idempotent. */
 export function resume(): Promise<{ paused: boolean }> {
 	return apiFetch("/api/resume", { method: "POST" });
+}
+
+// ── Partner-assisted recovery (handoff §2, #41) ─────────────────────────────
+
+/**
+ * The remaining partner starts recovery of the lost member's slot; returns a
+ * single-use code to hand the lost-token user, and when the slot may rebind.
+ */
+export function startRecovery(): Promise<{
+	code: string;
+	member_id: string;
+	rebind_at: number;
+	expires_at: number;
+}> {
+	return apiFetch("/api/recovery/start", { method: "POST" });
+}
+
+/** The lost-token user redeems the code with a brand-new secret (fresh identity). */
+export function redeemRecovery(
+	code: string,
+	bearer: string,
+): Promise<{ couple_do_id: string; member_id: string; rebind_at: number }> {
+	return apiFetch("/api/recovery/redeem", {
+		method: "POST",
+		body: { code },
+		bearer,
+	});
+}
+
+/** Interrupt a pending recovery — the stolen-phone escape valve (either member). */
+export function cancelRecovery(): Promise<{ ok: true }> {
+	return apiFetch("/api/recovery/cancel", { method: "POST" });
+}
+
+/** After the waiting period, the fresh identity completes the slot rebind. */
+export function finalizeRecovery(): Promise<{ ok: true }> {
+	return apiFetch("/api/recovery/finalize", { method: "POST" });
+}
+
+/** The active recovery as this member sees it, or null. */
+export function getRecovery(): Promise<{ recovery: RecoveryView | null }> {
+	return apiFetch("/api/recovery");
 }
 
 /**

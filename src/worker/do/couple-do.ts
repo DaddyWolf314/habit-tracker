@@ -51,6 +51,12 @@ import {
 	compositeMetadata,
 	deriveEventView,
 } from "#/shared/projections.ts";
+import type { RecoveryState, RecoveryView } from "#/shared/recovery.ts";
+import {
+	canFinalize,
+	RECOVERY_WAIT_MS,
+	recoveryView,
+} from "#/shared/recovery.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -386,6 +392,7 @@ export class CoupleDO extends DurableObject<Env> {
 			invitations_closed: this.getSetting("invitations_closed") === "1",
 			roles_active: status === "active",
 			paused: this.isPaused(),
+			recovery_pending: this.recoveryState() !== null,
 		};
 	}
 
@@ -655,6 +662,154 @@ export class CoupleDO extends DurableObject<Env> {
 		);
 		this.armAlarm();
 		return { paused: false };
+	}
+
+	// ── Partner-assisted recovery (handoff §2, #41) ───────────────────────────
+
+	/** The active recovery, or null. Stored as JSON — at most one at a time. */
+	private recoveryState(): RecoveryState | null {
+		const raw = this.getSetting("recovery");
+		return raw ? (JSON.parse(raw) as RecoveryState) : null;
+	}
+
+	private writeRecovery(state: RecoveryState): void {
+		this.setSetting("recovery", JSON.stringify(state));
+	}
+
+	private clearRecovery(): void {
+		this.sql.exec(`DELETE FROM settings WHERE key = ?`, "recovery");
+	}
+
+	private recordConsent(kind: string, at: number): void {
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, ?, NULL)`,
+			crypto.randomUUID(),
+			at,
+			kind,
+		);
+	}
+
+	/**
+	 * The remaining partner starts recovery of the *other* member's slot (handoff
+	 * §2): a takeover cannot begin without this authenticated action. Sets the
+	 * mandatory waiting window (`rebind_at = now + 24h`) during which the lost
+	 * identity's remaining devices can cancel, and records the start so it is
+	 * visible in the consent history. The Worker mints the single-use code.
+	 */
+	async startRecovery(
+		identityHash: string,
+	): Promise<{ member_id: string; rebind_at: number }> {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		const members = this.members();
+		if (members.length < 2) {
+			throw coupleError("BAD_REQUEST", "recovery needs a paired couple");
+		}
+		if (this.recoveryState()) {
+			throw coupleError("CONFLICT", "a recovery is already in progress");
+		}
+		const other = members.find((m) => m.id !== me.id);
+		if (!other) throw coupleError("BAD_REQUEST", "no partner slot to recover");
+		const now = Date.now();
+		const rebind_at = now + RECOVERY_WAIT_MS;
+		this.writeRecovery({
+			member_id: other.id,
+			started_by: me.id,
+			old_identity_hash: other.identity_hash,
+			rebind_at,
+			status: "pending",
+			new_identity_hash: null,
+			new_credential_hash: null,
+		});
+		this.recordConsent("recovery_started", now);
+		return { member_id: other.id, rebind_at };
+	}
+
+	/**
+	 * Binds the lost-token member's *fresh* identity to the pending recovery
+	 * (handoff §2). The slot does not rebind yet — that waits out the window and a
+	 * final `finalizeRecovery`. The fresh identity may not already be a member.
+	 */
+	async redeemRecovery(
+		newIdentityHash: string,
+		newCredentialHash: string,
+	): Promise<{ member_id: string; rebind_at: number }> {
+		const state = this.recoveryState();
+		if (!state || state.status !== "pending") {
+			throw coupleError("NOT_FOUND", "no recovery awaiting redemption");
+		}
+		if (this.memberByIdentity(newIdentityHash)) {
+			throw coupleError("CONFLICT", "already a member of this couple");
+		}
+		this.writeRecovery({
+			...state,
+			status: "redeemed",
+			new_identity_hash: newIdentityHash,
+			new_credential_hash: newCredentialHash,
+		});
+		return { member_id: state.member_id, rebind_at: state.rebind_at };
+	}
+
+	/**
+	 * Interrupts a recovery (handoff §2 — the stolen-phone escape valve). Either
+	 * member may cancel; the old identity cancelling from a remaining device is the
+	 * whole point of the waiting window. Returns the fresh identity's routing
+	 * credential so the Worker can revoke it. Idempotent.
+	 */
+	async cancelRecovery(
+		identityHash: string,
+	): Promise<{ new_credential_hash: string | null }> {
+		this.requireMember(identityHash);
+		const state = this.recoveryState();
+		if (!state) return { new_credential_hash: null };
+		this.clearRecovery();
+		this.recordConsent("recovery_cancelled", Date.now());
+		return { new_credential_hash: state.new_credential_hash };
+	}
+
+	/**
+	 * Rebinds the member slot to the fresh identity once the window has elapsed
+	 * (handoff §2), then hands the Worker the old identity so its routing
+	 * credentials can be revoked. Only the fresh identity that redeemed may
+	 * finalize, and only after the full waiting period — the timing gate is the
+	 * pure `canFinalize`. The old identity's device rows are dropped here so the
+	 * lost/stolen tokens stop working couple-side too.
+	 */
+	async finalizeRecovery(
+		callerIdentityHash: string,
+	): Promise<{ old_identity_hash: string; new_identity_hash: string }> {
+		const state = this.recoveryState();
+		if (!state) throw coupleError("NOT_FOUND", "no recovery in progress");
+		if (callerIdentityHash !== state.new_identity_hash) {
+			throw coupleError("FORBIDDEN", "not the recovering identity");
+		}
+		if (!canFinalize(state, Date.now())) {
+			throw coupleError("CONFLICT", "the waiting period has not elapsed");
+		}
+		// Proven equal by the guard above, and non-null (a redeemed recovery always
+		// carries the fresh identity that redeemed it).
+		const newIdentityHash = callerIdentityHash;
+		this.sql.exec(
+			`UPDATE members SET identity_hash = ? WHERE id = ?`,
+			newIdentityHash,
+			state.member_id,
+		);
+		// The lost/stolen devices belonged to the old identity; drop them so they
+		// stop resolving couple-side (the Worker revokes their routing rows too).
+		this.sql.exec(`DELETE FROM devices WHERE member_id = ?`, state.member_id);
+		this.clearRecovery();
+		this.recordConsent("recovery_completed", Date.now());
+		return {
+			old_identity_hash: state.old_identity_hash,
+			new_identity_hash: newIdentityHash,
+		};
+	}
+
+	/** A member's view of the active recovery (for polling / the cancel prompt). */
+	async getRecovery(identityHash: string): Promise<RecoveryView | null> {
+		this.requireMember(identityHash);
+		const state = this.recoveryState();
+		return state ? recoveryView(state, Date.now()) : null;
 	}
 
 	/**

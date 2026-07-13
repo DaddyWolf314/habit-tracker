@@ -1,7 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getRoutingDb } from "#/db/index.ts";
-import { credentials, invites } from "#/db/schema.ts";
+import { credentials, invites, recoveries } from "#/db/schema.ts";
 import { randomToken, sha256Base64url } from "#/lib/crypto.ts";
 import {
 	adjustCounterInputSchema,
@@ -112,6 +112,25 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 		if (path === "/api/resume" && method === "POST") {
 			return await withAuth(request, env, ({ auth, stub }) =>
 				stub.resume(auth.identityHash).then((r) => json(r)),
+			);
+		}
+		if (path === "/api/recovery/start" && method === "POST") {
+			return await withAuth(request, env, (ctx) => startRecovery(env, ctx));
+		}
+		if (path === "/api/recovery/redeem" && method === "POST") {
+			return await redeemRecovery(request, env);
+		}
+		if (path === "/api/recovery/cancel" && method === "POST") {
+			return await withAuth(request, env, (ctx) => cancelRecovery(env, ctx));
+		}
+		if (path === "/api/recovery/finalize" && method === "POST") {
+			return await withAuth(request, env, (ctx) => finalizeRecovery(env, ctx));
+		}
+		if (path === "/api/recovery" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.getRecovery(auth.identityHash)
+					.then((recovery) => json({ recovery })),
 			);
 		}
 		if (path === "/api/export" && method === "GET") {
@@ -502,5 +521,136 @@ async function deleteCouple(
 		.delete(credentials)
 		.where(eq(credentials.coupleDoId, auth.coupleDoId));
 	await db.delete(invites).where(eq(invites.coupleDoId, auth.coupleDoId));
+	return json({ ok: true });
+}
+
+/** How long a recovery code stays redeemable — the interrupt window (#41). */
+const RECOVERY_CODE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * POST /api/recovery/start — the remaining partner begins recovery of the lost
+ * member's slot (#41). The DO sets the waiting window; we mint a single-use code
+ * (superseding any prior live one) that the lost-token user redeems with a fresh
+ * identity. The code is a brief bearer credential, like a pairing invite.
+ */
+async function startRecovery(
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const { member_id, rebind_at } = await stub.startRecovery(auth.identityHash);
+	const code = randomToken();
+	const codeHash = await sha256Base64url(code);
+	const db = getRoutingDb(env.DB);
+	await db
+		.delete(recoveries)
+		.where(
+			and(
+				eq(recoveries.coupleDoId, auth.coupleDoId),
+				isNull(recoveries.usedAt),
+			),
+		);
+	const expiresAt = new Date(Date.now() + RECOVERY_CODE_TTL_MS);
+	await db.insert(recoveries).values({
+		codeHash,
+		coupleDoId: auth.coupleDoId,
+		memberId: member_id,
+		expiresAt,
+	});
+	return json({ code, member_id, rebind_at, expires_at: expiresAt.getTime() });
+}
+
+/**
+ * POST /api/recovery/redeem — the lost-token user binds a brand-new secret to the
+ * pending recovery (#41). Like invite redemption this is unauthenticated in the
+ * usual sense: the fresh secret has no routing row yet. We create its routing
+ * credential now so it can poll and later finalize, but it is not a member until
+ * the slot rebinds — the DO's `requireMember` still refuses it in the meantime.
+ */
+async function redeemRecovery(request: Request, env: Env): Promise<Response> {
+	const secret = bearerToken(request);
+	if (!secret) return errorResponse("missing bearer credential", 401);
+	const parsed = await readJson(request, redeemInviteInputSchema);
+	if ("response" in parsed) return parsed.response;
+
+	const db = getRoutingDb(env.DB);
+	const codeHash = await sha256Base64url(parsed.data.code);
+	const recovery = await db
+		.select()
+		.from(recoveries)
+		.where(eq(recoveries.codeHash, codeHash))
+		.get();
+	if (!recovery) return errorResponse("invalid recovery code", 404);
+	if (recovery.usedAt) return errorResponse("recovery code already used", 410);
+	if (recovery.expiresAt.getTime() < Date.now())
+		return errorResponse("recovery code expired", 410);
+
+	const credentialHash = await credentialHashOf(secret);
+	const existing = await db
+		.select({ id: credentials.credentialHash })
+		.from(credentials)
+		.where(eq(credentials.credentialHash, credentialHash))
+		.get();
+	if (existing) return errorResponse("identity already exists", 409);
+
+	const identityHash = await deriveIdentityHash(secret);
+	const stub = coupleStubById(env, recovery.coupleDoId);
+	const { member_id, rebind_at } = await stub.redeemRecovery(
+		identityHash,
+		credentialHash,
+	);
+
+	await db.insert(credentials).values({
+		credentialHash,
+		identityHash,
+		coupleDoId: recovery.coupleDoId,
+		kind: "root",
+		label: "recovery phrase",
+	});
+	await db
+		.update(recoveries)
+		.set({ usedAt: new Date() })
+		.where(eq(recoveries.codeHash, codeHash));
+
+	return json({ couple_do_id: recovery.coupleDoId, member_id, rebind_at });
+}
+
+/**
+ * POST /api/recovery/cancel — interrupt a recovery (#41), the stolen-phone escape
+ * valve. Either member may cancel; the DO clears the recovery and hands back the
+ * fresh identity's credential so we revoke its routing row.
+ */
+async function cancelRecovery(
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const { new_credential_hash } = await stub.cancelRecovery(auth.identityHash);
+	if (new_credential_hash) {
+		await getRoutingDb(env.DB)
+			.delete(credentials)
+			.where(eq(credentials.credentialHash, new_credential_hash));
+	}
+	return json({ ok: true });
+}
+
+/**
+ * POST /api/recovery/finalize — once the window has elapsed, the fresh identity
+ * completes the rebind (#41). The DO swaps the member slot to the new identity;
+ * we then revoke every routing credential the old identity held for this couple,
+ * so the lost/stolen tokens stop authenticating.
+ */
+async function finalizeRecovery(
+	env: Env,
+	{ auth, stub }: AuthedRequest,
+): Promise<Response> {
+	const { old_identity_hash } = await stub.finalizeRecovery(auth.identityHash);
+	await getRoutingDb(env.DB)
+		.update(credentials)
+		.set({ revokedAt: new Date() })
+		.where(
+			and(
+				eq(credentials.identityHash, old_identity_hash),
+				eq(credentials.coupleDoId, auth.coupleDoId),
+			),
+		);
 	return json({ ok: true });
 }
