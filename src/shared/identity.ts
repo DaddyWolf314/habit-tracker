@@ -29,6 +29,10 @@ export const sessionSchema = z.object({
 	member_count: z.number().int(),
 	invitations_closed: z.boolean(),
 	roles_active: z.boolean(),
+	/** Safeword engaged: all tracking frozen, no consequences accrue (#40). */
+	paused: z.boolean(),
+	/** A partner-assisted recovery is in progress; either member may cancel (#41). */
+	recovery_pending: z.boolean(),
 });
 export type Session = z.infer<typeof sessionSchema>;
 
@@ -113,8 +117,10 @@ export type ExportRow = Record<string, string | number | boolean | null>;
 
 /**
  * A member's exportable view of the relationship (handoff §2, abuse-edge). Any
- * authenticated member can export at any time. The event/counter surfaces are
- * present but empty until later phases fill them in.
+ * authenticated member can export at any time. Every relationship surface is
+ * present: the event log and its amendments (which together reconstruct the
+ * composite truth), the installed rules, and the counter/timer/anchor
+ * projections — "the member's full view" the abuse-edge mitigation requires.
  */
 export interface CoupleExport {
 	exported_at: number;
@@ -125,5 +131,9 @@ export interface CoupleExport {
 	devices: Device[];
 	consent_history: ConsentEntry[];
 	events: ExportRow[];
+	amendments: ExportRow[];
+	rules: ExportRow[];
 	counters: ExportRow[];
+	timers: ExportRow[];
+	anchors: ExportRow[];
 }

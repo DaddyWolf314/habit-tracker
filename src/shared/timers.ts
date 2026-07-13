@@ -278,3 +278,19 @@ export function extendCountdown(
 export function countdownExpiryAt(c: Countdown): number | null {
 	return isPaused(c) ? null : c.deadline_at;
 }
+
+/**
+ * Re-projects a running countdown across a global pause-everything (#40): the
+ * paused wall-clock duration is added back to the deadline so the safeword
+ * freeze stole no time and the countdown resumes with exactly the remaining it
+ * had. A countdown that was *individually* paused (its own clock already frozen)
+ * has no live deadline to shift, so it is returned as `null` and left untouched —
+ * global resume must not un-pause what the dom paused by hand.
+ */
+export function reprojectAcrossPause(
+	c: Countdown,
+	pausedMs: number,
+): { deadline_at: number } | null {
+	if (isPaused(c)) return null;
+	return { deadline_at: c.deadline_at + pausedMs };
+}

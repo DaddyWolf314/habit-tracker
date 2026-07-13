@@ -55,3 +55,28 @@ export const invites = sqliteTable(
 );
 
 export type Invite = typeof invites.$inferSelect;
+
+/**
+ * Single-use partner-assisted recovery codes (handoff §2, #41). Like an invite,
+ * this lives in the routing layer purely to route the lost-token member's *fresh*
+ * identity to the couple's DO at redeem time — before it is bound. The DO owns
+ * the recovery state machine (waiting period, approval, rebind); this table only
+ * bridges the code. Only the code hash is stored.
+ */
+export const recoveries = sqliteTable(
+	"recoveries",
+	{
+		codeHash: text("code_hash").primaryKey(),
+		coupleDoId: text("couple_do_id").notNull(),
+		/** The member slot being recovered, echoed back to the redeemer. */
+		memberId: text("member_id").notNull(),
+		createdAt: integer("created_at", { mode: "timestamp" })
+			.notNull()
+			.default(sql`(unixepoch())`),
+		expiresAt: integer("expires_at", { mode: "timestamp" }).notNull(),
+		usedAt: integer("used_at", { mode: "timestamp" }),
+	},
+	(table) => [index("recoveries_couple_idx").on(table.coupleDoId)],
+);
+
+export type Recovery = typeof recoveries.$inferSelect;

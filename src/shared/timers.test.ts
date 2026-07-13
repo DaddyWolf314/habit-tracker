@@ -10,6 +10,7 @@ import {
 	matchStopwatch,
 	type OpenStopwatch,
 	pauseCountdown,
+	reprojectAcrossPause,
 	resumeCountdown,
 	stopwatchDurationMs,
 	stopwatchesToAutoClose,
@@ -177,5 +178,33 @@ describe("countdowns (handoff §4.5 — deadline timers)", () => {
 				remaining_ms: 60_000,
 			}),
 		).toBeNull();
+	});
+});
+
+describe("reprojectAcrossPause (#40 pause-everything — the freeze steals no time)", () => {
+	it("shifts a running countdown's deadline by the paused duration", () => {
+		const running: Countdown = { opened_at: 0, deadline_at: 1000 };
+		// Remaining before pause, measured at t=600, is 400ms.
+		const pausedMs = 5000;
+		const shifted = reprojectAcrossPause(running, pausedMs);
+		expect(shifted).toEqual({ deadline_at: 6000 });
+		// The paused wall-clock time is fully added back: remaining at resume
+		// (t=600+5000=5600) is 6000-5600 = 400 — identical to before the pause.
+		expect(6000 - 5600).toBe(1000 - 600);
+	});
+
+	it("leaves an already-paused countdown untouched (its clock is already frozen)", () => {
+		const paused: Countdown = {
+			opened_at: 0,
+			deadline_at: 1000,
+			paused_at: 600,
+			remaining_ms: 400,
+		};
+		expect(reprojectAcrossPause(paused, 5000)).toBeNull();
+	});
+
+	it("is a no-op shift when no time elapsed under pause", () => {
+		const running: Countdown = { opened_at: 0, deadline_at: 1000 };
+		expect(reprojectAcrossPause(running, 0)).toEqual({ deadline_at: 1000 });
 	});
 });

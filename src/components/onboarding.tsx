@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { PinSettings } from "#/components/pin-gate.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import {
 	ApiError,
@@ -8,6 +9,7 @@ import {
 	createInvite,
 	dissolve,
 	exportData,
+	getNotifications,
 	getRoles,
 	getSession,
 	proposeRoles,
@@ -335,6 +337,7 @@ function Home({
 	return (
 		<div className="mx-auto max-w-2xl p-8">
 			<h1 className="text-2xl font-bold">Your space</h1>
+			<NotificationBadge />
 			<dl className="mt-6 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
 				<dt className="text-muted-foreground">Status</dt>
 				<dd className="font-medium">{session.status}</dd>
@@ -358,6 +361,10 @@ function Home({
 
 			<SettingsPanel dissolved={dissolved} onDissolved={onRefresh} />
 
+			<div className="mt-8">
+				<PinSettings />
+			</div>
+
 			<div className="mt-6 flex gap-4">
 				{session.roles_active && (
 					<Link to="/log" className="text-sm underline">
@@ -369,6 +376,26 @@ function Home({
 				</Link>
 			</div>
 		</div>
+	);
+}
+
+/**
+ * Content-free notification badge (handoff §3.5, #42). Shows only an unread
+ * count — "You have N new items" — never any relationship content, so a glance
+ * reveals nothing. Hidden when there is nothing to report.
+ */
+function NotificationBadge() {
+	const [unread, setUnread] = useState(0);
+	useEffect(() => {
+		getNotifications()
+			.then((r) => setUnread(r.unread))
+			.catch(() => setUnread(0));
+	}, []);
+	if (unread === 0) return null;
+	return (
+		<p className="mt-3 inline-block rounded-full bg-primary/10 px-3 py-1 text-sm font-medium">
+			You have {unread} new item{unread === 1 ? "" : "s"}
+		</p>
 	);
 }
 

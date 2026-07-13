@@ -24,21 +24,40 @@ import {
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
+import {
+	amendmentToExportRow,
+	anchorToExportRow,
+	counterToExportRow,
+	eventToExportRow,
+	ruleToExportRow,
+	timerToExportRow,
+} from "#/shared/export.ts";
 import type {
 	ConsentEntry,
 	CoupleExport,
 	CoupleStatus,
 	Device,
-	ExportRow,
 	RoleAssignment,
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type {
+	AuditEntry,
+	IntrospectionResult,
+} from "#/shared/introspection.ts";
+import { explainProjection } from "#/shared/introspection.ts";
+import { unreadCount } from "#/shared/notifications.ts";
 import {
 	applyCounterEvent,
 	compositeMetadata,
 	deriveEventView,
 } from "#/shared/projections.ts";
+import type { RecoveryState, RecoveryView } from "#/shared/recovery.ts";
+import {
+	canFinalize,
+	RECOVERY_WAIT_MS,
+	recoveryView,
+} from "#/shared/recovery.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -65,6 +84,7 @@ import {
 	matchStopwatch,
 	type OpenStopwatch,
 	pauseCountdown,
+	reprojectAcrossPause,
 	resumeCountdown,
 	STOPWATCH_MAX_MS_BY_ACTIVITY,
 	stopwatchDurationMs,
@@ -372,6 +392,8 @@ export class CoupleDO extends DurableObject<Env> {
 			member_count: this.members().length,
 			invitations_closed: this.getSetting("invitations_closed") === "1",
 			roles_active: status === "active",
+			paused: this.isPaused(),
+			recovery_pending: this.recoveryState() !== null,
 		};
 	}
 
@@ -516,6 +538,29 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 	}
 
+	// ── Pause-everything / safeword (handoff §9, #40) ─────────────────────────
+
+	/** When the couple was paused (safeword), or null while running. */
+	private pausedAt(): number | null {
+		const raw = this.getSetting("paused_at");
+		return raw ? Number(raw) : null;
+	}
+
+	/** Whether the safeword is engaged: all tracking frozen, no consequences accrue. */
+	private isPaused(): boolean {
+		return this.pausedAt() !== null;
+	}
+
+	/** Freezes tracking mutations while the safeword is engaged. */
+	private assertNotPaused(): void {
+		if (this.isPaused()) {
+			throw coupleError(
+				"CONFLICT",
+				"everything is paused — resume to continue",
+			);
+		}
+	}
+
 	// ── Dissolve + export (handoff §2, abuse-edge) ───────────────────────────
 
 	/**
@@ -537,11 +582,286 @@ export class CoupleDO extends DurableObject<Env> {
 		return { status: "dissolved" };
 	}
 
-	/** A member's exportable snapshot of the relationship. */
+	/**
+	 * Irreversibly deletes this couple's Durable Object storage — the final step
+	 * of dissolve → export → delete (handoff §3.5). Gated on a prior dissolve so a
+	 * member cannot skip the freeze-and-export-offer window; the abuse-edge
+	 * guarantee is that no one is trapped, not that anyone can nuke a live couple
+	 * out from under their partner without warning. `deleteAll` wipes every SQL
+	 * table, KV pair, and the alarm, so the DO retains no relationship data; the
+	 * caller (routing layer) then purges the credential/invite rows that point
+	 * here, making "the database ceases to exist" literally true.
+	 */
+	async purge(identityHash: string): Promise<{ couple_do_id: string }> {
+		this.requireMember(identityHash);
+		if (this.status() !== "dissolved") {
+			throw coupleError("BAD_REQUEST", "dissolve the couple before deleting");
+		}
+		const coupleDoId = this.ctx.id.toString();
+		await this.ctx.storage.deleteAll();
+		return { couple_do_id: coupleDoId };
+	}
+
+	/**
+	 * Pause-everything / safeword (handoff §9): either partner, one tap, no
+	 * questions. Freezes all tracking (mutations are refused until resume) and
+	 * suspends the single alarm so no consequence — a countdown expiry, an
+	 * over-max stopwatch, a rollover — can fire while paused. Nothing is *logged*
+	 * as a failure: the sweeps early-return while paused, so a countdown whose
+	 * deadline falls inside the paused window simply waits. One serialized DO
+	 * state transition; idempotent, so a double-tap is harmless.
+	 */
+	async pause(
+		identityHash: string,
+	): Promise<{ paused: boolean; paused_at: number | null }> {
+		this.requireMember(identityHash);
+		this.assertLive();
+		const existing = this.pausedAt();
+		if (existing !== null) return { paused: true, paused_at: existing };
+		const now = Date.now();
+		this.setSetting("paused_at", String(now));
+		this.ctx.storage.deleteAlarm();
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'paused', NULL)`,
+			crypto.randomUUID(),
+			now,
+		);
+		return { paused: true, paused_at: now };
+	}
+
+	/**
+	 * Lifts the safeword and restores prior state cleanly (handoff §9). The paused
+	 * wall-clock duration is handed back to every open timer so the freeze stole no
+	 * time: running countdowns shift their deadline out by exactly that long (an
+	 * individually dom-paused countdown is left frozen), and open stopwatches shift
+	 * `opened_at` so neither their elapsed nor their over-max expiry counts the
+	 * pause. The alarm is then re-armed at the new minimum. Idempotent.
+	 */
+	async resume(identityHash: string): Promise<{ paused: boolean }> {
+		this.requireMember(identityHash);
+		const pausedAt = this.pausedAt();
+		if (pausedAt === null) return { paused: false };
+		const now = Date.now();
+		const pausedMs = Math.max(0, now - pausedAt);
+		for (const row of this.openTimerRowsAll()) {
+			if (row.kind === "countdown") {
+				const patch = reprojectAcrossPause(this.rowToCountdown(row), pausedMs);
+				if (patch) this.patchTimerState(row, patch);
+			} else if (row.kind === "stopwatch" && row.opened_at !== null) {
+				this.sql.exec(
+					`UPDATE timers SET opened_at = ? WHERE id = ?`,
+					row.opened_at + pausedMs,
+					row.id,
+				);
+			}
+		}
+		this.sql.exec(`DELETE FROM settings WHERE key = ?`, "paused_at");
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, 'resumed', NULL)`,
+			crypto.randomUUID(),
+			now,
+		);
+		this.armAlarm();
+		return { paused: false };
+	}
+
+	// ── Partner-assisted recovery (handoff §2, #41) ───────────────────────────
+
+	/** The active recovery, or null. Stored as JSON — at most one at a time. */
+	private recoveryState(): RecoveryState | null {
+		const raw = this.getSetting("recovery");
+		return raw ? (JSON.parse(raw) as RecoveryState) : null;
+	}
+
+	private writeRecovery(state: RecoveryState): void {
+		this.setSetting("recovery", JSON.stringify(state));
+	}
+
+	private clearRecovery(): void {
+		this.sql.exec(`DELETE FROM settings WHERE key = ?`, "recovery");
+	}
+
+	private recordConsent(kind: string, at: number): void {
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, ?, NULL)`,
+			crypto.randomUUID(),
+			at,
+			kind,
+		);
+	}
+
+	/**
+	 * The remaining partner starts recovery of the *other* member's slot (handoff
+	 * §2): a takeover cannot begin without this authenticated action. Sets the
+	 * mandatory waiting window (`rebind_at = now + 24h`) during which the lost
+	 * identity's remaining devices can cancel, and records the start so it is
+	 * visible in the consent history. The Worker mints the single-use code.
+	 */
+	async startRecovery(
+		identityHash: string,
+	): Promise<{ member_id: string; rebind_at: number }> {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		const members = this.members();
+		if (members.length < 2) {
+			throw coupleError("BAD_REQUEST", "recovery needs a paired couple");
+		}
+		if (this.recoveryState()) {
+			throw coupleError("CONFLICT", "a recovery is already in progress");
+		}
+		const other = members.find((m) => m.id !== me.id);
+		if (!other) throw coupleError("BAD_REQUEST", "no partner slot to recover");
+		const now = Date.now();
+		const rebind_at = now + RECOVERY_WAIT_MS;
+		this.writeRecovery({
+			member_id: other.id,
+			started_by: me.id,
+			old_identity_hash: other.identity_hash,
+			rebind_at,
+			status: "pending",
+			new_identity_hash: null,
+			new_credential_hash: null,
+		});
+		this.recordConsent("recovery_started", now);
+		return { member_id: other.id, rebind_at };
+	}
+
+	/**
+	 * Binds the lost-token member's *fresh* identity to the pending recovery
+	 * (handoff §2). The slot does not rebind yet — that waits out the window and a
+	 * final `finalizeRecovery`. The fresh identity may not already be a member.
+	 */
+	async redeemRecovery(
+		newIdentityHash: string,
+		newCredentialHash: string,
+	): Promise<{ member_id: string; rebind_at: number }> {
+		const state = this.recoveryState();
+		if (!state || state.status !== "pending") {
+			throw coupleError("NOT_FOUND", "no recovery awaiting redemption");
+		}
+		if (this.memberByIdentity(newIdentityHash)) {
+			throw coupleError("CONFLICT", "already a member of this couple");
+		}
+		this.writeRecovery({
+			...state,
+			status: "redeemed",
+			new_identity_hash: newIdentityHash,
+			new_credential_hash: newCredentialHash,
+		});
+		return { member_id: state.member_id, rebind_at: state.rebind_at };
+	}
+
+	/**
+	 * Interrupts a recovery (handoff §2 — the stolen-phone escape valve). Either
+	 * member may cancel; the old identity cancelling from a remaining device is the
+	 * whole point of the waiting window. Returns the fresh identity's routing
+	 * credential so the Worker can revoke it. Idempotent.
+	 */
+	async cancelRecovery(
+		identityHash: string,
+	): Promise<{ new_credential_hash: string | null }> {
+		this.requireMember(identityHash);
+		const state = this.recoveryState();
+		if (!state) return { new_credential_hash: null };
+		this.clearRecovery();
+		this.recordConsent("recovery_cancelled", Date.now());
+		return { new_credential_hash: state.new_credential_hash };
+	}
+
+	/**
+	 * Rebinds the member slot to the fresh identity once the window has elapsed
+	 * (handoff §2), then hands the Worker the old identity so its routing
+	 * credentials can be revoked. Only the fresh identity that redeemed may
+	 * finalize, and only after the full waiting period — the timing gate is the
+	 * pure `canFinalize`. The old identity's device rows are dropped here so the
+	 * lost/stolen tokens stop working couple-side too.
+	 */
+	async finalizeRecovery(
+		callerIdentityHash: string,
+	): Promise<{ old_identity_hash: string; new_identity_hash: string }> {
+		const state = this.recoveryState();
+		if (!state) throw coupleError("NOT_FOUND", "no recovery in progress");
+		if (callerIdentityHash !== state.new_identity_hash) {
+			throw coupleError("FORBIDDEN", "not the recovering identity");
+		}
+		if (!canFinalize(state, Date.now())) {
+			throw coupleError("CONFLICT", "the waiting period has not elapsed");
+		}
+		// Proven equal by the guard above, and non-null (a redeemed recovery always
+		// carries the fresh identity that redeemed it).
+		const newIdentityHash = callerIdentityHash;
+		this.sql.exec(
+			`UPDATE members SET identity_hash = ? WHERE id = ?`,
+			newIdentityHash,
+			state.member_id,
+		);
+		// The lost/stolen devices belonged to the old identity; drop them so they
+		// stop resolving couple-side (the Worker revokes their routing rows too).
+		this.sql.exec(`DELETE FROM devices WHERE member_id = ?`, state.member_id);
+		this.clearRecovery();
+		this.recordConsent("recovery_completed", Date.now());
+		return {
+			old_identity_hash: state.old_identity_hash,
+			new_identity_hash: newIdentityHash,
+		};
+	}
+
+	/**
+	 * A member's view of the active recovery (for polling / the cancel prompt). The
+	 * redeemed fresh identity is *not* a member until `finalizeRecovery` rebinds the
+	 * slot, yet it must be able to poll the window it is waiting out (handoff §2) —
+	 * so allow either a member or that redeemed identity, mirroring how finalize
+	 * itself gates on `new_identity_hash` rather than membership.
+	 */
+	async getRecovery(identityHash: string): Promise<RecoveryView | null> {
+		const state = this.recoveryState();
+		const isMember = this.memberByIdentity(identityHash) !== null;
+		const isRecovering = state?.new_identity_hash === identityHash;
+		if (!isMember && !isRecovering) {
+			throw coupleError("NOT_FOUND", "not a member of this couple");
+		}
+		return state ? recoveryView(state, Date.now()) : null;
+	}
+
+	// ── Content-free notifications (handoff §3.5, #42) ─────────────────────────
+
+	/**
+	 * The content-free unread count for the caller (#42) — a number only, never any
+	 * relationship content, so the notification badge it drives ("You have N new
+	 * items") reveals nothing. Counts the events awaiting an adjudication plus a
+	 * pending recovery worth noticing.
+	 *
+	 * The recovery signal is *targeted*, not broadcast: only the member whose slot
+	 * is being recovered — the old identity that can still cancel from a remaining
+	 * device — sees it, delivering the spec's "notice pushed to the old identity's
+	 * remaining devices" (#41) rather than a badge that fires identically for the
+	 * partner who started the takeover and already knows.
+	 */
+	async notificationCount(identityHash: string): Promise<{ unread: number }> {
+		const me = this.requireMember(identityHash);
+		const events = await this.listEvents(identityHash);
+		const recovery = this.recoveryState();
+		return {
+			unread: unreadCount({
+				pending_events: events.filter((e) => e.pending).length,
+				recovery_pending: recovery !== null && recovery.member_id === me.id,
+			}),
+		};
+	}
+
+	/**
+	 * A member's exportable snapshot of the relationship — the abuse-edge escape
+	 * hatch (handoff §2). Carries the member's full view: the event log and its
+	 * amendments (which together reconstruct the composite truth), the installed
+	 * rules, and the counter/timer/anchor projections. The per-object flattening
+	 * lives in the shared `export` module so the shape is one testable seam.
+	 */
 	async exportData(identityHash: string): Promise<CoupleExport> {
 		const me = this.requireMember(identityHash);
+		const exportedAt = Date.now();
+		const amendments = [...this.amendmentsByEvent().values()].flat();
 		return {
-			exported_at: Date.now(),
+			exported_at: exportedAt,
 			couple_do_id: this.ctx.id.toString(),
 			status: this.status(),
 			self: {
@@ -560,47 +880,26 @@ export class CoupleDO extends DurableObject<Env> {
 				current: false,
 			})),
 			consent_history: await this.listConsentHistory(identityHash),
-			events: this.eventRows().map((row) => this.eventExportRow(row)),
-			counters: this.counterRows().map((row) => this.counterExportRow(row)),
-		};
-	}
-
-	/**
-	 * Flattens an event for the export (ExportRow is a flat, RPC-serializable
-	 * map, so nested metadata is carried as a JSON string). Reuses `rowToEvent`
-	 * so the parsing lives in one place.
-	 */
-	private eventExportRow(row: EventRow): ExportRow {
-		const event = this.rowToEvent(row);
-		return {
-			id: event.id,
-			type: event.type,
-			actor: event.actor,
-			subject: event.subject ?? null,
-			occurred_at: event.occurred_at,
-			logged_at: event.logged_at,
-			metadata: JSON.stringify(event.metadata),
-			note: event.note ?? null,
-		};
-	}
-
-	/** Flattens a counter for the export — full definition, nothing dropped. */
-	private counterExportRow(row: CounterRow): ExportRow {
-		const counter = this.rowToCounter(row);
-		return {
-			id: counter.id,
-			name: counter.name,
-			valence: counter.valence,
-			daily_target: counter.daily_target ?? null,
-			weekly_target: counter.weekly_target ?? null,
-			reset: counter.reset,
-			// Serialized like modify_permission (ExportRow is flat). Dropping it would
-			// lose the streak binding, so a reconstructed ritual_streak_days would fall
-			// back to an ordinary counter the rollover never advances (handoff §4.4).
-			streak: counter.streak ? JSON.stringify(counter.streak) : null,
-			modify_permission: JSON.stringify(counter.modify_permission),
-			value: counter.value,
-			updated_at: counter.updated_at,
+			events: this.eventRows().map((row) =>
+				eventToExportRow(this.rowToEvent(row)),
+			),
+			amendments: amendments.map(amendmentToExportRow),
+			rules: this.rules().map(ruleToExportRow),
+			counters: this.counterRows().map((row) =>
+				counterToExportRow(this.rowToCounter(row)),
+			),
+			timers: this.timerRows().map((row) =>
+				timerToExportRow(this.rowToTimerView(row)),
+			),
+			anchors: this.anchorRows().map((row) => {
+				const elapsedMs = anchorElapsedMs(row.since, exportedAt);
+				return anchorToExportRow({
+					anchor: row.id,
+					since: row.since,
+					elapsed_ms: elapsedMs,
+					elapsed_days: anchorElapsedDays(elapsedMs),
+				});
+			}),
 		};
 	}
 
@@ -894,6 +1193,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private appendEvent(me: MemberRow, input: LogEventInput): EventView {
 		this.assertLive();
+		this.assertNotPaused();
 		if (this.status() !== "active") {
 			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
 		}
@@ -981,6 +1281,7 @@ export class CoupleDO extends DurableObject<Env> {
 	async amend(identityHash: string, body: unknown): Promise<EventView> {
 		const me = this.requireMember(identityHash);
 		this.assertLive();
+		this.assertNotPaused();
 		if (this.status() !== "active") {
 			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
 		}
@@ -1315,6 +1616,75 @@ export class CoupleDO extends DurableObject<Env> {
 			)
 			.toArray()
 			.map(decodeTraceRow);
+	}
+
+	// ── Support introspection (handoff §3.5, #44) ─────────────────────────────
+
+	/**
+	 * The audited answer to "why did this projection change" (handoff §3.5). It
+	 * reconstructs the projection's causal chain from the Trace ledger — the same
+	 * rows the transparency view reads — and, before returning, appends an
+	 * audit-log row for the access. That write is the whole point: reaching a
+	 * couple's data through this support hatch always leaves a mark the couple can
+	 * read back (`listAuditLog`), so it is transparent relationship data, never a
+	 * silent backdoor. There is no global query escape hatch — only a member of
+	 * this couple, routed to this DO, can ask, and only about this couple.
+	 */
+	async introspect(
+		identityHash: string,
+		projection: string,
+	): Promise<IntrospectionResult> {
+		const member = this.requireMember(identityHash);
+		const rows = this.sql
+			.exec<TraceColumnsRow>(
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
+					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
+				projection,
+			)
+			.toArray()
+			.map(decodeTraceRow);
+		const explanation = explainProjection(projection, rows);
+
+		const at = Date.now();
+		const inserted = this.sql
+			.exec<{ id: number }>(
+				`INSERT INTO audit_log (at, actor, action, target)
+					VALUES (?, ?, 'introspect', ?) RETURNING id`,
+				at,
+				member.id,
+				projection,
+			)
+			.toArray()[0];
+		return {
+			explanation,
+			audit: {
+				id: inserted.id,
+				at,
+				actor: member.id,
+				action: "introspect",
+				target: projection,
+			},
+		};
+	}
+
+	/**
+	 * The append-only support-access audit log, newest first (handoff §3.5). Every
+	 * `introspect` call is recorded here; surfacing it to members is what keeps
+	 * support access accountable.
+	 */
+	async listAuditLog(identityHash: string): Promise<AuditEntry[]> {
+		this.requireMember(identityHash);
+		return this.sql
+			.exec<{
+				id: number;
+				at: number;
+				actor: string;
+				action: string;
+				target: string | null;
+			}>(
+				`SELECT id, at, actor, action, target FROM audit_log ORDER BY at DESC, id DESC`,
+			)
+			.toArray();
 	}
 
 	// ── Projection application + validation ──────────────────────────────────
@@ -1683,6 +2053,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 * and cheap on a dormant couple (a single indexed read). Returns the count closed.
 	 */
 	private sweepOverMaxStopwatches(now: number): number {
+		// Paused (safeword): no auto-close may fire. `opened_at` is shifted forward
+		// by the paused span on resume, so the over-max clock never counts the pause.
+		if (this.isPaused()) return 0;
 		const rows = this.sql
 			.exec<TimerRow>(
 				`SELECT id, kind, definition, state, status, opened_at, closed_at
@@ -1738,6 +2111,7 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const parsed = assignCountdownInputSchema.parse(input);
 		if (this.stopwatchDefinitionNames().has(parsed.timer)) {
 			throw coupleError(
@@ -1781,6 +2155,7 @@ export class CoupleDO extends DurableObject<Env> {
 	async pauseTimer(identityHash: string, timerId: string): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const now = Date.now();
 		// A countdown whose deadline has already passed but hasn't been swept yet must
 		// not be paused: pauseCountdown would freeze remaining_ms at 0, and because the
@@ -1813,6 +2188,7 @@ export class CoupleDO extends DurableObject<Env> {
 	async resumeTimer(identityHash: string, timerId: string): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const row = this.requireOpenCountdown(timerId);
 		if (this.timerState(row).paused_at == null) {
 			throw coupleError("BAD_REQUEST", "countdown is not paused");
@@ -1843,6 +2219,7 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
+		this.assertNotPaused();
 		const row = this.requireOpenCountdown(timerId);
 		const { by_ms } = extendTimerInputSchema.parse(input);
 		const now = Date.now();
@@ -1868,6 +2245,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 * live. A paused countdown is skipped — its clock is frozen.
 	 */
 	private sweepExpiredCountdowns(now: number): number {
+		// Paused (safeword): no consequence may fire, even on a read. The paused
+		// span is reprojected out of every deadline on resume, so nothing is lost.
+		if (this.isPaused()) return 0;
 		const rows = this.sql
 			.exec<TimerRow>(
 				`SELECT id, kind, definition, state, status, opened_at, closed_at
@@ -2441,7 +2821,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 * rather than waiting for the next read, then re-arm at MIN over all sources.
 	 */
 	override async alarm(): Promise<void> {
-		if (this.status() !== "active") {
+		if (this.status() !== "active" || this.isPaused()) {
 			this.ctx.storage.deleteAlarm();
 			return;
 		}
@@ -2624,10 +3004,11 @@ export class CoupleDO extends DurableObject<Env> {
 	 * (handoff §3.2 — `MIN(next_fire_at)`): scheduled jobs plus the nearest timer
 	 * consequence (a stopwatch's per-activity max, a running countdown's deadline).
 	 * With nothing pending the alarm is cleared, so a dormant couple costs nothing.
-	 * Suspended while not active (pairing/dissolved) — no consequences accrue.
+	 * Suspended while not active (pairing/dissolved) or paused (safeword, #40) — no
+	 * consequences accrue.
 	 */
 	private armAlarm(): void {
-		if (this.status() !== "active") {
+		if (this.status() !== "active" || this.isPaused()) {
 			this.ctx.storage.deleteAlarm();
 			return;
 		}

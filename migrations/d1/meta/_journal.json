@@ -15,6 +15,13 @@
       "when": 1783035618564,
       "tag": "0001_petite_rockslide",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1783908972603,
+      "tag": "0002_flashy_susan_delgado",
+      "breakpoints": true
     }
   ]
 }

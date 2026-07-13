@@ -13,6 +13,11 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type {
+	AuditEntry,
+	IntrospectionResult,
+} from "#/shared/introspection.ts";
+import type { RecoveryView } from "#/shared/recovery.ts";
 import type { Rule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
@@ -137,6 +142,96 @@ export function dissolve(): Promise<{ status: CoupleStatus }> {
 	return apiFetch<{ status: CoupleStatus }>("/api/dissolve", {
 		method: "POST",
 	});
+}
+
+/**
+ * Safeword: either partner, one tap, freezes all tracking and suspends every
+ * consequence until {@link resume}. Idempotent (handoff §9, #40).
+ */
+export function pause(): Promise<{
+	paused: boolean;
+	paused_at: number | null;
+}> {
+	return apiFetch("/api/pause", { method: "POST" });
+}
+
+/** Lifts the safeword and restores prior state cleanly. Idempotent. */
+export function resume(): Promise<{ paused: boolean }> {
+	return apiFetch("/api/resume", { method: "POST" });
+}
+
+// ── Partner-assisted recovery (handoff §2, #41) ─────────────────────────────
+
+/**
+ * The remaining partner starts recovery of the lost member's slot; returns a
+ * single-use code to hand the lost-token user, and when the slot may rebind.
+ */
+export function startRecovery(): Promise<{
+	code: string;
+	member_id: string;
+	rebind_at: number;
+	expires_at: number;
+}> {
+	return apiFetch("/api/recovery/start", { method: "POST" });
+}
+
+/** The lost-token user redeems the code with a brand-new secret (fresh identity). */
+export function redeemRecovery(
+	code: string,
+	bearer: string,
+): Promise<{ couple_do_id: string; member_id: string; rebind_at: number }> {
+	return apiFetch("/api/recovery/redeem", {
+		method: "POST",
+		body: { code },
+		bearer,
+	});
+}
+
+/** Interrupt a pending recovery — the stolen-phone escape valve (either member). */
+export function cancelRecovery(): Promise<{ ok: true }> {
+	return apiFetch("/api/recovery/cancel", { method: "POST" });
+}
+
+/** After the waiting period, the fresh identity completes the slot rebind. */
+export function finalizeRecovery(): Promise<{ ok: true }> {
+	return apiFetch("/api/recovery/finalize", { method: "POST" });
+}
+
+/** The active recovery as this member sees it, or null. */
+export function getRecovery(): Promise<{ recovery: RecoveryView | null }> {
+	return apiFetch("/api/recovery");
+}
+
+/**
+ * The content-free unread count for the notification badge (#42): a number only,
+ * "You have N new items" — never any relationship content.
+ */
+export function getNotifications(): Promise<{ unread: number }> {
+	return apiFetch("/api/notifications");
+}
+
+/**
+ * Permanently delete the couple after it has been dissolved: the DO wipes its
+ * storage and the routing rows are purged. Irreversible — offer an export first.
+ */
+export function deleteCouple(): Promise<{ ok: true }> {
+	return apiFetch<{ ok: true }>("/api/couple", { method: "DELETE" });
+}
+
+/**
+ * Ask why a projection changed (e.g. `counter:ritual_streak_days`). Every call
+ * is audit-logged inside the couple's DO — support access leaves a visible mark.
+ */
+export function introspect(projection: string): Promise<IntrospectionResult> {
+	return apiFetch<IntrospectionResult>("/api/support/introspect", {
+		method: "POST",
+		body: { projection },
+	});
+}
+
+/** The append-only log of support-introspection accesses, newest first. */
+export function listAuditLog(): Promise<{ entries: AuditEntry[] }> {
+	return apiFetch<{ entries: AuditEntry[] }>("/api/support/audit");
 }
 
 // ── Phase 2: event log + counters ──────────────────────────────────────────
