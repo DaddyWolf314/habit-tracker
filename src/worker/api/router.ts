@@ -15,6 +15,7 @@ import {
 	redeemInviteInputSchema,
 	revokeDeviceInputSchema,
 } from "#/shared/identity.ts";
+import { introspectInputSchema } from "#/shared/introspection.ts";
 import {
 	type AuthContext,
 	authenticate,
@@ -115,6 +116,24 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 		}
 		if (path === "/api/couple" && method === "DELETE") {
 			return await withAuth(request, env, (ctx) => deleteCouple(env, ctx));
+		}
+		if (path === "/api/support/introspect" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, introspectInputSchema);
+				if ("response" in parsed) return parsed.response;
+				const result = await stub.introspect(
+					auth.identityHash,
+					parsed.data.projection,
+				);
+				return json(result);
+			});
+		}
+		if (path === "/api/support/audit" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listAuditLog(auth.identityHash)
+					.then((entries) => json({ entries })),
+			);
 		}
 
 		// ── Phase 2: event log + counters ──────────────────────────────────────

@@ -41,6 +41,11 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type {
+	AuditEntry,
+	IntrospectionResult,
+} from "#/shared/introspection.ts";
+import { explainProjection } from "#/shared/introspection.ts";
 import {
 	applyCounterEvent,
 	compositeMetadata,
@@ -1329,6 +1334,75 @@ export class CoupleDO extends DurableObject<Env> {
 			)
 			.toArray()
 			.map(decodeTraceRow);
+	}
+
+	// ── Support introspection (handoff §3.5, #44) ─────────────────────────────
+
+	/**
+	 * The audited answer to "why did this projection change" (handoff §3.5). It
+	 * reconstructs the projection's causal chain from the Trace ledger — the same
+	 * rows the transparency view reads — and, before returning, appends an
+	 * audit-log row for the access. That write is the whole point: reaching a
+	 * couple's data through this support hatch always leaves a mark the couple can
+	 * read back (`listAuditLog`), so it is transparent relationship data, never a
+	 * silent backdoor. There is no global query escape hatch — only a member of
+	 * this couple, routed to this DO, can ask, and only about this couple.
+	 */
+	async introspect(
+		identityHash: string,
+		projection: string,
+	): Promise<IntrospectionResult> {
+		const member = this.requireMember(identityHash);
+		const rows = this.sql
+			.exec<TraceColumnsRow>(
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
+					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
+				projection,
+			)
+			.toArray()
+			.map(decodeTraceRow);
+		const explanation = explainProjection(projection, rows);
+
+		const at = Date.now();
+		const inserted = this.sql
+			.exec<{ id: number }>(
+				`INSERT INTO audit_log (at, actor, action, target)
+					VALUES (?, ?, 'introspect', ?) RETURNING id`,
+				at,
+				member.id,
+				projection,
+			)
+			.toArray()[0];
+		return {
+			explanation,
+			audit: {
+				id: inserted.id,
+				at,
+				actor: member.id,
+				action: "introspect",
+				target: projection,
+			},
+		};
+	}
+
+	/**
+	 * The append-only support-access audit log, newest first (handoff §3.5). Every
+	 * `introspect` call is recorded here; surfacing it to members is what keeps
+	 * support access accountable.
+	 */
+	async listAuditLog(identityHash: string): Promise<AuditEntry[]> {
+		this.requireMember(identityHash);
+		return this.sql
+			.exec<{
+				id: number;
+				at: number;
+				actor: string;
+				action: string;
+				target: string | null;
+			}>(
+				`SELECT id, at, actor, action, target FROM audit_log ORDER BY at DESC, id DESC`,
+			)
+			.toArray();
 	}
 
 	// ── Projection application + validation ──────────────────────────────────

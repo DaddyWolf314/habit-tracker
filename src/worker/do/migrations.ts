@@ -136,6 +136,20 @@ export const DO_MIGRATIONS: string[][] = [
 		`ALTER TABLE trace ADD COLUMN caused_by_amendment TEXT`,
 		`ALTER TABLE trace ADD COLUMN actor TEXT`,
 	],
+	// v6 — Phase 6 #44: the support-introspection audit log. Every access to the
+	// "why did this projection change" endpoint appends a row here, inside the
+	// couple's own DO — so a support read is transparent relationship data, never
+	// a silent backdoor. There is no global query escape hatch: this log only ever
+	// records reads of this one couple, and only members of it can read the log.
+	[
+		`CREATE TABLE IF NOT EXISTS audit_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			at INTEGER NOT NULL,
+			actor TEXT NOT NULL,
+			action TEXT NOT NULL,
+			target TEXT
+		)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

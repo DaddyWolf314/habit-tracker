@@ -13,6 +13,10 @@ import type {
 	RoleConfirmationState,
 	Session,
 } from "#/shared/identity.ts";
+import type {
+	AuditEntry,
+	IntrospectionResult,
+} from "#/shared/introspection.ts";
 import type { Rule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
@@ -145,6 +149,22 @@ export function dissolve(): Promise<{ status: CoupleStatus }> {
  */
 export function deleteCouple(): Promise<{ ok: true }> {
 	return apiFetch<{ ok: true }>("/api/couple", { method: "DELETE" });
+}
+
+/**
+ * Ask why a projection changed (e.g. `counter:ritual_streak_days`). Every call
+ * is audit-logged inside the couple's DO — support access leaves a visible mark.
+ */
+export function introspect(projection: string): Promise<IntrospectionResult> {
+	return apiFetch<IntrospectionResult>("/api/support/introspect", {
+		method: "POST",
+		body: { projection },
+	});
+}
+
+/** The append-only log of support-introspection accesses, newest first. */
+export function listAuditLog(): Promise<{ entries: AuditEntry[] }> {
+	return apiFetch<{ entries: AuditEntry[] }>("/api/support/audit");
 }
 
 // ── Phase 2: event log + counters ──────────────────────────────────────────
