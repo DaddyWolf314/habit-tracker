@@ -21,8 +21,8 @@ import type { MetadataValue, Role } from "./roles.ts";
 
 /** The slice of state an amendment is judged against. */
 export interface AmendmentContext {
-	event: Pick<Event, "metadata" | "actor">;
-	eventType: Pick<EventType, "metadata" | "awaiting">;
+	event: Pick<Event, "metadata" | "actor" | "visibility">;
+	eventType: Pick<EventType, "metadata" | "awaiting" | "journaling">;
 	/** The role of the member submitting the amendment. */
 	actorRole: Role | null;
 	/** The member id submitting the amendment (server-authenticated). */
@@ -75,7 +75,33 @@ export function validateAmendment(
 			}
 			if (!pending) return fail("only a pending event can be retracted");
 			return { ok: true };
+		case "response":
+			return validateResponse(ctx);
 	}
+}
+
+/**
+ * A `response` is the partner's warm reaction to a journal entry (ADR 0001):
+ *  - it is authored by the *non-author* of the entry (a response to your own
+ *    entry is meaningless — that is what `note_appended` is for);
+ *  - it is only for journaling entries (the visibility axis only exists there);
+ *  - it is allowed on `shared` and `sealed` entries but never on `secret` ones —
+ *    the dom must not even be able to learn a secret entry exists, so the read
+ *    model omits it and any response referencing it is refused up front.
+ * It carries no rule effects and never touches composite metadata (see
+ * `compositeMetadata`, which folds only adjudications), so nothing else here does.
+ */
+function validateResponse(ctx: AmendmentContext): AmendmentValidation {
+	if (ctx.actorMemberId === ctx.event.actor) {
+		return fail("only your partner may respond to your entry", true);
+	}
+	if (!ctx.eventType.journaling) {
+		return fail("only a journal entry can be responded to");
+	}
+	if (ctx.event.visibility === "secret") {
+		return fail("a secret entry cannot be responded to", true);
+	}
+	return { ok: true };
 }
 
 function validateAdjudication(

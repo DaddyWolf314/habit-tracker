@@ -18,11 +18,12 @@ import {
 	memberLabel,
 } from "./formatting.ts";
 
-/** Glyphs for the amendment tones in the chain view (ruling/note/retraction). */
+/** Glyphs for the amendment tones in the chain view (ruling/note/retraction/response). */
 const TONE_MARK: Record<string, string> = {
 	ruling: "⚖",
 	note: "✎",
 	retraction: "✕",
+	response: "♥",
 };
 
 /**

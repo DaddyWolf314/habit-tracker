@@ -1,5 +1,5 @@
 {
-	"version": 2,
+	"version": 3,
 	"rules": [
 		{
 			"id": "R1",
@@ -149,6 +149,30 @@
 				"metadata": { "flag": "wants_conversation" }
 			},
 			"effects": [{ "verb": "notify", "target": "partner" }]
+		},
+		{
+			"id": "R19",
+			"condition": { "type": "journal_prompt", "metadata": {} },
+			"effects": [
+				{
+					"verb": "open_timer",
+					"timer": "journal_countdown",
+					"match_on": { "prompt_id": "prompt_id" },
+					"tag_from": "floor"
+				}
+			]
+		},
+		{
+			"id": "R20",
+			"condition": { "type": "journal_entry", "metadata": {} },
+			"effects": [
+				{
+					"verb": "close_timer",
+					"timer": "journal_countdown",
+					"match_on": { "prompt_id": "prompt_id" },
+					"status": "completed"
+				}
+			]
 		}
 	]
 }

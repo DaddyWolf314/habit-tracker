@@ -33,6 +33,7 @@ function event(over: Partial<EventView> = {}): EventView {
 		occurred_at: 1,
 		logged_at: 1,
 		metadata: {},
+		visibility: "shared",
 		amendments: [],
 		composite_metadata: {},
 		pending: true,

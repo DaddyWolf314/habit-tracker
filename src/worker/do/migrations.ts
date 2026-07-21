@@ -150,6 +150,13 @@ export const DO_MIGRATIONS: string[][] = [
 			target TEXT
 		)`,
 	],
+	// v7 — Journaling #56 (ADR 0001): a journal entry's author-chosen visibility.
+	// A first-class, persisted column (not a metadata slot) so the read model can
+	// filter secret/sealed entries without decoding prose. Defaults to 'shared', so
+	// every pre-existing event — and every non-journaling event — reads back shared,
+	// preserving the "everything in the log is shared" invariant for the whole
+	// accountability spine.
+	[`ALTER TABLE events ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'`],
 ];
 
 const VERSION_KEY = "schema_version";

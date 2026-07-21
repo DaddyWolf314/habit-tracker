@@ -135,4 +135,22 @@ export const DEFAULT_TIMERS: readonly string[] = [
 	"task_countdown",
 	"denial_period",
 	"session_stopwatch",
+	"journal_countdown",
 ];
+
+/**
+ * The journal-prompt deadline countdown (ADR 0001). Unlike the other countdowns
+ * (dom-assigned via `assignCountdown`), this one is *rule-opened*: R19 opens it on
+ * a `journal_prompt` and R20's answering `journal_entry` closes it by `prompt_id`
+ * match. The DO opens it as a `countdown` (not a stopwatch) so it carries a real
+ * deadline and inherits pause/extend/expire for free.
+ */
+export const JOURNAL_COUNTDOWN_TIMER = "journal_countdown";
+
+/**
+ * Default time a sub has to answer an assigned prompt before the countdown
+ * expires unmet. A first-cut policy default (the rule carries no duration, and
+ * `open_timer` cannot route one without touching the pure engine); the dom can
+ * still pause or extend it via the existing countdown commands.
+ */
+export const DEFAULT_JOURNAL_DEADLINE_MS: number = 24 * 60 * 60 * 1000;

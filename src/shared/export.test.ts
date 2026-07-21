@@ -32,6 +32,7 @@ describe("eventToExportRow", () => {
 		logged_at: 1500,
 		metadata: { quality: "good", count: 3 },
 		note: "nice work",
+		visibility: "shared",
 	};
 
 	it("carries every field, serializing metadata", () => {
@@ -44,6 +45,7 @@ describe("eventToExportRow", () => {
 			logged_at: 1500,
 			metadata: JSON.stringify({ quality: "good", count: 3 }),
 			note: "nice work",
+			visibility: "shared",
 		});
 	});
 
@@ -55,6 +57,7 @@ describe("eventToExportRow", () => {
 			occurred_at: 1,
 			logged_at: 1,
 			metadata: {},
+			visibility: "shared",
 		};
 		const row = eventToExportRow(bare);
 		expect(row.subject).toBeNull();

@@ -46,6 +46,7 @@ import type {
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
 import { explainProjection } from "#/shared/introspection.ts";
+import { type Floor, satisfiesFloor } from "#/shared/journaling.ts";
 import { unreadCount } from "#/shared/notifications.ts";
 import {
 	applyCounterEvent,
@@ -58,7 +59,7 @@ import {
 	RECOVERY_WAIT_MS,
 	recoveryView,
 } from "#/shared/recovery.ts";
-import type { MetadataValue, Role } from "#/shared/roles.ts";
+import type { MetadataValue, Role, Visibility } from "#/shared/roles.ts";
 import { validateRule } from "#/shared/rule-validation.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
@@ -118,16 +119,23 @@ import {
 	traceTimerSkipped,
 } from "#/shared/trace.ts";
 import {
+	viewFor,
+	visibilityAllowedForType,
+	visibleView,
+} from "#/shared/visibility.ts";
+import {
 	COUNTER_ADJUSTED_TYPE,
 	COUNTER_RESET_TYPE,
 	DEFAULT_ANCHORS,
 	DEFAULT_COUNTERS,
 	DEFAULT_EVENT_TYPES,
+	DEFAULT_JOURNAL_DEADLINE_MS,
 	DEFAULT_RULES,
 	DEFAULT_TIMERS,
 	EVENT_TYPES_VERSION,
 	isBuiltinType,
 	isReservedTypeId,
+	JOURNAL_COUNTDOWN_TIMER,
 	RULE_PACK_VERSION,
 } from "#/templates/index.ts";
 import { coupleError } from "./errors.ts";
@@ -175,6 +183,7 @@ interface EventRow {
 	logged_at: number;
 	metadata: string;
 	note: string | null;
+	visibility: string;
 	[key: string]: SqlStorageValue;
 }
 
@@ -859,7 +868,34 @@ export class CoupleDO extends DurableObject<Env> {
 	async exportData(identityHash: string): Promise<CoupleExport> {
 		const me = this.requireMember(identityHash);
 		const exportedAt = Date.now();
-		const amendments = [...this.amendmentsByEvent().values()].flat();
+		// The one visibility branch in export (ADR 0001): a sealed/secret entry
+		// exports only to its author. A partner's secret entry is omitted outright
+		// (along with its amendments); their sealed entry exports as an existence row
+		// with the prose stripped (keeping only the partner's own response gifts);
+		// everything else — and all of the caller's own entries — exports in full.
+		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
+		const amendmentsByEvent = this.amendmentsByEvent();
+		const events: CoupleExport["events"] = [];
+		const amendments: CoupleExport["amendments"] = [];
+		for (const row of this.eventRows()) {
+			const event = this.rowToEvent(row);
+			const view = deriveEventView(
+				event,
+				amendmentsByEvent.get(event.id) ?? [],
+				types.get(event.type),
+			);
+			const outcome = viewFor(view, me.id);
+			if (outcome.kind === "hidden") continue;
+			events.push(eventToExportRow(outcome.view));
+			// A redacted (sealed, non-author) view already carries only the responses
+			// that survive redaction; a full view carries every amendment verbatim.
+			const kept = outcome.redacted
+				? outcome.view.amendments
+				: (amendmentsByEvent.get(event.id) ?? []);
+			for (const amendment of kept) {
+				amendments.push(amendmentToExportRow(amendment));
+			}
+		}
 		return {
 			exported_at: exportedAt,
 			couple_do_id: this.ctx.id.toString(),
@@ -880,10 +916,8 @@ export class CoupleDO extends DurableObject<Env> {
 				current: false,
 			})),
 			consent_history: await this.listConsentHistory(identityHash),
-			events: this.eventRows().map((row) =>
-				eventToExportRow(this.rowToEvent(row)),
-			),
-			amendments: amendments.map(amendmentToExportRow),
+			events,
+			amendments,
 			rules: this.rules().map(ruleToExportRow),
 			counters: this.counterRows().map((row) =>
 				counterToExportRow(this.rowToCounter(row)),
@@ -1209,6 +1243,14 @@ export class CoupleDO extends DurableObject<Env> {
 			throw coupleError("BAD_REQUEST", "this event type requires a subject");
 		}
 		this.validateMetadata(type, input.metadata, role);
+		// Visibility other than `shared` is legal only on a journaling-capable type
+		// (ADR 0001) — a secret infraction would gut the always-shared consent spine.
+		if (!visibilityAllowedForType(type, input.visibility)) {
+			throw coupleError(
+				"BAD_REQUEST",
+				`a ${input.type} event is always shared`,
+			);
+		}
 
 		const loggedAt = Date.now();
 		const event: Event = {
@@ -1220,10 +1262,11 @@ export class CoupleDO extends DurableObject<Env> {
 			logged_at: loggedAt,
 			metadata: input.metadata,
 			note: input.note,
+			visibility: input.visibility,
 		};
 		this.sql.exec(
-			`INSERT INTO events (id, type, actor, subject, occurred_at, logged_at, metadata, note)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO events (id, type, actor, subject, occurred_at, logged_at, metadata, note, visibility)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			event.id,
 			event.type,
 			event.actor,
@@ -1232,17 +1275,22 @@ export class CoupleDO extends DurableObject<Env> {
 			event.logged_at,
 			JSON.stringify(event.metadata),
 			event.note ?? null,
+			event.visibility,
 		);
 
 		// Two disjoint projection paths: `counter_*` sugar moves a counter directly;
 		// every real event is run through the rule engine (Phase 3). A pending
 		// event still fires its unconditional rules and records near-misses for the
-		// conditional ones waiting on adjudication (handoff §7).
+		// conditional ones waiting on adjudication (handoff §7). A `secret` entry is
+		// inert (ADR 0001): it fires no rules and touches no shared projection or
+		// trace row, or its very existence would leak to the partner.
 		this.timersDirty = false;
-		this.applyDirectManipulation(event);
-		if (!isBuiltinType(event.type)) {
-			// No amendments at append time, so composite == the event's own metadata.
-			this.applyRules(event, event.metadata, type.awaiting);
+		if (event.visibility !== "secret") {
+			this.applyDirectManipulation(event);
+			if (!isBuiltinType(event.type)) {
+				// No amendments at append time, so composite == the event's own metadata.
+				this.applyRules(event, event.metadata, type.awaiting);
+			}
 		}
 		// A rule may have opened or closed a timer, moving the nearest consequence; only
 		// then is a re-arm needed. Most events touch no timer, so skip the re-query.
@@ -1253,19 +1301,28 @@ export class CoupleDO extends DurableObject<Env> {
 		return deriveEventView(event, [], type);
 	}
 
-	/** The event log, newest first, as composite views (handoff §4.6, §9). */
+	/**
+	 * The event log, newest first, as composite views (handoff §4.6, §9), funnelled
+	 * through the viewer's visibility (ADR 0001): a partner's `secret` entries are
+	 * omitted entirely, their `sealed` entries appear with the prose redacted, and
+	 * everything else (shared entries, the caller's own entries) passes through.
+	 */
 	async listEvents(identityHash: string, limit = 200): Promise<EventView[]> {
-		this.requireMember(identityHash);
+		const me = this.requireMember(identityHash);
 		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
 		const amendmentsByEvent = this.amendmentsByEvent();
-		return this.eventRows(limit).map((row) => {
+		const views: EventView[] = [];
+		for (const row of this.eventRows(limit)) {
 			const event = this.rowToEvent(row);
-			return deriveEventView(
+			const view = deriveEventView(
 				event,
 				amendmentsByEvent.get(event.id) ?? [],
 				types.get(event.type),
 			);
-		});
+			const visible = visibleView(view, me.id);
+			if (visible) views.push(visible);
+		}
+		return views;
 	}
 
 	// ── Amendments (handoff §4.2) — rulings, notes, retractions ───────────────
@@ -1321,12 +1378,17 @@ export class CoupleDO extends DurableObject<Env> {
 
 		// A ruling can resolve a conditional rule that was waiting on it (handoff
 		// §4.2, §7): re-evaluate the target with the merged metadata and fire the
-		// rules that match now but didn't before. Notes and retractions change no
-		// composite state, so only an adjudication re-evaluates.
+		// rules that match now but didn't before. Notes, retractions, and responses
+		// change no composite state, so only an adjudication re-evaluates.
 		if (amendment.kind === "adjudication") {
 			this.reevaluateOnAmendment(event, type, priorAmendments, amendment);
 		}
-		return deriveEventView(event, amendments, type);
+		// Funnel the returned view through the actor's visibility (ADR 0001): a dom
+		// responding to a *sealed* entry gets back the existence row plus their own
+		// response, never the sub's prose. The author always sees their own entry in
+		// full. (A `secret` entry is unreachable here — validation refuses it.)
+		const view = deriveEventView(event, amendments, type);
+		return visibleView(view, me.id) ?? view;
 	}
 
 	/**
@@ -1455,6 +1517,7 @@ export class CoupleDO extends DurableObject<Env> {
 			type: COUNTER_ADJUSTED_TYPE,
 			metadata: { counter: counterId, delta },
 			note,
+			visibility: "shared",
 		});
 		return this.rowToCounter(this.requireCounterRow(counterId));
 	}
@@ -1472,6 +1535,7 @@ export class CoupleDO extends DurableObject<Env> {
 			type: COUNTER_RESET_TYPE,
 			metadata: { counter: counterId },
 			note,
+			visibility: "shared",
 		});
 		return this.rowToCounter(this.requireCounterRow(counterId));
 	}
@@ -1921,6 +1985,34 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private openTimer(event: Event, ruleId: string, op: TimerOp): void {
 		const id = ulid(event.logged_at);
+		// The journal-prompt deadline is the one rule-opened *countdown* (ADR 0001):
+		// R19 fires on a `journal_prompt`, and unlike a stopwatch it carries a real
+		// deadline (a policy default; the dom can pause/extend it later) and its floor
+		// as the tag, so a later close can gate on it. Everything else opens as a
+		// stopwatch (R15's `session_stopwatch`).
+		if (op.timer === JOURNAL_COUNTDOWN_TIMER) {
+			const state: TimerState = {
+				match: op.match_on ?? {},
+				tag: op.tag,
+				deadline_at: event.occurred_at + DEFAULT_JOURNAL_DEADLINE_MS,
+			};
+			this.sql.exec(
+				`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
+					VALUES (?, 'countdown', ?, ?, NULL, ?, NULL)`,
+				id,
+				op.timer,
+				JSON.stringify(state),
+				event.occurred_at,
+			);
+			this.writeTrace(
+				traceTimerOpen(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+					timer_id: id,
+					match_on: op.match_on,
+					tag: op.tag,
+				}),
+			);
+			return;
+		}
 		const state: TimerState = { match: op.match_on ?? {}, tag: op.tag };
 		this.sql.exec(
 			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
@@ -2000,6 +2092,29 @@ export class CoupleDO extends DurableObject<Env> {
 				),
 			);
 			return;
+		}
+		// The journal-prompt deadline only closes when the answering entry clears the
+		// prompt's floor (ADR 0001): a below-floor answer (e.g. a sealed reply to a
+		// shared-floor prompt) is the sub's right to log, but it does not discharge
+		// the assignment — the countdown is left running to expire unmet, and the dom
+		// is never told a below-floor entry exists. (A secret answer never reaches
+		// here at all: it is inert.)
+		if (op.timer === JOURNAL_COUNTDOWN_TIMER) {
+			const floor = this.timerState(target).tag as Floor | undefined;
+			if (!satisfiesFloor(event.visibility, floor)) {
+				this.writeTrace(
+					traceTimerSkipped(
+						ruleCause(event.id, ruleId),
+						event.logged_at,
+						op.timer,
+						{
+							reason: `${ruleId} skipped: answer below the '${floor}' floor`,
+							op: op.op,
+						},
+					),
+				);
+				return;
+			}
 		}
 		const closedAt = event.occurred_at;
 		const durationMs = stopwatchDurationMs(
@@ -2567,7 +2682,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const clause = limit === undefined ? "" : ` LIMIT ${Math.max(0, limit)}`;
 		return this.sql
 			.exec<EventRow>(
-				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note
+				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note, visibility
 					FROM events ORDER BY logged_at ${order}, id ${order}${clause}`,
 			)
 			.toArray();
@@ -2583,13 +2698,14 @@ export class CoupleDO extends DurableObject<Env> {
 			logged_at: row.logged_at,
 			metadata: JSON.parse(row.metadata) as Record<string, MetadataValue>,
 			note: row.note ?? undefined,
+			visibility: row.visibility as Visibility,
 		};
 	}
 
 	private eventRowById(id: string): EventRow | undefined {
 		return this.sql
 			.exec<EventRow>(
-				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note
+				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note, visibility
 					FROM events WHERE id = ?`,
 				id,
 			)
@@ -2626,6 +2742,8 @@ export class CoupleDO extends DurableObject<Env> {
 				};
 			case "note_appended":
 				return { kind: "note_appended", ...base, note: row.note ?? "" };
+			case "response":
+				return { kind: "response", ...base, note: row.note ?? "" };
 			default:
 				return { kind: "retracted", ...base, note: row.note ?? undefined };
 		}

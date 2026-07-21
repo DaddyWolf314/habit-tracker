@@ -138,6 +138,7 @@ describe("deriveEventView — the composite read view (handoff §4.2, §4.6)", (
 		actor: "sub-1",
 		occurred_at: 10,
 		logged_at: 10,
+		visibility: "shared",
 		metadata: { outcome: "full" },
 	};
 	const type = { awaiting: ["permitted"] };

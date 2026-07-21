@@ -5,7 +5,7 @@ import { logEvent } from "#/lib/api.ts";
 import type { EventType, MetadataField } from "#/shared/event-types.ts";
 import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { MetadataValue } from "#/shared/roles.ts";
+import type { MetadataValue, Visibility } from "#/shared/roles.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
@@ -34,6 +34,7 @@ export function LogComposer({
 	const [subject, setSubject] = useState<string>("");
 	const [note, setNote] = useState("");
 	const [meta, setMeta] = useState<Record<string, string>>({});
+	const [visibility, setVisibility] = useState<Visibility>("shared");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +44,7 @@ export function LogComposer({
 		setSubject("");
 		setNote("");
 		setMeta({});
+		setVisibility("shared");
 	}
 
 	function selectType(id: string) {
@@ -90,6 +92,9 @@ export function LogComposer({
 				subject: subject || undefined,
 				metadata: buildMetadata(type),
 				note: note.trim() || undefined,
+				// Only a journaling-capable type carries a real choice; everything else
+				// is always shared (the server rejects any other value on it).
+				visibility: type.journaling ? visibility : "shared",
 			};
 			await logEvent(input);
 			setTypeId("");
@@ -163,6 +168,30 @@ export function LogComposer({
 							onChange={(e) => setNote(e.target.value)}
 						/>
 					</div>
+
+					{type.journaling && (
+						<div>
+							{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
+							<label className="text-xs text-muted-foreground">
+								Visibility
+							</label>
+							<select
+								className={`${fieldClass} mt-1`}
+								value={visibility}
+								onChange={(e) => setVisibility(e.target.value as Visibility)}
+							>
+								<option value="shared">
+									Shared — my partner can read this
+								</option>
+								<option value="sealed">
+									Sealed — they see that I journaled, not the words
+								</option>
+								<option value="secret">
+									Secret — fully private; they can't tell it exists
+								</option>
+							</select>
+						</div>
+					)}
 
 					{error && <p className="text-sm text-destructive">{error}</p>}
 

@@ -42,6 +42,19 @@ export const amendmentSchema = z.discriminatedUnion("kind", [
 		note: z.string().optional(),
 		...amendmentBase,
 	}),
+	/**
+	 * The partner's (in practice the dom's) warm prose reaction to a journal entry
+	 * (ADR 0001). A *gift, not a debt* — never tracked as pending/owed, never
+	 * queued. Authored by the *non-author* of the entry, allowed on `shared` and
+	 * `sealed` entries (never `secret`); it fires no rule effects and does not touch
+	 * composite metadata. Distinct from `note_appended` (the author's own added
+	 * context) and `adjudication` (a ruling on an awaited key).
+	 */
+	z.object({
+		kind: z.literal("response"),
+		note: z.string(),
+		...amendmentBase,
+	}),
 ]);
 export type Amendment = z.infer<typeof amendmentSchema>;
 
@@ -69,6 +82,11 @@ export const amendmentInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("retracted"),
 		target_event_id: z.string().min(1),
 		note: z.string().optional(),
+	}),
+	z.object({
+		kind: z.literal("response"),
+		target_event_id: z.string().min(1),
+		note: z.string().min(1),
 	}),
 ]);
 export type AmendmentInput = z.infer<typeof amendmentInputSchema>;

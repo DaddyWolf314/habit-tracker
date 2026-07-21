@@ -55,7 +55,7 @@ export function isOwnPending(
 
 /** One amendment rendered for the chain view (handoff §4.6). */
 export interface AmendmentLine {
-	tone: "ruling" | "note" | "retraction";
+	tone: "ruling" | "note" | "retraction" | "response";
 	/** What happened, minus the actor/time the row supplies. */
 	summary: string;
 	/** Any prose attached to the amendment. */
@@ -95,6 +95,13 @@ export function describeAmendment(amendment: Amendment): AmendmentLine {
 			return {
 				tone: "retraction",
 				summary: "retracted this event",
+				note: amendment.note,
+				...base,
+			};
+		case "response":
+			return {
+				tone: "response",
+				summary: "responded to this entry",
 				note: amendment.note,
 				...base,
 			};
