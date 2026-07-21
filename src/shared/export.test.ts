@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Amendment } from "./amendments.ts";
 import type { AnchorView } from "./anchors.ts";
 import type { Counter } from "./counters.ts";
-import type { Event } from "./events.ts";
+import type { Event, EventView } from "./events.ts";
 import {
 	amendmentToExportRow,
 	anchorToExportRow,
@@ -11,8 +11,10 @@ import {
 	ruleToExportRow,
 	timerToExportRow,
 } from "./export.ts";
+import { deriveEventView } from "./projections.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
+import { viewFor } from "./visibility.ts";
 
 /**
  * The export is the abuse-edge escape hatch (handoff §2): a member's full view
@@ -63,6 +65,52 @@ describe("eventToExportRow", () => {
 		expect(row.subject).toBeNull();
 		expect(row.note).toBeNull();
 		expect(row.metadata).toBe("{}");
+	});
+});
+
+describe("per-viewer export redaction (#60, ADR 0001)", () => {
+	// The DO's `exportData` flattens each event through the same visibility funnel
+	// the log view uses, so a sealed/secret entry exports only to its author. That
+	// composition — `viewFor` then `eventToExportRow` — is exercised here at the
+	// pure seam (the DO itself has no integration test by design).
+	const entry = (visibility: "shared" | "sealed" | "secret"): EventView =>
+		deriveEventView(
+			{
+				id: "j1",
+				type: "journal_entry",
+				actor: "sub-1",
+				occurred_at: 1,
+				logged_at: 1,
+				metadata: { prompt_id: "p1" },
+				note: "the private words",
+				visibility,
+			},
+			[],
+			{ awaiting: [] },
+		);
+
+	it("exports a sealed entry to its author with full prose", () => {
+		const outcome = viewFor(entry("sealed"), "sub-1");
+		if (outcome.kind !== "visible") throw new Error("unreachable");
+		const row = eventToExportRow(outcome.view);
+		expect(row.note).toBe("the private words");
+		expect(row.metadata).toBe(JSON.stringify({ prompt_id: "p1" }));
+		expect(row.visibility).toBe("sealed");
+	});
+
+	it("exports a sealed entry to the partner as an existence row, prose stripped", () => {
+		const outcome = viewFor(entry("sealed"), "dom-1");
+		if (outcome.kind !== "visible") throw new Error("unreachable");
+		const row = eventToExportRow(outcome.view);
+		expect(row.id).toBe("j1");
+		expect(row.note).toBeNull();
+		expect(row.metadata).toBe("{}");
+	});
+
+	it("omits a secret entry from the partner's export entirely", () => {
+		expect(viewFor(entry("secret"), "dom-1")).toEqual({ kind: "hidden" });
+		// The author still gets it.
+		expect(viewFor(entry("secret"), "sub-1").kind).toBe("visible");
 	});
 });
 
