@@ -95,6 +95,88 @@ in and should not.
   _Avoid_: "inbox" (a count, not a container — and the banned adjudication-queue
   synonym).
 
+## Journaling
+
+Reflective prose (and structured self-report) captured as events. Not a new
+primitive — it is a *category of event types* plus a question/answer pairing.
+
+- **Journal entry** — a sub-authored event carrying one prose reflection in
+  `note`. The unit is **one entry per prose question** (an answer is
+  independently amendable, retractable, respondable). _Avoid_: "diary entry";
+  "journal" for a single entry.
+- **Journal prompt** — a dom-authored event that *poses* a question (prose in
+  `note`; a `prompt_id` in metadata). A journal entry answering it carries the
+  same `prompt_id` — a **question/answer pair linked by a shared ref**, the same
+  shape as the `session_started`/`session_ended` pairing. _Avoid_: "assignment"
+  as the noun (the countdown deadline is the assignment mechanism, not this).
+- **Self-directed vs. assigned** — self-directed journaling is a journal entry
+  with *no* preceding prompt; assigned journaling is a journal prompt the sub
+  answers. Both produce the same journal-entry events. Authoring split:
+  **assigning a prompt to your partner is dom-side** (the control act); **creating
+  a journaling-capable event type you self-log is either member** (structured
+  self-report is benign self-knowledge); **logging a self-directed entry is always
+  the journaling member's**.
+- **One prompt = one question = one deadline.** A multi-question assignment is
+  several independent prompts, each closed by its own answering entry via a simple
+  `prompt_id` match (no completeness logic). Prompts assigned together may share a
+  display-only **batch tag** for grouping in the UI; the model treats them
+  independently. A **mood** reading is a free-standing `check_in`, never bound to a
+  `prompt_id` (it is a per-day/state signal, not an answer to a prompt).
+- **Structured response** — a question answered by a *typed* value rather than
+  prose is just a **metadata field** on a (custom) event type — the `check_in`
+  shape (`mood` number, `flag` enum) generalized. Prose answers get their own
+  entry; typed answers bundle onto one event. Typed answer schemas live only on
+  event types (no separate "prompt" definition entity).
+- **Journaling capability** — an explicit flag on an *event type* marking it as a
+  journaling type: only such types carry the visibility axis (may be `sealed`/
+  `secret`) and may be the answer paired to a prompt. Accountability types
+  (`infraction`, `orgasm`, `task_completed`, …) and the plain `note` type are
+  **not** journaling-capable and are always `shared` — a secret infraction would
+  gut the consent-record spine. Custom structured questionnaires opt in by setting
+  the flag. Rule: any visibility other than `shared` is legal only on a
+  journaling-capable type.
+- The countdown **deadline** on an assigned prompt is opened by a **rule** firing
+  on the journal-prompt event (reusing the task→countdown wiring); the answering
+  entry closes it by ref match.
+- **Recurring prompt** — a scheduled job (a `schedule` row, like a ritual reset)
+  whose payload re-emits a fresh `journal_prompt` event each period. The recurring
+  config lives in the **schedule payload**, not a new definition entity (faithful
+  to "no prompt entity"). Each firing is **independent**: a new night's prompt
+  stacks alongside any still-unanswered prior one; rollover never auto-expires or
+  replaces yesterday's prompt.
+- **Visibility** — an author-chosen property of every journal entry, one of three
+  levels (the author *always* chooses explicitly; there is no silent default):
+  - **Shared** — the partner sees the entry and its `note` prose.
+  - **Sealed** — the partner sees *that* an entry exists (it can close an
+    assignment and drive a projection) but never the prose. The "I require you
+    logged it, I don't need the words" level.
+  - **Secret** — the partner cannot tell the entry exists at all. Consequence: a
+    secret entry must be **inert** — it fires no rules and touches no shared
+    projection or trace row, or its existence would leak. _Avoid_: "private" as a
+    level name (it's the whole three-level axis, not one value).
+  Visibility governs the **prose**; typed metadata redaction follows the same
+  level. This is the first real access-control rule inside the couple DO and adds
+  an **export** branch (a sealed/secret entry exports only to its author).
+  The three levels form a **privacy/credit gradient**: `shared` = words + credit,
+  `sealed` = credit without the words (drives shared projections), `secret` =
+  fully private but earns no shared credit (inert). Journaling-only-in-secret
+  therefore reads as a broken journaling streak — intended, not a wart.
+- **Visibility floor** — a required *minimum* visibility (`sealed` or `shared`) a
+  journal prompt sets on its answer. Only an entry at or above the floor
+  **satisfies** the assignment (closes the countdown). A sub may still answer
+  below the floor (even `secret`) — that is an inviolable right to journal
+  privately — but such an entry does not discharge the assignment, which then
+  expires unmet, and the dom is never told a below-floor entry exists.
+  Self-directed prompts have no floor. `secret` is never a floor (that is just
+  self-directed).
+- **Response** — a new amendment kind: the partner's (in practice the dom's)
+  post-hoc prose *reaction* to a journal entry. A **gift, not a debt** — never
+  tracked as pending/owed, never queued. Allowed on `shared` entries (reacting to
+  content) and `sealed` entries (acknowledging the act without the words), never
+  on `secret` ones. Fires no rules, does not touch composite metadata, and is
+  inherently visible to the entry's author. _Avoid_: overloading `note_appended`
+  (that is the author's own added context) for this.
+
 ## Trace (handoff §4.6)
 
 The transparency spine: every projection change records **what caused it**, so the
