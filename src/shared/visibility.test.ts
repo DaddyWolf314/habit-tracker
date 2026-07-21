@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { Amendment } from "./amendments.ts";
 import type { Event } from "./events.ts";
+import { logEventInputSchema } from "./events.ts";
 import { deriveEventView } from "./projections.ts";
 import type { Visibility } from "./roles.ts";
 import {
+	exportView,
 	viewFor,
 	visibilityAllowedForType,
 	visibleView,
@@ -134,5 +136,44 @@ describe("visibilityAllowedForType — non-shared gated to journaling types", ()
 		expect(visibilityAllowedForType({ journaling: true }, "shared")).toBe(true);
 		expect(visibilityAllowedForType({ journaling: true }, "sealed")).toBe(true);
 		expect(visibilityAllowedForType({ journaling: true }, "secret")).toBe(true);
+	});
+});
+
+describe("exportView — strict, author-only for non-shared (#60)", () => {
+	it("gives the author their own entry at every level", () => {
+		for (const visibility of ["shared", "sealed", "secret"] as const) {
+			expect(exportView(entry(visibility), AUTHOR)).not.toBeNull();
+		}
+	});
+
+	it("omits a non-author's sealed AND secret entries entirely (no existence row)", () => {
+		expect(exportView(entry("sealed"), PARTNER)).toBeNull();
+		expect(exportView(entry("secret"), PARTNER)).toBeNull();
+	});
+
+	it("gives a shared entry to the non-author in full", () => {
+		const shared = entry("shared");
+		expect(exportView(shared, PARTNER)).toBe(shared);
+	});
+});
+
+describe("no silent visibility default (ADR 0001)", () => {
+	// The log-input schema must leave visibility unset when omitted, so the DO can
+	// tell "explicitly shared" from "unset" and require a journaling type to choose.
+	it("leaves visibility undefined when the client omits it", () => {
+		const parsed = logEventInputSchema.parse({
+			type: "journal_entry",
+			metadata: {},
+		});
+		expect(parsed.visibility).toBeUndefined();
+	});
+
+	it("preserves an explicit choice", () => {
+		const parsed = logEventInputSchema.parse({
+			type: "journal_entry",
+			metadata: {},
+			visibility: "secret",
+		});
+		expect(parsed.visibility).toBe("secret");
 	});
 });

@@ -119,7 +119,7 @@ import {
 	traceTimerSkipped,
 } from "#/shared/trace.ts";
 import {
-	viewFor,
+	exportView,
 	visibilityAllowedForType,
 	visibleView,
 } from "#/shared/visibility.ts";
@@ -868,31 +868,26 @@ export class CoupleDO extends DurableObject<Env> {
 	async exportData(identityHash: string): Promise<CoupleExport> {
 		const me = this.requireMember(identityHash);
 		const exportedAt = Date.now();
-		// The one visibility branch in export (ADR 0001): a sealed/secret entry
-		// exports only to its author. A partner's secret entry is omitted outright
-		// (along with its amendments); their sealed entry exports as an existence row
-		// with the prose stripped (keeping only the partner's own response gifts);
-		// everything else — and all of the caller's own entries — exports in full.
+		// The one visibility branch in export (ADR 0001, #60): a sealed/secret entry
+		// exports only to its author — the partner's export never contains it, not
+		// even the existence row the log view shows. It is all-or-nothing (stricter
+		// than the log funnel), so a kept entry carries all of its amendments and a
+		// dropped one takes its amendments with it.
 		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
 		const amendmentsByEvent = this.amendmentsByEvent();
 		const events: CoupleExport["events"] = [];
 		const amendments: CoupleExport["amendments"] = [];
 		for (const row of this.eventRows()) {
 			const event = this.rowToEvent(row);
+			const eventAmendments = amendmentsByEvent.get(event.id) ?? [];
 			const view = deriveEventView(
 				event,
-				amendmentsByEvent.get(event.id) ?? [],
+				eventAmendments,
 				types.get(event.type),
 			);
-			const outcome = viewFor(view, me.id);
-			if (outcome.kind === "hidden") continue;
-			events.push(eventToExportRow(outcome.view));
-			// A redacted (sealed, non-author) view already carries only the responses
-			// that survive redaction; a full view carries every amendment verbatim.
-			const kept = outcome.redacted
-				? outcome.view.amendments
-				: (amendmentsByEvent.get(event.id) ?? []);
-			for (const amendment of kept) {
+			if (exportView(view, me.id) === null) continue;
+			events.push(eventToExportRow(event));
+			for (const amendment of eventAmendments) {
 				amendments.push(amendmentToExportRow(amendment));
 			}
 		}
@@ -1243,9 +1238,19 @@ export class CoupleDO extends DurableObject<Env> {
 			throw coupleError("BAD_REQUEST", "this event type requires a subject");
 		}
 		this.validateMetadata(type, input.metadata, role);
-		// Visibility other than `shared` is legal only on a journaling-capable type
-		// (ADR 0001) — a secret infraction would gut the always-shared consent spine.
-		if (!visibilityAllowedForType(type, input.visibility)) {
+		// No silent default (ADR 0001): a journaling-capable type must carry an
+		// explicit visibility choice, so a private reflection can never fall through
+		// to the most-exposed level by omission. A non-journaling type may omit it —
+		// it is always `shared` — but may never be set to anything else (a secret
+		// infraction would gut the always-shared consent spine).
+		if (input.visibility === undefined && type.journaling) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"choose a visibility for this journal entry",
+			);
+		}
+		const visibility = input.visibility ?? "shared";
+		if (!visibilityAllowedForType(type, visibility)) {
 			throw coupleError(
 				"BAD_REQUEST",
 				`a ${input.type} event is always shared`,
@@ -1262,7 +1267,7 @@ export class CoupleDO extends DurableObject<Env> {
 			logged_at: loggedAt,
 			metadata: input.metadata,
 			note: input.note,
-			visibility: input.visibility,
+			visibility,
 		};
 		this.sql.exec(
 			`INSERT INTO events (id, type, actor, subject, occurred_at, logged_at, metadata, note, visibility)

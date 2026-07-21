@@ -44,12 +44,14 @@ export const logEventInputSchema = z.object({
 	metadata: z.record(z.string(), metadataValueSchema).default({}),
 	note: z.string().optional(),
 	/**
-	 * The author's explicit visibility choice for a journaling event. Defaults to
-	 * `shared` so every existing (non-journaling) composer keeps logging shared
-	 * events unchanged; the DO rejects a non-`shared` value on a non-journaling
-	 * type (`visibilityAllowedForType`).
+	 * The author's visibility choice. Deliberately *not* defaulted (ADR 0001, "no
+	 * silent default"): the DO requires a journaling-capable type to carry an
+	 * explicit value — so a client can never let a private reflection fall through
+	 * to the most-exposed level by omission — while a non-journaling type may omit
+	 * it and is always `shared`. The DO also rejects a non-`shared` value on a
+	 * non-journaling type (`visibilityAllowedForType`).
 	 */
-	visibility: visibilitySchema.default("shared"),
+	visibility: visibilitySchema.optional(),
 });
 export type LogEventInput = z.infer<typeof logEventInputSchema>;
 

@@ -14,7 +14,7 @@ import {
 import { deriveEventView } from "./projections.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
-import { viewFor } from "./visibility.ts";
+import { exportView } from "./visibility.ts";
 
 /**
  * The export is the abuse-edge escape hatch (handoff §2): a member's full view
@@ -68,11 +68,12 @@ describe("eventToExportRow", () => {
 	});
 });
 
-describe("per-viewer export redaction (#60, ADR 0001)", () => {
-	// The DO's `exportData` flattens each event through the same visibility funnel
-	// the log view uses, so a sealed/secret entry exports only to its author. That
-	// composition — `viewFor` then `eventToExportRow` — is exercised here at the
-	// pure seam (the DO itself has no integration test by design).
+describe("per-viewer export omission (#60, ADR 0001)", () => {
+	// The DO's `exportData` flattens each event through `exportView`, the *strict*
+	// funnel: a sealed/secret entry exports only to its author — the partner's
+	// export never contains it, not even the existence row the log view would show.
+	// That composition — `exportView` then `eventToExportRow` — is exercised here at
+	// the pure seam (the DO itself has no integration test by design).
 	const entry = (visibility: "shared" | "sealed" | "secret"): EventView =>
 		deriveEventView(
 			{
@@ -90,27 +91,27 @@ describe("per-viewer export redaction (#60, ADR 0001)", () => {
 		);
 
 	it("exports a sealed entry to its author with full prose", () => {
-		const outcome = viewFor(entry("sealed"), "sub-1");
-		if (outcome.kind !== "visible") throw new Error("unreachable");
-		const row = eventToExportRow(outcome.view);
+		const view = exportView(entry("sealed"), "sub-1");
+		if (view === null) throw new Error("author should get their own entry");
+		const row = eventToExportRow(view);
 		expect(row.note).toBe("the private words");
 		expect(row.metadata).toBe(JSON.stringify({ prompt_id: "p1" }));
 		expect(row.visibility).toBe("sealed");
 	});
 
-	it("exports a sealed entry to the partner as an existence row, prose stripped", () => {
-		const outcome = viewFor(entry("sealed"), "dom-1");
-		if (outcome.kind !== "visible") throw new Error("unreachable");
-		const row = eventToExportRow(outcome.view);
-		expect(row.id).toBe("j1");
-		expect(row.note).toBeNull();
-		expect(row.metadata).toBe("{}");
+	it("omits a sealed entry from the partner's export entirely (not even existence)", () => {
+		expect(exportView(entry("sealed"), "dom-1")).toBeNull();
 	});
 
 	it("omits a secret entry from the partner's export entirely", () => {
-		expect(viewFor(entry("secret"), "dom-1")).toEqual({ kind: "hidden" });
+		expect(exportView(entry("secret"), "dom-1")).toBeNull();
 		// The author still gets it.
-		expect(viewFor(entry("secret"), "sub-1").kind).toBe("visible");
+		expect(exportView(entry("secret"), "sub-1")).not.toBeNull();
+	});
+
+	it("exports a shared entry to both partners", () => {
+		expect(exportView(entry("shared"), "sub-1")).not.toBeNull();
+		expect(exportView(entry("shared"), "dom-1")).not.toBeNull();
 	});
 });
 

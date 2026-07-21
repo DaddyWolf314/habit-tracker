@@ -63,6 +63,22 @@ export function visibleView(
 }
 
 /**
+ * The export view of an event for a member (ADR 0001, #60) — *stricter* than the
+ * log funnel. On dissolve, a `sealed` or `secret` entry exports only to its
+ * author: the partner's export never contains it, not even the existence row the
+ * log view would show them. So this is all-or-nothing — the full view for the
+ * author or any shared entry, `null` for a non-author's `sealed`/`secret` entry —
+ * never the redact-and-keep of {@link visibleView}.
+ */
+export function exportView(
+	view: EventView,
+	viewerId: string,
+): EventView | null {
+	const isAuthor = view.actor === viewerId;
+	return isAuthor || view.visibility === "shared" ? view : null;
+}
+
+/**
  * Strips a sealed entry to its existence for a non-author: the prose (`note`) and
  * both the raw and composite typed metadata go, and the amendment list keeps only
  * the partner's own `response` gifts — never the author's `note_appended` context
