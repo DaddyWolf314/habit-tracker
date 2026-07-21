@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { amendmentSchema } from "./amendments.ts";
-import { metadataValueSchema } from "./roles.ts";
+import { metadataValueSchema, visibilitySchema } from "./roles.ts";
 
 /**
  * Events — the append-only source of truth (handoff §4.1). Never mutated or
@@ -19,6 +19,15 @@ export const eventSchema = z.object({
 	logged_at: z.number().int(),
 	metadata: z.record(z.string(), metadataValueSchema).default({}),
 	note: z.string().optional(),
+	/**
+	 * Author-chosen visibility (ADR 0001). A first-class, persisted field — not a
+	 * metadata key — so the read model can filter on it without decoding prose.
+	 * Every non-journaling event is `shared`; only a journaling-capable type may
+	 * carry `sealed`/`secret` (enforced by `visibilityAllowedForType`). The default
+	 * keeps the whole existing log `shared`; a journaling composer always sets it
+	 * explicitly (the author never gets a silent privacy default).
+	 */
+	visibility: visibilitySchema.default("shared"),
 });
 export type Event = z.infer<typeof eventSchema>;
 
@@ -34,6 +43,15 @@ export const logEventInputSchema = z.object({
 	occurred_at: z.number().int().optional(),
 	metadata: z.record(z.string(), metadataValueSchema).default({}),
 	note: z.string().optional(),
+	/**
+	 * The author's visibility choice. Deliberately *not* defaulted (ADR 0001, "no
+	 * silent default"): the DO requires a journaling-capable type to carry an
+	 * explicit value — so a client can never let a private reflection fall through
+	 * to the most-exposed level by omission — while a non-journaling type may omit
+	 * it and is always `shared`. The DO also rejects a non-`shared` value on a
+	 * non-journaling type (`visibilityAllowedForType`).
+	 */
+	visibility: visibilitySchema.optional(),
 });
 export type LogEventInput = z.infer<typeof logEventInputSchema>;
 

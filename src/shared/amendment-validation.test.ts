@@ -11,8 +11,9 @@ import type { EventType } from "./event-types.ts";
  * A pending `orgasm`-shaped type: `permitted` is dom-adjudicated and awaited,
  * `kind` is a sub-set enum nobody may adjudicate. Mirrors the starter seven.
  */
-const type: Pick<EventType, "metadata" | "awaiting"> = {
+const type: Pick<EventType, "metadata" | "awaiting" | "journaling"> = {
 	awaiting: ["permitted"],
+	journaling: false,
 	metadata: {
 		permitted: {
 			kind: "boolean",
@@ -33,7 +34,7 @@ const type: Pick<EventType, "metadata" | "awaiting"> = {
 
 function ctx(over: Partial<AmendmentContext> = {}): AmendmentContext {
 	return {
-		event: { actor: "sub-1", metadata: {} },
+		event: { actor: "sub-1", metadata: {}, visibility: "shared" },
 		eventType: type,
 		actorRole: "dom",
 		actorMemberId: "dom-1",
@@ -41,6 +42,13 @@ function ctx(over: Partial<AmendmentContext> = {}): AmendmentContext {
 		...over,
 	};
 }
+
+/** A journaling-capable entry type, for the `response` cases. */
+const journalType: Pick<EventType, "metadata" | "awaiting" | "journaling"> = {
+	awaiting: [],
+	journaling: true,
+	metadata: {},
+};
 
 function adjudication(
 	over: Partial<Extract<Amendment, { kind: "adjudication" }>>,
@@ -195,7 +203,11 @@ describe("note_appended — own pending event", () => {
 		};
 		const resolved = ctx({
 			actorMemberId: "sub-1",
-			event: { actor: "sub-1", metadata: { permitted: true } },
+			event: {
+				actor: "sub-1",
+				metadata: { permitted: true },
+				visibility: "shared",
+			},
 		});
 		expect(validateAmendment(input, resolved).ok).toBe(false);
 	});
@@ -221,7 +233,11 @@ describe("retracted — sub-authored, only while pending, terminal", () => {
 	it("rejects a retraction once the event is no longer pending", () => {
 		const resolved = ctx({
 			actorMemberId: "sub-1",
-			event: { actor: "sub-1", metadata: { permitted: true } },
+			event: {
+				actor: "sub-1",
+				metadata: { permitted: true },
+				visibility: "shared",
+			},
 		});
 		expect(validateAmendment(retract, resolved).ok).toBe(false);
 	});
@@ -243,5 +259,63 @@ describe("retracted — sub-authored, only while pending, terminal", () => {
 		expect(
 			validateAmendment(adjudicate(), ctx({ amendments: [retraction] })).ok,
 		).toBe(false);
+	});
+});
+
+describe("response — the dom's gift to a journal entry (ADR 0001)", () => {
+	const respond: AmendmentInput = {
+		kind: "response",
+		target_event_id: "e1",
+		note: "I'm proud of you for writing this.",
+	};
+
+	function journalCtx(over: Partial<AmendmentContext> = {}): AmendmentContext {
+		return ctx({
+			eventType: journalType,
+			event: { actor: "sub-1", metadata: {}, visibility: "shared" },
+			actorMemberId: "dom-1",
+			...over,
+		});
+	}
+
+	it("accepts a response from the non-author on a shared entry", () => {
+		expect(validateAmendment(respond, journalCtx())).toEqual({ ok: true });
+	});
+
+	it("accepts a response on a sealed entry — acknowledging the act", () => {
+		const sealed = journalCtx({
+			event: { actor: "sub-1", metadata: {}, visibility: "sealed" },
+		});
+		expect(validateAmendment(respond, sealed)).toEqual({ ok: true });
+	});
+
+	it("rejects a response on a secret entry", () => {
+		const secret = journalCtx({
+			event: { actor: "sub-1", metadata: {}, visibility: "secret" },
+		});
+		const result = validateAmendment(respond, secret);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.forbidden).toBe(true);
+		expect(result.error).toContain("secret");
+	});
+
+	it("rejects a response from the entry's own author", () => {
+		const result = validateAmendment(
+			respond,
+			journalCtx({ actorMemberId: "sub-1" }),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.forbidden).toBe(true);
+	});
+
+	it("rejects a response on a non-journaling event type", () => {
+		// The plain `note`/accountability types are always shared and un-hideable;
+		// a response belongs only to the journaling surface.
+		const result = validateAmendment(respond, journalCtx({ eventType: type }));
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("journal");
 	});
 });

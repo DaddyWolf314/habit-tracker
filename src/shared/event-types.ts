@@ -52,5 +52,14 @@ export const eventTypeSchema = z.object({
 	 */
 	awaiting: z.array(z.string()).default([]),
 	note_prompt: z.string().optional(),
+	/**
+	 * Journaling capability (ADR 0001). Only a journaling-capable type may carry a
+	 * non-`shared` visibility and may be the answer paired to a `journal_prompt`.
+	 * Accountability types (`infraction`, `orgasm`, `task_completed`, …) and the
+	 * plain `note` leave this `false` and are therefore always `shared` — a secret
+	 * infraction would gut the consent-record spine. The visibility gate itself is
+	 * `visibilityAllowedForType` in `visibility.ts`.
+	 */
+	journaling: z.boolean().default(false),
 });
 export type EventType = z.infer<typeof eventTypeSchema>;

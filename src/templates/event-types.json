@@ -1,5 +1,5 @@
 {
-	"version": 1,
+	"version": 2,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -199,6 +199,53 @@
 			"metadata": {},
 			"awaiting": [],
 			"note_prompt": "Write a note"
+		},
+		{
+			"id": "journal_prompt",
+			"label": "Journal prompt",
+			"icon": "help-circle",
+			"valence": "neutral",
+			"log_permission": ["dom", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"prompt_id": {
+					"kind": "ref",
+					"ref_kind": "prompt",
+					"label": "Prompt",
+					"required": true,
+					"set_permission": ["dom", "switch"]
+				},
+				"floor": {
+					"kind": "enum",
+					"options": ["sealed", "shared"],
+					"label": "Minimum visibility",
+					"required": false,
+					"set_permission": ["dom", "switch"]
+				}
+			},
+			"awaiting": [],
+			"journaling": false,
+			"note_prompt": "What should they reflect on?"
+		},
+		{
+			"id": "journal_entry",
+			"label": "Journal entry",
+			"icon": "notebook-pen",
+			"valence": "neutral",
+			"log_permission": ["sub", "switch"],
+			"subject_required": false,
+			"metadata": {
+				"prompt_id": {
+					"kind": "ref",
+					"ref_kind": "prompt",
+					"label": "Answering prompt",
+					"required": false,
+					"set_permission": ["sub", "switch"]
+				}
+			},
+			"awaiting": [],
+			"journaling": true,
+			"note_prompt": "What's on your mind?"
 		}
 	]
 }

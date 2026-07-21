@@ -13,11 +13,11 @@ const counterIds = new Set(DEFAULT_COUNTERS.map((c) => c.id));
 const anchors = new Set(DEFAULT_ANCHORS);
 const timers = new Set(DEFAULT_TIMERS);
 
-describe("R1–R18 default rule pack (handoff §7)", () => {
-	it("installs exactly R1 through R18", () => {
-		expect(DEFAULT_RULES).toHaveLength(18);
+describe("R1–R20 default rule pack (handoff §7, ADR 0001)", () => {
+	it("installs exactly R1 through R20", () => {
+		expect(DEFAULT_RULES).toHaveLength(20);
 		expect(DEFAULT_RULES.map((r) => r.id)).toEqual(
-			Array.from({ length: 18 }, (_, i) => `R${i + 1}`),
+			Array.from({ length: 20 }, (_, i) => `R${i + 1}`),
 		);
 	});
 
@@ -91,5 +91,38 @@ describe("R1–R18 default rule pack (handoff §7)", () => {
 			occurred_at: 1,
 		});
 		expect(fired.map((f) => f.rule_id).sort()).toEqual(["R10", "R12", "R14"]);
+	});
+
+	it("R19 opens a journal_countdown on a journal_prompt, tagged with the floor", () => {
+		const { fired } = evaluateRules(DEFAULT_RULES, {
+			type: "journal_prompt",
+			metadata: { prompt_id: "p1", floor: "shared" },
+			occurred_at: 1,
+		});
+		expect(fired.map((f) => f.rule_id)).toEqual(["R19"]);
+		const op = fired[0]?.ops[0];
+		expect(op).toMatchObject({
+			kind: "timer",
+			timer: "journal_countdown",
+			op: "open",
+			match_on: { prompt_id: "p1" },
+			tag: "shared",
+		});
+	});
+
+	it("R20's answering journal_entry closes the countdown by prompt_id match", () => {
+		const { fired } = evaluateRules(DEFAULT_RULES, {
+			type: "journal_entry",
+			metadata: { prompt_id: "p1" },
+			occurred_at: 1,
+		});
+		expect(fired.map((f) => f.rule_id)).toEqual(["R20"]);
+		expect(fired[0]?.ops[0]).toMatchObject({
+			kind: "timer",
+			timer: "journal_countdown",
+			op: "close",
+			match_on: { prompt_id: "p1" },
+			status: "completed",
+		});
 	});
 });

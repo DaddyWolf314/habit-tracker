@@ -29,6 +29,7 @@ export function eventToExportRow(event: Event): ExportRow {
 		logged_at: event.logged_at,
 		metadata: JSON.stringify(event.metadata),
 		note: event.note ?? null,
+		visibility: event.visibility,
 	};
 }
 

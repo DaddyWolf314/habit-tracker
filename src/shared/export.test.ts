@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Amendment } from "./amendments.ts";
 import type { AnchorView } from "./anchors.ts";
 import type { Counter } from "./counters.ts";
-import type { Event } from "./events.ts";
+import type { Event, EventView } from "./events.ts";
 import {
 	amendmentToExportRow,
 	anchorToExportRow,
@@ -11,8 +11,10 @@ import {
 	ruleToExportRow,
 	timerToExportRow,
 } from "./export.ts";
+import { deriveEventView } from "./projections.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
+import { exportView } from "./visibility.ts";
 
 /**
  * The export is the abuse-edge escape hatch (handoff §2): a member's full view
@@ -32,6 +34,7 @@ describe("eventToExportRow", () => {
 		logged_at: 1500,
 		metadata: { quality: "good", count: 3 },
 		note: "nice work",
+		visibility: "shared",
 	};
 
 	it("carries every field, serializing metadata", () => {
@@ -44,6 +47,7 @@ describe("eventToExportRow", () => {
 			logged_at: 1500,
 			metadata: JSON.stringify({ quality: "good", count: 3 }),
 			note: "nice work",
+			visibility: "shared",
 		});
 	});
 
@@ -55,11 +59,59 @@ describe("eventToExportRow", () => {
 			occurred_at: 1,
 			logged_at: 1,
 			metadata: {},
+			visibility: "shared",
 		};
 		const row = eventToExportRow(bare);
 		expect(row.subject).toBeNull();
 		expect(row.note).toBeNull();
 		expect(row.metadata).toBe("{}");
+	});
+});
+
+describe("per-viewer export omission (#60, ADR 0001)", () => {
+	// The DO's `exportData` flattens each event through `exportView`, the *strict*
+	// funnel: a sealed/secret entry exports only to its author — the partner's
+	// export never contains it, not even the existence row the log view would show.
+	// That composition — `exportView` then `eventToExportRow` — is exercised here at
+	// the pure seam (the DO itself has no integration test by design).
+	const entry = (visibility: "shared" | "sealed" | "secret"): EventView =>
+		deriveEventView(
+			{
+				id: "j1",
+				type: "journal_entry",
+				actor: "sub-1",
+				occurred_at: 1,
+				logged_at: 1,
+				metadata: { prompt_id: "p1" },
+				note: "the private words",
+				visibility,
+			},
+			[],
+			{ awaiting: [] },
+		);
+
+	it("exports a sealed entry to its author with full prose", () => {
+		const view = exportView(entry("sealed"), "sub-1");
+		if (view === null) throw new Error("author should get their own entry");
+		const row = eventToExportRow(view);
+		expect(row.note).toBe("the private words");
+		expect(row.metadata).toBe(JSON.stringify({ prompt_id: "p1" }));
+		expect(row.visibility).toBe("sealed");
+	});
+
+	it("omits a sealed entry from the partner's export entirely (not even existence)", () => {
+		expect(exportView(entry("sealed"), "dom-1")).toBeNull();
+	});
+
+	it("omits a secret entry from the partner's export entirely", () => {
+		expect(exportView(entry("secret"), "dom-1")).toBeNull();
+		// The author still gets it.
+		expect(exportView(entry("secret"), "sub-1")).not.toBeNull();
+	});
+
+	it("exports a shared entry to both partners", () => {
+		expect(exportView(entry("shared"), "sub-1")).not.toBeNull();
+		expect(exportView(entry("shared"), "dom-1")).not.toBeNull();
 	});
 });
 
