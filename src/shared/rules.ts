@@ -126,3 +126,19 @@ export const versionedRuleSchema = z.object({
 	versions: z.array(ruleVersionSchema).min(1),
 });
 export type VersionedRule = z.infer<typeof versionedRuleSchema>;
+
+/**
+ * Stamps a rule id onto one of its versions to produce the flat {@link Rule} the
+ * engine reads and {@link validateRule} checks. This is the single seam between
+ * the stored versioned history and the version-agnostic read path: the resolver
+ * uses it to flatten the version in force at a log-time, and the edit path uses
+ * it so a proposed new version is validated identically to a create.
+ */
+export function ruleFromVersion(id: string, version: RuleVersion): Rule {
+	return {
+		id,
+		condition: version.condition,
+		effects: version.effects,
+		enabled: version.enabled,
+	};
+}

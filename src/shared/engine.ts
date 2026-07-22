@@ -1,9 +1,10 @@
 import type { MetadataValue } from "./roles.ts";
-import type {
-	Rule,
-	RuleCondition,
-	RuleVersion,
-	VersionedRule,
+import {
+	type Rule,
+	type RuleCondition,
+	type RuleVersion,
+	ruleFromVersion,
+	type VersionedRule,
 } from "./rules.ts";
 
 /**
@@ -48,12 +49,7 @@ export function rulesEffectiveAt(
 	for (const rule of rules) {
 		const version = versionInForceAt(rule.versions, logTime);
 		if (!version) continue; // Rule did not exist yet at this log-time.
-		resolved.push({
-			id: rule.id,
-			condition: version.condition,
-			effects: version.effects,
-			enabled: version.enabled,
-		});
+		resolved.push(ruleFromVersion(rule.id, version));
 	}
 	return resolved;
 }
