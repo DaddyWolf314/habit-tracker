@@ -9,10 +9,16 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as RulesRouteImport } from './routes/rules'
 import { Route as LogRouteImport } from './routes/log'
 import { Route as DevicesRouteImport } from './routes/devices'
 import { Route as IndexRouteImport } from './routes/index'
 
+const RulesRoute = RulesRouteImport.update({
+  id: '/rules',
+  path: '/rules',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LogRoute = LogRouteImport.update({
   id: '/log',
   path: '/log',
@@ -33,34 +39,45 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
+  '/rules': typeof RulesRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
+  '/rules': typeof RulesRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
+  '/rules': typeof RulesRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/devices' | '/log'
+  fullPaths: '/' | '/devices' | '/log' | '/rules'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/devices' | '/log'
-  id: '__root__' | '/' | '/devices' | '/log'
+  to: '/' | '/devices' | '/log' | '/rules'
+  id: '__root__' | '/' | '/devices' | '/log' | '/rules'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   DevicesRoute: typeof DevicesRoute
   LogRoute: typeof LogRoute
+  RulesRoute: typeof RulesRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/rules': {
+      id: '/rules'
+      path: '/rules'
+      fullPath: '/rules'
+      preLoaderRoute: typeof RulesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/log': {
       id: '/log'
       path: '/log'
@@ -89,6 +106,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   DevicesRoute: DevicesRoute,
   LogRoute: LogRoute,
+  RulesRoute: RulesRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
