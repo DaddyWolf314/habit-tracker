@@ -14,9 +14,28 @@ in and should not.
   a `note_appended`, or a `retracted`. Composite state is the original metadata
   overlaid by amendments in timestamp order — derived, never stored.
 - **Rule** — `when type = X [AND metadata equality] → effects`. Routes values; it
-  never computes them. The condition language is deliberately dumb (equality only).
+  never computes them (equality-only condition language). A stable rule id carries
+  one or more effective-dated **rule versions**; authoring is dom/switch-only.
+  _Avoid_: conflating with the **Protocol** an `infraction` cites.
 - **Effect** — one op a fired rule routes: counter increment/decrement/reset,
   anchor reset, timer open/close, notify.
+- **Rule version** — an effective-dated revision of a rule's condition and effects.
+  Rules are append-only-versioned: editing adds a version (with an `effective_from`),
+  never rewriting the prior, so replay picks the version in force at an event's
+  **log-time** (when it fired). _Avoid_: "edit" as if a rule mutates in place.
+- **Effective-dating** — a rule version governs only events logged while it was in
+  force. Rule changes are **forward-only**: already-logged events keep the
+  consequences they received, and a rebuild re-derives each event under the version
+  current at *its* log-time — reproducing history, not rewriting it. _Avoid_:
+  "retroactive" rule changes.
+- **Adopted rule** — a default-pack rule (`R#`) a couple has edited. Adoption freezes
+  it against upstream: a pack version bump no longer overwrites its definition (only
+  surfaces an upstream-changed notice), while un-adopted pack rules still track the
+  pack. _Avoid_: "forked", "overridden".
+- **Protocol** — a couple's behavioral agreement the sub is held to and can break,
+  referenced by an `infraction`'s `rule_ref`. A human agreement (unstructured today),
+  *not* an engine **Rule** (condition→effect automation); the two share the word
+  "rule" and must not be conflated. _Avoid_: "rule" for a Protocol.
 - **Counter / Timer / Anchor** — the three **projection** flavors: a materialized
   tally, a stopwatch/countdown, and an elapsed-since timestamp. Each is a **cache**
   rebuildable by replaying the log.
