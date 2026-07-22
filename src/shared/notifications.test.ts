@@ -1,6 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { unreadCount } from "./notifications.ts";
+import {
+	type NotificationSignals,
+	type RuleChangeKind,
+	ruleChangeAction,
+	unreadCount,
+} from "./notifications.ts";
 import { deriveEventView } from "./projections.ts";
+
+/** Signals with everything quiet, overridden per test. */
+function signals(
+	partial: Partial<NotificationSignals> = {},
+): NotificationSignals {
+	return {
+		pending_events: 0,
+		recovery_pending: false,
+		rule_changes: 0,
+		...partial,
+	};
+}
 
 /**
  * Content-free notifications (#42, decision #46 = in-app only). The badge is a
@@ -11,16 +28,46 @@ import { deriveEventView } from "./projections.ts";
 
 describe("unreadCount", () => {
 	it("counts the items awaiting attention", () => {
-		expect(unreadCount({ pending_events: 3, recovery_pending: false })).toBe(3);
+		expect(unreadCount(signals({ pending_events: 3 }))).toBe(3);
 	});
 
 	it("adds one for a pending recovery a member should notice", () => {
-		expect(unreadCount({ pending_events: 0, recovery_pending: true })).toBe(1);
-		expect(unreadCount({ pending_events: 2, recovery_pending: true })).toBe(3);
+		expect(unreadCount(signals({ recovery_pending: true }))).toBe(1);
+		expect(
+			unreadCount(signals({ pending_events: 2, recovery_pending: true })),
+		).toBe(3);
+	});
+
+	it("adds the partner's rule changes since the viewer last looked (#64)", () => {
+		expect(unreadCount(signals({ rule_changes: 2 }))).toBe(2);
+		expect(
+			unreadCount(
+				signals({ pending_events: 1, recovery_pending: true, rule_changes: 3 }),
+			),
+		).toBe(5);
 	});
 
 	it("is zero when nothing awaits", () => {
-		expect(unreadCount({ pending_events: 0, recovery_pending: false })).toBe(0);
+		expect(unreadCount(signals())).toBe(0);
+	});
+});
+
+describe("ruleChangeAction (#64) — one vocabulary for audit + count", () => {
+	it("namespaces each change kind under rule.", () => {
+		const kinds: RuleChangeKind[] = [
+			"create",
+			"edit",
+			"enable",
+			"disable",
+			"delete",
+		];
+		expect(kinds.map(ruleChangeAction)).toEqual([
+			"rule.create",
+			"rule.edit",
+			"rule.enable",
+			"rule.disable",
+			"rule.delete",
+		]);
 	});
 });
 
@@ -50,8 +97,8 @@ describe("no hidden journal entry can leak into the badge (#60, ADR 0001)", () =
 		}
 	});
 
-	it("the count sums only pending events and recovery — nothing else", () => {
-		expect(unreadCount({ pending_events: 0, recovery_pending: false })).toBe(0);
-		expect(unreadCount({ pending_events: 2, recovery_pending: false })).toBe(2);
+	it("the count sums only the count signals — no per-event content", () => {
+		expect(unreadCount(signals())).toBe(0);
+		expect(unreadCount(signals({ pending_events: 2 }))).toBe(2);
 	});
 });

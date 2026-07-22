@@ -18,7 +18,7 @@ import type {
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
-import type { Rule } from "#/shared/rules.ts";
+import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
 
@@ -276,6 +276,53 @@ export function getEventTrace(eventId: string): Promise<{ rows: TraceRow[] }> {
  */
 export function listRules(): Promise<{ rules: Rule[] }> {
 	return apiFetch<{ rules: Rule[] }>("/api/rules");
+}
+
+/**
+ * The full rule set with provenance and effective-dated version history (#64) for
+ * the rules screen. Fetching also marks the caller's rule-change notices seen, so
+ * the badge clears when they open the screen.
+ */
+export function listRuleHistory(): Promise<{ rules: VersionedRule[] }> {
+	return apiFetch<{ rules: VersionedRule[] }>("/api/rules/history");
+}
+
+/** Creates a custom rule (dom/switch only). Body is a flat rule with an id. */
+export function createRule(rule: Rule): Promise<Rule> {
+	return apiFetch<Rule>("/api/rules", { method: "POST", body: rule });
+}
+
+/** Edits a rule's condition/effects (dom/switch only); appends a new version. */
+export function updateRule(
+	id: string,
+	definition: RuleDefinition,
+): Promise<Rule> {
+	return apiFetch<Rule>(`/api/rules/${encodeURIComponent(id)}`, {
+		method: "PUT",
+		body: definition,
+	});
+}
+
+/** Enables or disables a rule (dom/switch only) — an effective-dated toggle. */
+export function setRuleEnabled(
+	id: string,
+	enabled: boolean,
+): Promise<VersionedRule> {
+	return apiFetch<VersionedRule>(
+		`/api/rules/${encodeURIComponent(id)}/enabled`,
+		{ method: "PUT", body: { enabled } },
+	);
+}
+
+/**
+ * Removes a rule (dom/switch only). A custom rule that never fired is purged; any
+ * pack rule or one that has fired collapses to a disable (ADR 0002). `purged`
+ * says which happened.
+ */
+export function deleteRule(id: string): Promise<{ purged: boolean }> {
+	return apiFetch<{ purged: boolean }>(`/api/rules/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
 }
 
 export function listCounters(): Promise<{ counters: Counter[] }> {
