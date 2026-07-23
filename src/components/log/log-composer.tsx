@@ -11,7 +11,7 @@ import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import {
 	type MetadataValue,
-	resolveSubjectRole,
+	subjectRoleOf,
 	type Visibility,
 } from "#/shared/roles.ts";
 
@@ -80,10 +80,7 @@ export function LogComposer({
 	 */
 	const awaitedKeys = useMemo(() => {
 		if (!type) return new Set<string>();
-		const subjectRole = resolveSubjectRole(
-			subject || undefined,
-			(id) => members.find((m) => m.member_id === id)?.role,
-		);
+		const subjectRole = subjectRoleOf(subject || undefined, members);
 		return new Set(awaitingKeysFor(type.awaiting, subjectRole));
 	}, [type, subject, members]);
 

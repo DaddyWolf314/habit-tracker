@@ -1,5 +1,6 @@
 import type { AnchorView } from "#/shared/anchors.ts";
 import { anchorLabel } from "#/templates/index.ts";
+import { elapsedDaysText } from "./formatting.ts";
 
 /**
  * Elapsed-since anchors panel (handoff §4.5, §9 today view; #78). Each anchor
@@ -21,7 +22,7 @@ export function AnchorsPanel({ anchors }: { anchors: AnchorView[] }) {
 							{anchorLabel(anchor.anchor)}
 						</div>
 						<div className="text-lg font-semibold">
-							{elapsedText(anchor.elapsed_days)}
+							{elapsedDaysText(anchor.elapsed_days)}
 						</div>
 					</li>
 				))}
@@ -41,10 +42,4 @@ function sortForDisplay(anchors: AnchorView[]): AnchorView[] {
 	const at = rest.findIndex((a) => a.anchor === "since_last_orgasm");
 	if (at === -1) return anchors;
 	return [...rest.slice(0, at + 1), dom, ...rest.slice(at + 1)];
-}
-
-function elapsedText(days: number | null): string {
-	if (days === null) return "—";
-	if (days === 0) return "today";
-	return days === 1 ? "1 day" : `${days} days`;
 }

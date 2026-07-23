@@ -15,11 +15,12 @@ import type { RoleMember } from "#/shared/identity.ts";
 import {
 	type MetadataValue,
 	type Role,
-	resolveSubjectRole,
+	subjectRoleOf,
 } from "#/shared/roles.ts";
 import type { VersionedRule } from "#/shared/rules.ts";
 import { anchorLabel } from "#/templates/index.ts";
 import {
+	elapsedDaysText,
 	formatElapsed,
 	formatMetaValue,
 	formatTime,
@@ -44,7 +45,7 @@ export function QueuePanel({
 	types,
 	rules,
 	members,
-	anchors = [],
+	anchors,
 	selfRole,
 	onAmended,
 }: {
@@ -52,7 +53,7 @@ export function QueuePanel({
 	types: EventType[];
 	rules: VersionedRule[];
 	members: RoleMember[];
-	anchors?: AnchorView[];
+	anchors: AnchorView[];
 	selfRole: Role | null;
 	onAmended: () => void;
 }) {
@@ -62,10 +63,7 @@ export function QueuePanel({
 		if (!type) return [];
 		// Subject-qualified awaiting entries (ADR 0003) ask for no ruling when the
 		// event's subject doesn't match — resolved through the same seam the DO uses.
-		const subjectRole = resolveSubjectRole(
-			event.subject,
-			(id) => members.find((m) => m.member_id === id)?.role,
-		);
+		const subjectRole = subjectRoleOf(event.subject, members);
 		const rulings = awaitedRulings(event, type, selfRole, subjectRole);
 		return rulings.length > 0 ? [{ event, type, rulings }] : [];
 	});
@@ -152,10 +150,7 @@ function QueueItem({
 	function previewEffects(): string[] {
 		// Same resolution seam the DO uses (ADR 0003), so the preview and the
 		// commit agree on which subject-qualified rules and awaiting entries apply.
-		const subjectRole = resolveSubjectRole(
-			event.subject,
-			(id) => members.find((m) => m.member_id === id)?.role,
-		);
+		const subjectRole = subjectRoleOf(event.subject, members);
 		const before = {
 			type: event.type,
 			metadata: event.composite_metadata,
@@ -240,11 +235,7 @@ function QueueItem({
 							className="rounded bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground"
 						>
 							{anchorLabel(anchor.anchor)}:{" "}
-							{anchor.elapsed_days === null
-								? "—"
-								: anchor.elapsed_days === 0
-									? "today"
-									: `${anchor.elapsed_days}d`}
+							{elapsedDaysText(anchor.elapsed_days, true)}
 						</span>
 					))}
 				</div>

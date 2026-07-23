@@ -62,6 +62,21 @@ export function resolveSubjectRole(
 }
 
 /**
+ * {@link resolveSubjectRole} over a member roster — the client-side shape of
+ * the same seam (components hold a `RoleMember[]`; the DO holds a lookup).
+ * Structural on the member shape so this stays dependency-free.
+ */
+export function subjectRoleOf(
+	subject: string | undefined,
+	members: ReadonlyArray<{ member_id: string; role: Role | null }>,
+): Role | undefined {
+	return resolveSubjectRole(
+		subject,
+		(id) => members.find((m) => m.member_id === id)?.role,
+	);
+}
+
+/**
  * Renders a metadata value for display: booleans read as yes/no, everything
  * else stringifies. The one place client and shared code agree how a stored
  * value reads, so the log chips, the queue, and the chain view can't diverge.

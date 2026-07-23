@@ -23,6 +23,18 @@ export function formatTime(ms: number): string {
 	});
 }
 
+/**
+ * The "days since" phrasing for an anchor (handoff §4.5, #78) — one formatter
+ * for every surface: null (never reset) reads "—", 0 reads "today". `compact`
+ * yields the chip form ("3d") the adjudication evidence uses.
+ */
+export function elapsedDaysText(days: number | null, compact = false): string {
+	if (days === null) return "—";
+	if (days === 0) return "today";
+	if (compact) return `${days}d`;
+	return days === 1 ? "1 day" : `${days} days`;
+}
+
 /** Coarse "waiting 9h" style elapsed label for pending events (handoff §8). */
 export function formatElapsed(sinceMs: number, nowMs: number): string {
 	const mins = Math.max(0, Math.floor((nowMs - sinceMs) / 60000));

@@ -149,7 +149,7 @@ const PACK_ANCHOR_LABELS: Record<string, string> = {
 
 /**
  * The display label for an anchor id — the one phrasing path every surface
- * (anchors panel, adjudication evidence, the rule editor's clock picker)
+ * (anchors panel, adjudication evidence, the rule editor's anchor picker)
  * shares. Unknown/custom anchors fall back to humanizing the id.
  */
 export function anchorLabel(id: string): string {
