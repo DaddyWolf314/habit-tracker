@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { anchorLabel } from "#/components/log/anchors-panel.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, awaitedRulings } from "#/shared/adjudication.ts";
+import type { AnchorView } from "#/shared/anchors.ts";
 import { reevaluate } from "#/shared/engine.ts";
 import {
 	awaitingKeysFor,
@@ -42,6 +44,7 @@ export function QueuePanel({
 	types,
 	rules,
 	members,
+	anchors = [],
 	selfRole,
 	onAmended,
 }: {
@@ -49,6 +52,7 @@ export function QueuePanel({
 	types: EventType[];
 	rules: Rule[];
 	members: RoleMember[];
+	anchors?: AnchorView[];
 	selfRole: Role | null;
 	onAmended: () => void;
 }) {
@@ -85,6 +89,7 @@ export function QueuePanel({
 						rules={rules}
 						rulings={rulings}
 						members={members}
+						anchors={anchors}
 						onAmended={onAmended}
 					/>
 				))}
@@ -99,6 +104,7 @@ function QueueItem({
 	rules,
 	rulings,
 	members,
+	anchors,
 	onAmended,
 }: {
 	event: EventView;
@@ -106,6 +112,7 @@ function QueueItem({
 	rules: Rule[];
 	rulings: AwaitedRuling[];
 	members: RoleMember[];
+	anchors: AnchorView[];
 	onAmended: () => void;
 }) {
 	const [values, setValues] = useState<Record<string, string>>({});
@@ -184,6 +191,21 @@ function QueueItem({
 	const context = Object.entries(event.composite_metadata);
 	const effects = stage === "confirm" ? previewEffects() : [];
 
+	// Adjudication evidence (#78, ADR 0003): the anchors this event type's rules
+	// can reset are the clocks the ruling is judged against — for an orgasm,
+	// "since sub's last" and "since dom's last" side by side, so "was this
+	// permitted" is ruled with the protocol state on screen. Derived from the
+	// rule set, not hard-coded, so custom types get the same evidence for free.
+	const evidence = (() => {
+		const relevant = new Set(
+			rules
+				.filter((r) => r.condition.type === event.type)
+				.flatMap((r) => r.effects)
+				.flatMap((e) => (e.verb === "reset_anchor" ? [e.anchor] : [])),
+		);
+		return anchors.filter((a) => relevant.has(a.anchor));
+	})();
+
 	return (
 		<li
 			className={`rounded-md border bg-background p-3 transition-opacity duration-200 ${
@@ -198,9 +220,28 @@ function QueueItem({
 				</span>
 			</div>
 			<div className="text-xs text-muted-foreground">
-				{memberLabel(event.actor, members)}
-				{event.subject && <> · about {memberLabel(event.subject, members)}</>}
+				logged by {memberLabel(event.actor, members)}
+				{event.subject && event.subject !== event.actor && (
+					<> · about {memberLabel(event.subject, members)}</>
+				)}
 			</div>
+			{evidence.length > 0 && (
+				<div className="mt-1 flex flex-wrap gap-1">
+					{evidence.map((anchor) => (
+						<span
+							key={anchor.anchor}
+							className="rounded bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground"
+						>
+							{anchorLabel(anchor.anchor)}:{" "}
+							{anchor.elapsed_days === null
+								? "—"
+								: anchor.elapsed_days === 0
+									? "today"
+									: `${anchor.elapsed_days}d`}
+						</span>
+					))}
+				</div>
+			)}
 			{context.length > 0 && (
 				<div className="mt-1 flex flex-wrap gap-1">
 					{context.map(([key, value]) => (

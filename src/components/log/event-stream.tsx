@@ -141,8 +141,12 @@ function EventRow({
 						)}
 					</div>
 					<div className="text-xs text-muted-foreground">
-						{memberLabel(event.actor, members)}
-						{event.subject && (
+						{/* Authorship and aboutness are separate axes (ADR 0003): show the
+						    subject only when it differs from who typed it, so self-subject
+						    events stay uncluttered while "logged by the sub, about the dom"
+						    never blurs. */}
+						logged by {memberLabel(event.actor, members)}
+						{event.subject && event.subject !== event.actor && (
 							<> · about {memberLabel(event.subject, members)}</>
 						)}
 					</div>

@@ -1,17 +1,20 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { AnchorsPanel } from "#/components/log/anchors-panel.tsx";
 import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
 import { QueuePanel } from "#/components/log/queue-panel.tsx";
 import {
 	getRoles,
+	listAnchors,
 	listCounters,
 	listEvents,
 	listEventTypes,
 	listRules,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
+import type { AnchorView } from "#/shared/anchors.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
@@ -29,32 +32,37 @@ export function LogView() {
 	const [types, setTypes] = useState<EventType[]>([]);
 	const [rules, setRules] = useState<Rule[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
+	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const refreshLog = useCallback(async () => {
-		const [{ events }, { counters }] = await Promise.all([
+		const [{ events }, { counters }, { anchors }] = await Promise.all([
 			listEvents(),
 			listCounters(),
+			listAnchors(),
 		]);
 		setEvents(events);
 		setCounters(counters);
+		setAnchors(anchors);
 	}, []);
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [typeRes, ruleRes, counterRes, eventRes, roleRes] =
+			const [typeRes, ruleRes, counterRes, anchorRes, eventRes, roleRes] =
 				await Promise.all([
 					listEventTypes(),
 					listRules(),
 					listCounters(),
+					listAnchors(),
 					listEvents(),
 					getRoles(),
 				]);
 			setTypes(typeRes.types);
 			setRules(ruleRes.rules);
 			setCounters(counterRes.counters);
+			setAnchors(anchorRes.anchors);
 			setEvents(eventRes.events);
 			setMembers(roleRes.members);
 		} catch (err) {
@@ -101,9 +109,11 @@ export function LogView() {
 				types={types}
 				rules={rules}
 				members={members}
+				anchors={anchors}
 				selfRole={selfRole}
 				onAmended={refreshLog}
 			/>
+			<AnchorsPanel anchors={anchors} />
 			<CountersPanel counters={counters} onChange={refreshLog} />
 			<LogComposer types={types} members={members} onLogged={refreshLog} />
 			<EventStream
