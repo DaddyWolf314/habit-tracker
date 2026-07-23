@@ -21,7 +21,11 @@ import {
 	type RuleChangeNotice,
 	ruleChangeNotice,
 } from "#/shared/notifications.ts";
-import { describeRule, isPickerEditable } from "#/shared/rule-describe.ts";
+import {
+	describeCondition,
+	describeRule,
+	isPickerEditable,
+} from "#/shared/rule-describe.ts";
 import {
 	currentRule,
 	type Effect,
@@ -387,6 +391,12 @@ function RuleEditor({
 	const seed = existing ? latestVersion(existing) : null;
 	const [name, setName] = useState("");
 	const [typeId, setTypeId] = useState(seed?.condition.type ?? "");
+	// Subject-role qualifier (ADR 0003): "" means unqualified — the rule matches
+	// regardless of who the event is about. Kept across type changes (the clause
+	// is type-independent; every event may carry a subject).
+	const [subjectRole, setSubjectRole] = useState<string>(
+		seed?.condition.subject_role ?? "",
+	);
 	const [conditions, setConditions] = useState<ConditionDraft[]>(
 		seed
 			? Object.entries(seed.condition.metadata).map(([key, value]) => ({
@@ -403,6 +413,30 @@ function RuleEditor({
 
 	const type = types.find((t) => t.id === typeId);
 	const metaKeys = type ? Object.keys(type.metadata) : [];
+
+	// Live preview through the one shared phrasing path (rule-describe), so what
+	// the author reads here is exactly what the rules screen and the trace chain
+	// will say — including the subject clause ("… about the dom", ADR 0003).
+	const previewWhen = useMemo(() => {
+		if (!type) return null;
+		const metadata: Record<string, string | number | boolean> = {};
+		for (const c of conditions) {
+			const field = c.key ? type.metadata[c.key] : undefined;
+			if (field && c.value !== "") {
+				metadata[c.key] = coerceValue(field.kind, c.value);
+			}
+		}
+		return describeCondition(
+			{
+				type: type.id,
+				...(subjectRole
+					? { subject_role: subjectRole as "dom" | "sub" | "switch" }
+					: {}),
+				metadata,
+			},
+			type,
+		);
+	}, [type, subjectRole, conditions]);
 
 	const build = (): { id: string; def: RuleDefinition } | null => {
 		if (!type) {
@@ -430,7 +464,13 @@ function RuleEditor({
 			return null;
 		}
 		const def: RuleDefinition = {
-			condition: { type: typeId, metadata },
+			condition: {
+				type: typeId,
+				...(subjectRole
+					? { subject_role: subjectRole as "dom" | "sub" | "switch" }
+					: {}),
+				metadata,
+			},
 			effects: built,
 			enabled: seed?.enabled ?? true,
 		};
@@ -497,6 +537,25 @@ function RuleEditor({
 					))}
 				</select>
 			</div>
+
+			{type && (
+				<div className="mt-3">
+					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
+					<label className="text-xs text-muted-foreground">
+						About… (optional — whose event this rule watches)
+					</label>
+					<select
+						className={`${fieldClass} mt-1`}
+						value={subjectRole}
+						onChange={(e) => setSubjectRole(e.target.value)}
+					>
+						<option value="">anyone</option>
+						<option value="dom">the dom</option>
+						<option value="sub">the sub</option>
+						<option value="switch">a switch</option>
+					</select>
+				</div>
+			)}
 
 			{type && (
 				<div className="mt-3 space-y-2">
@@ -612,6 +671,12 @@ function RuleEditor({
 					Add effect
 				</Button>
 			</div>
+
+			{previewWhen && (
+				<p className="mt-4 rounded-md bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">
+					{previewWhen}
+				</p>
+			)}
 
 			{error && <p className="mt-3 text-sm text-destructive">{error}</p>}
 
