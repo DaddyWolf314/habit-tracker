@@ -1,5 +1,5 @@
 {
-	"version": 2,
+	"version": 3,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -109,7 +109,7 @@
 					"set_permission": ["dom", "sub", "switch"]
 				}
 			},
-			"awaiting": ["permitted"],
+			"awaiting": [{ "key": "permitted", "subject_role": "sub" }],
 			"note_prompt": "Anything you want to say about this?"
 		},
 		{

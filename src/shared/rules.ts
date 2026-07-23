@@ -1,15 +1,24 @@
 import { z } from "zod";
-import { metadataValueSchema } from "./roles.ts";
+import { metadataValueSchema, roleSchema } from "./roles.ts";
 
 /**
  * Rules (handoff §4.3): `when event.type = X [AND metadata equality] → effects`.
  *
- * The condition language is deliberately dumb — equality on `type` and metadata
- * keys only. Absent key ⇒ conditional rules silently skip (load-bearing for
- * adjudication). No expressions, thresholds, or state queries in v1.
+ * The condition language is deliberately dumb — equality on `type`, metadata
+ * keys, and the subject's role only. Absent key ⇒ conditional rules silently
+ * skip (load-bearing for adjudication). No expressions, thresholds, or state
+ * queries in v1.
  */
 export const ruleConditionSchema = z.object({
 	type: z.string(),
+	/**
+	 * Subject-role qualifier (ADR 0003): the rule matches only when the event's
+	 * subject resolves to this role. Role form only — pack-portable, resolved
+	 * against the couple's member roles at evaluation time; the engine never
+	 * sees member ids. Absent ⇒ matches regardless of subject. Still equality
+	 * on the event itself, never a state query.
+	 */
+	subject_role: roleSchema.optional(),
 	/** Equality conditions on composite metadata. Empty ⇒ matches on type alone. */
 	metadata: z.record(z.string(), metadataValueSchema).default({}),
 });

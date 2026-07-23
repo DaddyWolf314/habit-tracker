@@ -46,6 +46,37 @@ export const metadataValueSchema = z.union([
 export type MetadataValue = z.infer<typeof metadataValueSchema>;
 
 /**
+ * Resolves an event's **subject** (a member id — who the event is about) to
+ * that member's role, for subject-role qualifiers (ADR 0003). The one shared
+ * resolution seam: the DO and the client preview both call this, and the
+ * engine itself stays member-id-free — it only ever sees the resolved role.
+ * Returns undefined when the event has no subject or the member's role is
+ * unconfirmed; a qualified rule then never matches (dormant, per ADR 0003).
+ */
+export function resolveSubjectRole(
+	subject: string | undefined,
+	roleOf: (memberId: string) => Role | null | undefined,
+): Role | undefined {
+	if (!subject) return undefined;
+	return roleOf(subject) ?? undefined;
+}
+
+/**
+ * {@link resolveSubjectRole} over a member roster — the client-side shape of
+ * the same seam (components hold a `RoleMember[]`; the DO holds a lookup).
+ * Structural on the member shape so this stays dependency-free.
+ */
+export function subjectRoleOf(
+	subject: string | undefined,
+	members: ReadonlyArray<{ member_id: string; role: Role | null }>,
+): Role | undefined {
+	return resolveSubjectRole(
+		subject,
+		(id) => members.find((m) => m.member_id === id)?.role,
+	);
+}
+
+/**
  * Renders a metadata value for display: booleans read as yes/no, everything
  * else stringifies. The one place client and shared code agree how a stored
  * value reads, so the log chips, the queue, and the chain view can't diverge.

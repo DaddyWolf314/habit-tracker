@@ -85,6 +85,21 @@ in and should not.
   schema).
 - **Starter Seven** — the seven default event types shipped in the template pack;
   every default projection must derive from only these.
+- **Subject** — who an event is *about*, distinct from **actor** (who logged it).
+  An envelope field beside `actor`/`occurred_at`, not metadata: universal,
+  fixed at logging, never amended. Either member may be the subject of any
+  loggable type — authorship and aboutness are independent axes (the sub can
+  log the dom's orgasm). _Avoid_: "target", "about whom" phrasings that drift;
+  conflating subject with actor.
+- **Subject-role qualifier** — a condition or schema clause that matches the
+  *role* of an event's subject (`subject_role = sub`), resolved against the
+  couple's member roles at evaluation time. The pack-portable way to write
+  subject-sensitive rules and `awaiting` entries; member-id matching is never
+  used in shipped definitions. In a switch/switch couple a `dom`/`sub`
+  qualifier matches nothing — such rules go dormant by design. Naming
+  convention: an *unqualified* projection name (`orgasms_lifetime`,
+  `since_last_orgasm`) means the **sub's**; dom-side projections carry an
+  explicit `dom_` marker (`since_dom_last_orgasm`).
 - **Metadata** — an event's typed key/values (`boolean | enum | number | ref`
   only; freeform prose lives in `note`). _Avoid_: "fields", "attributes", "props".
 - **Valence** — `positive | negative | neutral` on a type or counter; drives

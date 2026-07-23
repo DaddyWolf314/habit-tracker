@@ -2,10 +2,18 @@ import { useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { logEvent } from "#/lib/api.ts";
-import type { EventType, MetadataField } from "#/shared/event-types.ts";
+import {
+	awaitingKeysFor,
+	type EventType,
+	type MetadataField,
+} from "#/shared/event-types.ts";
 import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { MetadataValue, Visibility } from "#/shared/roles.ts";
+import {
+	type MetadataValue,
+	subjectRoleOf,
+	type Visibility,
+} from "#/shared/roles.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
@@ -65,12 +73,23 @@ export function LogComposer({
 		return out;
 	}
 
+	/**
+	 * The awaited keys in force for the currently-chosen subject (ADR 0003):
+	 * a subject-qualified entry defers its key only when the subject matches, so
+	 * the "leave blank to defer" hint and the required check track the picker.
+	 */
+	const awaitedKeys = useMemo(() => {
+		if (!type) return new Set<string>();
+		const subjectRole = subjectRoleOf(subject || undefined, members);
+		return new Set(awaitingKeysFor(type.awaiting, subjectRole));
+	}, [type, subject, members]);
+
 	/** Required fields (non-`awaiting`) the user hasn't filled in yet. */
 	function missingRequired(t: EventType): string[] {
 		const missing: string[] = [];
 		if (t.subject_required && !subject) missing.push("Subject");
 		for (const [key, field] of Object.entries(t.metadata)) {
-			if (field.required && !t.awaiting.includes(key) && !(meta[key] ?? "")) {
+			if (field.required && !awaitedKeys.has(key) && !(meta[key] ?? "")) {
 				missing.push(field.label);
 			}
 		}
@@ -152,7 +171,7 @@ export function LogComposer({
 						<MetadataInput
 							key={key}
 							field={field}
-							awaiting={type.awaiting.includes(key)}
+							awaiting={awaitedKeys.has(key)}
 							value={meta[key] ?? ""}
 							onChange={(v) => setMeta((m) => ({ ...m, [key]: v }))}
 						/>

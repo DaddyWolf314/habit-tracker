@@ -3,13 +3,24 @@ import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, awaitedRulings } from "#/shared/adjudication.ts";
-import { reevaluate } from "#/shared/engine.ts";
-import type { EventType, MetadataField } from "#/shared/event-types.ts";
+import type { AnchorView } from "#/shared/anchors.ts";
+import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
+import {
+	awaitingKeysFor,
+	type EventType,
+	type MetadataField,
+} from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { MetadataValue, Role } from "#/shared/roles.ts";
-import type { Rule } from "#/shared/rules.ts";
 import {
+	type MetadataValue,
+	type Role,
+	subjectRoleOf,
+} from "#/shared/roles.ts";
+import type { VersionedRule } from "#/shared/rules.ts";
+import { anchorLabel } from "#/templates/index.ts";
+import {
+	elapsedDaysText,
 	formatElapsed,
 	formatMetaValue,
 	formatTime,
@@ -34,13 +45,15 @@ export function QueuePanel({
 	types,
 	rules,
 	members,
+	anchors,
 	selfRole,
 	onAmended,
 }: {
 	events: EventView[];
 	types: EventType[];
-	rules: Rule[];
+	rules: VersionedRule[];
 	members: RoleMember[];
+	anchors: AnchorView[];
 	selfRole: Role | null;
 	onAmended: () => void;
 }) {
@@ -48,7 +61,10 @@ export function QueuePanel({
 	const queue = events.flatMap((event) => {
 		const type = typeMap.get(event.type);
 		if (!type) return [];
-		const rulings = awaitedRulings(event, type, selfRole);
+		// Subject-qualified awaiting entries (ADR 0003) ask for no ruling when the
+		// event's subject doesn't match — resolved through the same seam the DO uses.
+		const subjectRole = subjectRoleOf(event.subject, members);
+		const rulings = awaitedRulings(event, type, selfRole, subjectRole);
 		return rulings.length > 0 ? [{ event, type, rulings }] : [];
 	});
 
@@ -71,6 +87,7 @@ export function QueuePanel({
 						rules={rules}
 						rulings={rulings}
 						members={members}
+						anchors={anchors}
 						onAmended={onAmended}
 					/>
 				))}
@@ -85,15 +102,22 @@ function QueueItem({
 	rules,
 	rulings,
 	members,
+	anchors,
 	onAmended,
 }: {
 	event: EventView;
 	type: EventType;
-	rules: Rule[];
+	rules: VersionedRule[];
 	rulings: AwaitedRuling[];
 	members: RoleMember[];
+	anchors: AnchorView[];
 	onAmended: () => void;
 }) {
+	// Effective-dating keys off the target event's log-time, never the viewing
+	// time (ADR 0002) — the same resolution the DO's reevaluateOnAmendment
+	// applies on commit, so the preview and the evidence can't cite a rule
+	// version that won't actually govern the ruling.
+	const rulesInForce = rulesEffectiveAt(rules, event.logged_at);
 	const [values, setValues] = useState<Record<string, string>>({});
 	const [note, setNote] = useState("");
 	const [stage, setStage] = useState<"edit" | "confirm">("edit");
@@ -124,17 +148,21 @@ function QueueItem({
 	 * only; no effect-waiving (a scoring-layer concern).
 	 */
 	function previewEffects(): string[] {
+		// Same resolution seam the DO uses (ADR 0003), so the preview and the
+		// commit agree on which subject-qualified rules and awaiting entries apply.
+		const subjectRole = subjectRoleOf(event.subject, members);
 		const before = {
 			type: event.type,
 			metadata: event.composite_metadata,
 			occurred_at: event.occurred_at,
-			awaiting: type.awaiting,
+			subject_role: subjectRole,
+			awaiting: awaitingKeysFor(type.awaiting, subjectRole),
 		};
 		const after = {
 			...before,
 			metadata: { ...event.composite_metadata, ...patch },
 		};
-		return reevaluate(rules, before, after).flatMap((fired) =>
+		return reevaluate(rulesInForce, before, after).flatMap((fired) =>
 			fired.ops.map(summarizeEffectOp),
 		);
 	}
@@ -163,6 +191,23 @@ function QueueItem({
 	const context = Object.entries(event.composite_metadata);
 	const effects = stage === "confirm" ? previewEffects() : [];
 
+	// Adjudication evidence (#78, ADR 0003): the anchors this event type's rules
+	// can reset are the anchors the ruling is judged against — for an orgasm,
+	// "since sub's last" and "since dom's last" side by side, so "was this
+	// permitted" is ruled with the protocol state on screen. Derived from the
+	// rule versions in force at the event's log-time (disabled ones excluded —
+	// they can't fire), so custom types get the same evidence for free and a
+	// since-changed rule can't inject stale chips.
+	const evidence = (() => {
+		const relevant = new Set(
+			rulesInForce
+				.filter((r) => r.enabled !== false && r.condition.type === event.type)
+				.flatMap((r) => r.effects)
+				.flatMap((e) => (e.verb === "reset_anchor" ? [e.anchor] : [])),
+		);
+		return anchors.filter((a) => relevant.has(a.anchor));
+	})();
+
 	return (
 		<li
 			className={`rounded-md border bg-background p-3 transition-opacity duration-200 ${
@@ -177,9 +222,24 @@ function QueueItem({
 				</span>
 			</div>
 			<div className="text-xs text-muted-foreground">
-				{memberLabel(event.actor, members)}
-				{event.subject && <> · about {memberLabel(event.subject, members)}</>}
+				logged by {memberLabel(event.actor, members)}
+				{event.subject && event.subject !== event.actor && (
+					<> · about {memberLabel(event.subject, members)}</>
+				)}
 			</div>
+			{evidence.length > 0 && (
+				<div className="mt-1 flex flex-wrap gap-1">
+					{evidence.map((anchor) => (
+						<span
+							key={anchor.anchor}
+							className="rounded bg-secondary px-1.5 py-0.5 text-xs text-secondary-foreground"
+						>
+							{anchorLabel(anchor.anchor)}:{" "}
+							{elapsedDaysText(anchor.elapsed_days, true)}
+						</span>
+					))}
+				</div>
+			)}
 			{context.length > 0 && (
 				<div className="mt-1 flex flex-wrap gap-1">
 					{context.map(([key, value]) => (

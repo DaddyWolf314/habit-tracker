@@ -128,7 +128,33 @@ export const DEFAULT_ANCHORS: readonly string[] = [
 	"since_last_infraction",
 	"since_last_orgasm",
 	"since_last_check_in",
+	// Dom-side visibility (ADR 0003): reset by R21 on a dom-subject orgasm. The
+	// naming convention is glossary law — an unqualified name means the sub's,
+	// the dom_ marker means the dom's.
+	"since_dom_last_orgasm",
 ];
+
+/**
+ * Display labels for the pack anchors (#76, ADR 0003) — pack-owned, like
+ * counter names in `counters.json`, so they ship with a pack bump rather than
+ * living in any one screen. Follows the glossary naming convention (an
+ * unqualified name means the sub's; the dom_ marker the dom's).
+ */
+const PACK_ANCHOR_LABELS: Record<string, string> = {
+	since_last_infraction: "since last infraction",
+	since_last_orgasm: "since sub's last orgasm",
+	since_last_check_in: "since last check-in",
+	since_dom_last_orgasm: "since dom's last orgasm",
+};
+
+/**
+ * The display label for an anchor id — the one phrasing path every surface
+ * (anchors panel, adjudication evidence, the rule editor's anchor picker)
+ * shares. Unknown/custom anchors fall back to humanizing the id.
+ */
+export function anchorLabel(id: string): string {
+	return PACK_ANCHOR_LABELS[id] ?? id.replace(/_/g, " ");
+}
 
 /** The default timers the pack opens/closes (§7). The state machine is Phase 4. */
 export const DEFAULT_TIMERS: readonly string[] = [

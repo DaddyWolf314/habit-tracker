@@ -55,6 +55,35 @@ describe("rule creation-time validation (handoff §4.3)", () => {
 		expect(result.error).toContain("wombat");
 	});
 
+	it("accepts a subject-role qualifier on any type (ADR 0003)", () => {
+		// Every event may carry a subject regardless of `subject_required`, and a
+		// qualifier matching no member (dom in a switch/switch couple) is dormant
+		// by design — roles are couple state, not schema — so this never rejects.
+		for (const subjectRole of ["dom", "sub", "switch"] as const) {
+			const r = rule({
+				id: "X",
+				condition: {
+					type: "check_in",
+					subject_role: subjectRole,
+					metadata: {},
+				},
+			});
+			expect(validateRule(r, ctx)).toEqual({ ok: true });
+		}
+	});
+
+	it("rejects a subject clause outside the role enum at the schema layer", () => {
+		// Parallel to the fractional-`by` case: createRule parses before validating,
+		// so a made-up role never reaches validateRule.
+		const parsed = ruleSchema.safeParse({
+			id: "X",
+			condition: { type: "orgasm", subject_role: "butler", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "demerits", by: 1 }],
+			enabled: true,
+		});
+		expect(parsed.success).toBe(false);
+	});
+
 	it("rejects a condition value outside an enum's options", () => {
 		const r = rule({
 			id: "X",

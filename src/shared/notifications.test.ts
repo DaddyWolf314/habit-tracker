@@ -165,3 +165,43 @@ describe("no hidden journal entry can leak into the badge (#60, ADR 0001)", () =
 		expect(unreadCount(signals({ pending_events: 2 }))).toBe(2);
 	});
 });
+
+describe("a never-pending dom-subject event can't inflate the badge (#75, ADR 0003)", () => {
+	// `pending_events` is the badge's only per-event signal, and the DO fills it
+	// by counting the `pending` views of the log. An awaiting entry qualified
+	// `sub` gates only a sub-subject event, so a dom-subject event with the key
+	// unset is never pending — no queue card, and nothing for the badge to count.
+	const type = {
+		awaiting: [{ key: "permitted", subject_role: "sub" as const }],
+	};
+	const orgasm = (subject: string) => ({
+		id: "o1",
+		type: "orgasm",
+		actor: "dom-1",
+		subject,
+		occurred_at: 1,
+		logged_at: 1,
+		metadata: {},
+		visibility: "shared" as const,
+	});
+
+	it("a dom-subject event awaited only for the sub is never pending", () => {
+		const view = deriveEventView(orgasm("dom-1"), [], type, "dom");
+		expect(view.pending).toBe(false);
+		expect(
+			unreadCount(
+				signals({ pending_events: [view].filter((v) => v.pending).length }),
+			),
+		).toBe(0);
+	});
+
+	it("the same event about the sub stays pending, and counts", () => {
+		const view = deriveEventView(orgasm("sub-1"), [], type, "sub");
+		expect(view.pending).toBe(true);
+		expect(
+			unreadCount(
+				signals({ pending_events: [view].filter((v) => v.pending).length }),
+			),
+		).toBe(1);
+	});
+});

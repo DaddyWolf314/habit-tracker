@@ -1,5 +1,5 @@
 {
-	"version": 3,
+	"version": 4,
 	"rules": [
 		{
 			"id": "R1",
@@ -70,7 +70,7 @@
 		},
 		{
 			"id": "R10",
-			"condition": { "type": "orgasm", "metadata": {} },
+			"condition": { "type": "orgasm", "subject_role": "sub", "metadata": {} },
 			"effects": [
 				{ "verb": "increment_counter", "counter": "orgasms_lifetime" }
 			]
@@ -79,6 +79,7 @@
 			"id": "R11",
 			"condition": {
 				"type": "orgasm",
+				"subject_role": "sub",
 				"metadata": { "permitted": true, "outcome": "full" }
 			},
 			"effects": [
@@ -88,7 +89,11 @@
 		},
 		{
 			"id": "R12",
-			"condition": { "type": "orgasm", "metadata": { "permitted": false } },
+			"condition": {
+				"type": "orgasm",
+				"subject_role": "sub",
+				"metadata": { "permitted": false }
+			},
 			"effects": [
 				{ "verb": "increment_counter", "counter": "orgasms_unpermitted" },
 				{ "verb": "reset_anchor", "anchor": "since_last_orgasm" },
@@ -98,12 +103,20 @@
 		},
 		{
 			"id": "R13",
-			"condition": { "type": "orgasm", "metadata": { "outcome": "denied" } },
+			"condition": {
+				"type": "orgasm",
+				"subject_role": "sub",
+				"metadata": { "outcome": "denied" }
+			},
 			"effects": [{ "verb": "increment_counter", "counter": "orgasms_denied" }]
 		},
 		{
 			"id": "R14",
-			"condition": { "type": "orgasm", "metadata": { "permitted": false } },
+			"condition": {
+				"type": "orgasm",
+				"subject_role": "sub",
+				"metadata": { "permitted": false }
+			},
 			"effects": [
 				{ "verb": "close_timer", "timer": "denial_period", "status": "failed" }
 			]
@@ -172,6 +185,14 @@
 					"match_on": { "prompt_id": "prompt_id" },
 					"status": "completed"
 				}
+			]
+		},
+		{
+			"id": "R21",
+			"condition": { "type": "orgasm", "subject_role": "dom", "metadata": {} },
+			"effects": [
+				{ "verb": "reset_anchor", "anchor": "since_dom_last_orgasm" },
+				{ "verb": "increment_counter", "counter": "dom_orgasms_lifetime" }
 			]
 		}
 	]

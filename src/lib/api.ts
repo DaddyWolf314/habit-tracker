@@ -1,4 +1,5 @@
 import type { AmendmentInput } from "#/shared/amendments.ts";
+import type { AnchorView } from "#/shared/anchors.ts";
 import type { Counter, CreateCounterBody } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView, LogEventInput } from "#/shared/events.ts";
@@ -346,6 +347,11 @@ export function deleteRule(id: string): Promise<{ purged: boolean }> {
 
 export function listCounters(): Promise<{ counters: Counter[] }> {
 	return apiFetch<{ counters: Counter[] }>("/api/counters");
+}
+
+/** The elapsed-since anchors as live views ("days since …", handoff §4.5). */
+export function listAnchors(): Promise<{ anchors: AnchorView[] }> {
+	return apiFetch<{ anchors: AnchorView[] }>("/api/anchors");
 }
 
 export function createCounter(input: CreateCounterBody): Promise<Counter> {

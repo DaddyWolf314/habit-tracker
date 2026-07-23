@@ -218,6 +218,13 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((counters) => json({ counters })),
 			);
 		}
+		if (path === "/api/anchors" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listAnchors(auth.identityHash)
+					.then((anchors) => json({ anchors })),
+			);
+		}
 		if (path === "/api/counters" && method === "POST") {
 			return await withAuth(request, env, async ({ auth, stub }) => {
 				const parsed = await readJson(request, createCounterInputSchema);
