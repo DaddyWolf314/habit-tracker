@@ -181,6 +181,12 @@ export const DO_MIGRATIONS: string[][] = [
 			SELECT id, 0, definition, enabled FROM rules`,
 		`UPDATE rules SET origin = CASE WHEN id GLOB 'R[0-9]*' THEN 'pack' ELSE 'custom' END`,
 	],
+	// v9 — #64 user story 33: an adopted rule whose shipped default has moved on.
+	// Pack reconciliation sets this when a bump finds a new default for a rule the
+	// couple has adopted (and so will never overwrite); the rules screen surfaces
+	// it as a "new default" notice, and the flag clears when the couple next edits
+	// the rule — they've seen the new default and made their choice.
+	[`ALTER TABLE rules ADD COLUMN upstream_changed INTEGER NOT NULL DEFAULT 0`],
 ];
 
 const VERSION_KEY = "schema_version";

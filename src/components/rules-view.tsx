@@ -2,11 +2,13 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import {
+	ackRuleChanges,
 	createRule,
 	deleteRule,
 	getRoles,
 	listCounters,
 	listEventTypes,
+	listRuleChanges,
 	listRuleHistory,
 	setRuleEnabled,
 	updateRule,
@@ -15,36 +17,23 @@ import { hasIdentity } from "#/lib/identity.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import {
+	type RuleChangeNotice,
+	ruleChangeNotice,
+} from "#/shared/notifications.ts";
 import { describeRule, isPickerEditable } from "#/shared/rule-describe.ts";
-import type {
-	Effect,
-	Rule,
-	RuleDefinition,
-	RuleVersion,
-	VersionedRule,
+import {
+	currentRule,
+	type Effect,
+	latestVersion,
+	type RuleDefinition,
+	ruleFromVersion,
+	type VersionedRule,
 } from "#/shared/rules.ts";
 import { DEFAULT_ANCHORS } from "#/templates/index.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
-
-/** The current (latest) version of a stored rule. */
-function latestVersion(rule: VersionedRule): RuleVersion {
-	return rule.versions.reduce((a, b) =>
-		b.effective_from >= a.effective_from ? b : a,
-	);
-}
-
-/** Flattens a stored rule's current version into the shape the formatter reads. */
-function toFlat(rule: VersionedRule): Rule {
-	const v = latestVersion(rule);
-	return {
-		id: rule.id,
-		condition: v.condition,
-		effects: v.effects,
-		enabled: v.enabled,
-	};
-}
 
 /**
  * The Rules screen (#64, ADR 0002). Every member can view the automation that
@@ -60,23 +49,36 @@ export function RulesView() {
 	const [types, setTypes] = useState<EventType[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
+	const [changes, setChanges] = useState<RuleChangeNotice[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState<VersionedRule | "new" | null>(null);
 
 	const load = useCallback(async () => {
 		try {
-			const [ruleRes, typeRes, counterRes, roleRes] = await Promise.all([
-				listRuleHistory(),
-				listEventTypes(),
-				listCounters(),
-				getRoles(),
-			]);
+			const [ruleRes, typeRes, counterRes, roleRes, changeRes] =
+				await Promise.all([
+					listRuleHistory(),
+					listEventTypes(),
+					listCounters(),
+					getRoles(),
+					listRuleChanges(),
+				]);
 			setRules(ruleRes.rules);
 			setTypes(typeRes.types);
 			setCounters(counterRes.counters);
 			setMembers(roleRes.members);
+			setChanges(changeRes.changes);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the rules.");
+		}
+	}, []);
+
+	const acknowledge = useCallback(async () => {
+		try {
+			await ackRuleChanges();
+			setChanges([]);
+		} catch {
+			// A failed ack just leaves the notices up for next time.
 		}
 	}, []);
 
@@ -127,6 +129,22 @@ export function RulesView() {
 			</p>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
+
+			{changes.length > 0 && (
+				<section className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
+					<p className="font-medium">Since you last looked</p>
+					<ul className="space-y-1 text-muted-foreground">
+						{changes.map((change) => (
+							<li key={`${change.at}-${change.kind}-${change.rule_id}`}>
+								{ruleChangeNotice(change)}
+							</li>
+						))}
+					</ul>
+					<Button size="xs" variant="outline" onClick={acknowledge}>
+						Got it
+					</Button>
+				</section>
+			)}
 
 			{canAuthor && editing === null && (
 				<Button onClick={() => setEditing("new")}>New rule</Button>
@@ -188,7 +206,7 @@ function RuleCard({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [showHistory, setShowHistory] = useState(false);
-	const flat = toFlat(rule);
+	const flat = currentRule(rule);
 	const described = describeRule(flat, type);
 	const editable = isPickerEditable(flat);
 
@@ -221,6 +239,7 @@ function RuleCard({
 						{rule.origin === "pack" ? "default" : "custom"}
 					</Badge>
 					{rule.adopted && <Badge tone="accent">edited</Badge>}
+					{rule.upstream_changed && <Badge tone="accent">new default</Badge>}
 					{!flat.enabled && <Badge tone="muted">off</Badge>}
 				</div>
 			</div>
@@ -273,20 +292,23 @@ function RuleCard({
 				<ol className="mt-3 space-y-1 border-t pt-3 text-xs text-muted-foreground">
 					{[...rule.versions]
 						.sort((a, b) => a.effective_from - b.effective_from)
-						.map((v) => (
-							<li key={v.effective_from}>
-								<span className="font-mono">
-									{v.effective_from === 0
-										? "installed"
-										: new Date(v.effective_from).toLocaleString()}
-								</span>
-								{" — "}
-								{v.enabled ? "" : "(off) "}
-								{describeRule({ id: rule.id, ...v } as Rule, type).effects.join(
-									", ",
-								)}
-							</li>
-						))}
+						.map((v) => {
+							// The full description per version — condition and effects — so a
+							// condition-only edit is visible in the history (#64, story 8).
+							const d = describeRule(ruleFromVersion(rule.id, v), type);
+							return (
+								<li key={v.effective_from}>
+									<span className="font-mono">
+										{v.effective_from === 0
+											? "installed"
+											: new Date(v.effective_from).toLocaleString()}
+									</span>
+									{" — "}
+									{v.enabled ? "" : "(off) "}
+									{d.when} → {d.effects.join(", ")}
+								</li>
+							);
+						})}
 				</ol>
 			)}
 		</section>
@@ -429,7 +451,7 @@ function RuleEditor({
 			if (existing) {
 				await updateRule(existing.id, result.def);
 			} else {
-				await createRule({ id: result.id, ...result.def } as Rule);
+				await createRule({ id: result.id, ...result.def });
 			}
 			onSaved();
 		} catch (err) {

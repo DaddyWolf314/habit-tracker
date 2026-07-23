@@ -1,24 +1,26 @@
+import { resolveEffect } from "./engine.ts";
 import type { EventType } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
 import type { Effect, Rule, RuleCondition } from "./rules.ts";
+import { humanize, summarizeEffectOp } from "./trace.ts";
 
 /**
  * Plain-language rendering of a rule (#64, user stories 3–5). Turns the dumb
  * condition→effect shape into human sentences so a member never has to read code
  * or JSON to understand the automation that binds them: "when a ritual is logged
- * late → +1 to demerits". Pure and dependency-free — the rules screen renders it,
- * and it is unit-tested here rather than through the UI.
+ * late → +1 demerits". Pure — the rules screen renders it, and it is unit-tested
+ * here rather than through the UI.
  *
- * Labels come from the couple's event-type schema when available (so an enum
- * value shows its human option and a metadata key its field label); everything
- * else falls back to humanizing the id (underscores → spaces), which reads fine
- * for the counter/anchor/timer ids the pack uses.
+ * Effect phrasing routes through {@link summarizeEffectOp} — the same shared
+ * vocabulary the confirm sheet ("what will fire") and the trace chain view ("what
+ * fired") read — so the rules screen never describes an effect differently than
+ * the surfaces that show it firing (CONTEXT.md, Trace).
+ *
+ * Condition labels come from the couple's event-type schema when available (so an
+ * enum value shows its human option and a metadata key its field label);
+ * everything else falls back to humanizing the id (underscores → spaces), which
+ * reads fine for the counter/anchor/timer ids the pack uses.
  */
-
-/** Underscore-and-lowercase id → readable words: `rituals_completed` → "rituals completed". */
-function humanize(id: string): string {
-	return id.replace(/_/g, " ").trim();
-}
 
 function valueText(value: MetadataValue): string {
 	if (typeof value === "boolean") return value ? "yes" : "no";
@@ -39,28 +41,19 @@ export function describeCondition(
 	return clauses.length ? `${when} and ${clauses.join(" and ")}` : when;
 }
 
-/** A single effect as a phrase, e.g. "+2 to demerits" or "notify your partner". */
+/**
+ * A single effect as a phrase, e.g. "+2 demerits" or "notify partner" — the
+ * shared {@link summarizeEffectOp} phrase, so it reads identically here and on
+ * the confirm/trace surfaces. The effect is resolved against an empty event
+ * context (description needs no event); a timer close's duration routing, which
+ * only the rules screen states up front, is appended to the shared phrase.
+ */
 export function describeEffect(effect: Effect): string {
-	switch (effect.verb) {
-		case "increment_counter":
-			return `+${effect.by} to ${humanize(effect.counter)}`;
-		case "decrement_counter":
-			return `−${effect.by} from ${humanize(effect.counter)}`;
-		case "reset_counter":
-			return `reset ${humanize(effect.counter)}`;
-		case "reset_anchor":
-			return `reset the "${humanize(effect.anchor)}" clock`;
-		case "open_timer":
-			return `start the ${humanize(effect.timer)} timer`;
-		case "close_timer": {
-			const stop = `stop the ${humanize(effect.timer)} timer`;
-			return effect.route_duration_to
-				? `${stop} and add its time to ${humanize(effect.route_duration_to)}`
-				: stop;
-		}
-		case "notify":
-			return "notify your partner";
-	}
+	const op = resolveEffect(effect, { type: "", metadata: {}, occurred_at: 0 });
+	const phrase = summarizeEffectOp(op);
+	return effect.verb === "close_timer" && effect.route_duration_to
+		? `${phrase} and add its time to ${humanize(effect.route_duration_to)}`
+		: phrase;
 }
 
 /** A rule as a condition sentence plus its list of effect phrases. */

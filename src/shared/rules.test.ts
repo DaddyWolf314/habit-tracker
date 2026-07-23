@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	currentRule,
+	latestVersion,
 	type Rule,
+	ruleFromVersion,
 	ruleSchema,
 	ruleVersionSchema,
 	versionedRuleSchema,
+	versionFromDefinition,
 } from "./rules.ts";
 
 /**
@@ -164,5 +168,70 @@ describe("flat and versioned shapes stay aligned", () => {
 		expect(flat.condition).toEqual(version.condition);
 		expect(flat.effects).toEqual(version.effects);
 		expect(flat.enabled).toBe(version.enabled);
+	});
+
+	it("ruleFromVersion and versionFromDefinition are inverses around a stamp", () => {
+		const version = ruleVersionSchema.parse({
+			effective_from: 5,
+			condition: { type: "ritual_completed", metadata: { late: true } },
+			effects: [increment],
+		});
+		const flat = ruleFromVersion("custom-late", version);
+		expect(versionFromDefinition(flat, 5)).toEqual(version);
+	});
+});
+
+describe("latestVersion / currentRule (the one 'current definition' seam)", () => {
+	const versioned = versionedRuleSchema.parse({
+		id: "R2",
+		origin: "pack",
+		adopted: true,
+		versions: [
+			{
+				effective_from: 0,
+				condition: { type: "ritual_completed", metadata: {} },
+				effects: [increment],
+			},
+			{
+				effective_from: 100,
+				condition: { type: "ritual_completed", metadata: { late: true } },
+				effects: [{ ...increment, by: 2 }],
+				enabled: false,
+			},
+		],
+	});
+
+	it("picks the version with the greatest effective_from, regardless of order", () => {
+		expect(latestVersion(versioned).effective_from).toBe(100);
+		const reversed = {
+			...versioned,
+			versions: [...versioned.versions].reverse(),
+		};
+		expect(latestVersion(reversed).effective_from).toBe(100);
+	});
+
+	it("a single-version rule's current definition is that version", () => {
+		const single = versionedRuleSchema.parse({
+			id: "custom-x",
+			origin: "custom",
+			versions: [
+				{
+					effective_from: 7,
+					condition: { type: "note", metadata: {} },
+					effects: [increment],
+				},
+			],
+		});
+		expect(latestVersion(single).effective_from).toBe(7);
+		expect(currentRule(single).id).toBe("custom-x");
+	});
+
+	it("flattens the latest version to the flat Rule the engine and UI read", () => {
+		expect(currentRule(versioned)).toEqual({
+			id: "R2",
+			condition: { type: "ritual_completed", metadata: { late: true } },
+			effects: [{ verb: "increment_counter", counter: "demerits", by: 2 }],
+			enabled: false,
+		});
 	});
 });

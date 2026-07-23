@@ -298,6 +298,19 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((rules) => json({ rules })),
 			);
 		}
+		if (path === "/api/rules/changes" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listRuleChanges(auth.identityHash)
+					.then((changes) => json({ changes })),
+			);
+		}
+		// Acknowledging notices is an explicit POST, never a side effect of a GET.
+		if (path === "/api/rules/changes/seen" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.ackRuleChanges(auth.identityHash).then(() => json({ ok: true })),
+			);
+		}
 		const ruleMatch = path.match(/^\/api\/rules\/([^/]+)$/);
 		if (ruleMatch) {
 			const id = decodeURIComponent(ruleMatch[1]);

@@ -17,6 +17,7 @@ import type {
 	AuditEntry,
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
+import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
 import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
@@ -280,11 +281,29 @@ export function listRules(): Promise<{ rules: Rule[] }> {
 
 /**
  * The full rule set with provenance and effective-dated version history (#64) for
- * the rules screen. Fetching also marks the caller's rule-change notices seen, so
- * the badge clears when they open the screen.
+ * the rules screen. A pure read — acknowledging rule-change notices is the
+ * explicit {@link ackRuleChanges}.
  */
 export function listRuleHistory(): Promise<{ rules: VersionedRule[] }> {
 	return apiFetch<{ rules: VersionedRule[] }>("/api/rules/history");
+}
+
+/**
+ * The rule changes the caller hasn't acknowledged yet (#64): the partner's
+ * authoring actions plus any upstream default changes to adopted rules. The
+ * rules screen renders each via `ruleChangeNotice` and acks with
+ * {@link ackRuleChanges} once shown.
+ */
+export function listRuleChanges(): Promise<{ changes: RuleChangeNotice[] }> {
+	return apiFetch<{ changes: RuleChangeNotice[] }>("/api/rules/changes");
+}
+
+/** Marks the caller's rule-change notices seen, clearing them from the badge. */
+export function ackRuleChanges(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/rules/changes/seen", {
+		method: "POST",
+		body: {},
+	});
 }
 
 /** Creates a custom rule (dom/switch only). Body is a flat rule with an id. */

@@ -7,6 +7,7 @@ import {
 	isPickerEditable,
 } from "./rule-describe.ts";
 import type { Rule } from "./rules.ts";
+import { phraseCounter, summarizeEffectOp } from "./trace.ts";
 
 const types = new Map(STARTER_EVENT_TYPES.map((t) => [t.id, t]));
 
@@ -51,14 +52,14 @@ describe("describeCondition", () => {
 	});
 });
 
-describe("describeEffect", () => {
+describe("describeEffect — the shared effect phrasing (CONTEXT.md, Trace)", () => {
 	it("renders counter increments and decrements with the amount", () => {
 		expect(
 			describeEffect({ verb: "increment_counter", counter: "demerits", by: 2 }),
-		).toBe("+2 to demerits");
+		).toBe("+2 demerits");
 		expect(
 			describeEffect({ verb: "decrement_counter", counter: "demerits", by: 1 }),
-		).toBe("−1 from demerits");
+		).toBe("−1 demerits");
 	});
 
 	it("renders resets, anchors, timers, and notify", () => {
@@ -70,13 +71,30 @@ describe("describeEffect", () => {
 		).toBe("reset rituals completed today");
 		expect(
 			describeEffect({ verb: "reset_anchor", anchor: "since_last_infraction" }),
-		).toBe('reset the "since last infraction" clock');
+		).toBe("reset since last infraction streak");
 		expect(describeEffect({ verb: "notify", target: "partner" })).toBe(
-			"notify your partner",
+			"notify partner",
 		);
 	});
 
-	it("shows a timer close's duration routing", () => {
+	it("phrases an effect exactly as the confirm/trace surfaces phrase it firing", () => {
+		// The one-phrasing rule (CONTEXT.md, Trace): "what will fire", "what
+		// fired", and the rules screen must read identically.
+		expect(
+			describeEffect({ verb: "increment_counter", counter: "demerits", by: 2 }),
+		).toBe(phraseCounter("demerits", "increment", 2));
+		expect(
+			describeEffect({ verb: "reset_anchor", anchor: "since_last_infraction" }),
+		).toBe(
+			summarizeEffectOp({
+				kind: "anchor",
+				anchor: "since_last_infraction",
+				at: 0,
+			}),
+		);
+	});
+
+	it("appends a timer close's duration routing to the shared phrase", () => {
 		expect(
 			describeEffect({
 				verb: "close_timer",
@@ -85,7 +103,7 @@ describe("describeEffect", () => {
 				route_duration_to: "service_minutes_week",
 			}),
 		).toBe(
-			"stop the session stopwatch timer and add its time to service minutes week",
+			"mark session stopwatch completed and add its time to service minutes week",
 		);
 	});
 });
@@ -100,7 +118,7 @@ describe("describeRule", () => {
 		};
 		expect(describeRule(rule, types.get("ritual_completed"))).toEqual({
 			when: "when Ritual completed is logged and Late? is yes",
-			effects: ["+1 to demerits"],
+			effects: ["+1 demerits"],
 		});
 	});
 });

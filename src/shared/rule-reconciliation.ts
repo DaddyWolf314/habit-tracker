@@ -1,8 +1,9 @@
 import {
+	currentRule,
 	type Rule,
 	type RuleVersion,
-	ruleFromVersion,
 	type VersionedRule,
+	versionFromDefinition,
 } from "./rules.ts";
 
 /**
@@ -69,19 +70,11 @@ export function reconcilePack(
 			// Still tracking the pack: append the new definition, forward-only.
 			reconciliation.upserted.push({
 				id: packRule.id,
-				version: versionFromPackRule(packRule, effectiveFrom),
+				version: versionFromDefinition(packRule, effectiveFrom),
 			});
 		}
 	}
 	return reconciliation;
-}
-
-/** The current (latest) definition of an installed rule, flattened for comparison. */
-function currentRule(rule: VersionedRule): Rule {
-	const latest = rule.versions.reduce((a, b) =>
-		b.effective_from >= a.effective_from ? b : a,
-	);
-	return ruleFromVersion(rule.id, latest);
 }
 
 /** A fresh single-version pack rule to install. */
@@ -93,17 +86,7 @@ function installedFromPackRule(
 		id: rule.id,
 		origin: "pack",
 		adopted: false,
-		versions: [versionFromPackRule(rule, effectiveFrom)],
-	};
-}
-
-/** One effective-dated version carrying a pack rule's definition. */
-function versionFromPackRule(rule: Rule, effectiveFrom: number): RuleVersion {
-	return {
-		effective_from: effectiveFrom,
-		condition: rule.condition,
-		effects: rule.effects,
-		enabled: rule.enabled,
+		versions: [versionFromDefinition(rule, effectiveFrom)],
 	};
 }
 

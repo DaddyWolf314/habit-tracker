@@ -3,6 +3,8 @@ import {
 	type NotificationSignals,
 	type RuleChangeKind,
 	ruleChangeAction,
+	ruleChangeKindFromAction,
+	ruleChangeNotice,
 	unreadCount,
 } from "./notifications.ts";
 import { deriveEventView } from "./projections.ts";
@@ -53,21 +55,82 @@ describe("unreadCount", () => {
 });
 
 describe("ruleChangeAction (#64) — one vocabulary for audit + count", () => {
-	it("namespaces each change kind under rule.", () => {
+	it("namespaces each change kind under rule., in the ADR 0002 vocabulary", () => {
 		const kinds: RuleChangeKind[] = [
 			"create",
 			"edit",
 			"enable",
 			"disable",
-			"delete",
+			"purge",
+			"upstream_changed",
 		];
 		expect(kinds.map(ruleChangeAction)).toEqual([
 			"rule.create",
 			"rule.edit",
 			"rule.enable",
 			"rule.disable",
-			"rule.delete",
+			"rule.purge",
+			"rule.upstream_changed",
 		]);
+	});
+
+	it("round-trips every kind back from its stored action", () => {
+		const kinds: RuleChangeKind[] = [
+			"create",
+			"edit",
+			"enable",
+			"disable",
+			"purge",
+			"upstream_changed",
+		];
+		for (const kind of kinds) {
+			expect(ruleChangeKindFromAction(ruleChangeAction(kind))).toBe(kind);
+		}
+	});
+
+	it("decodes legacy rule.delete rows as purge, and unknown actions as null", () => {
+		// The audit log is append-only: rows written before the ADR 0002 `purge`
+		// naming must still read back, and a non-rule action never decodes.
+		expect(ruleChangeKindFromAction("rule.delete")).toBe("purge");
+		expect(ruleChangeKindFromAction("rule.frobnicate")).toBeNull();
+		expect(ruleChangeKindFromAction("introspection.read")).toBeNull();
+	});
+});
+
+describe("ruleChangeNotice (#64, user stories 33 + 35) — in-app content, per kind", () => {
+	// Content lives only inside the authed rules screen; the badge stays a
+	// content-free count. Each change kind composes its own sentence, so the
+	// member bound by the rules always learns what changed, not just that
+	// something did.
+	it("composes a distinct partner-facing sentence for each change kind", () => {
+		const at = 1;
+		expect(ruleChangeNotice({ kind: "create", rule_id: "custom-x", at })).toBe(
+			'Your partner added the rule "custom-x".',
+		);
+		expect(ruleChangeNotice({ kind: "edit", rule_id: "R2", at })).toBe(
+			'Your partner changed the rule "R2".',
+		);
+		expect(ruleChangeNotice({ kind: "enable", rule_id: "R2", at })).toBe(
+			'Your partner turned the rule "R2" on.',
+		);
+		expect(ruleChangeNotice({ kind: "disable", rule_id: "R2", at })).toBe(
+			'Your partner turned the rule "R2" off.',
+		);
+		expect(ruleChangeNotice({ kind: "purge", rule_id: "custom-x", at })).toBe(
+			'Your partner removed the rule "custom-x".',
+		);
+	});
+
+	it("attributes an upstream default change to the app, not the partner", () => {
+		const notice = ruleChangeNotice({
+			kind: "upstream_changed",
+			rule_id: "R2",
+			at: 1,
+		});
+		expect(notice).not.toContain("partner");
+		expect(notice).toBe(
+			'The default for the rule "R2" changed in an app update — your edited version still applies.',
+		);
 	});
 });
 

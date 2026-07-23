@@ -122,10 +122,29 @@ export const versionedRuleSchema = z.object({
 	origin: ruleOriginSchema,
 	/** A pack rule the couple has edited — frozen against future pack overwrites. */
 	adopted: z.boolean().default(false),
+	/**
+	 * An adopted rule whose shipped default now differs from the couple's edited
+	 * definition (#64, user story 33). Set by pack reconciliation, cleared when the
+	 * couple next edits the rule — it drives the "new default available" notice,
+	 * never an overwrite.
+	 */
+	upstream_changed: z.boolean().optional(),
 	/** Append-only revisions, ascending by `effective_from`. Never empty. */
 	versions: z.array(ruleVersionSchema).min(1),
 });
 export type VersionedRule = z.infer<typeof versionedRuleSchema>;
+
+/**
+ * A rule's identity-and-provenance triple — what the `rules` row carries beside
+ * the versioned history: the stable id, whether it shipped in the pack, and
+ * whether the couple has adopted it. Travels together through every authoring
+ * write, so it is one type rather than three loose parameters.
+ */
+export interface RuleIdentity {
+	id: string;
+	origin: RuleOrigin;
+	adopted: boolean;
+}
 
 /**
  * Stamps a rule id onto one of its versions to produce the flat {@link Rule} the
@@ -141,4 +160,34 @@ export function ruleFromVersion(id: string, version: RuleVersion): Rule {
 		effects: version.effects,
 		enabled: version.enabled,
 	};
+}
+
+/**
+ * The inverse of {@link ruleFromVersion}: stamps a definition with the log-time
+ * it takes force, producing one append-only revision. Every writer of a version
+ * — create, edit, enable/disable, pack reconciliation — goes through this so the
+ * version shape has exactly one author.
+ */
+export function versionFromDefinition(
+	definition: RuleDefinition,
+	effectiveFrom: number,
+): RuleVersion {
+	return {
+		effective_from: effectiveFrom,
+		condition: definition.condition,
+		effects: definition.effects,
+		enabled: definition.enabled,
+	};
+}
+
+/** A rule's current (latest) version — the greatest `effective_from`. */
+export function latestVersion(rule: VersionedRule): RuleVersion {
+	return rule.versions.reduce((a, b) =>
+		b.effective_from >= a.effective_from ? b : a,
+	);
+}
+
+/** A rule's current definition flattened to the shape the engine and UI read. */
+export function currentRule(rule: VersionedRule): Rule {
+	return ruleFromVersion(rule.id, latestVersion(rule));
 }

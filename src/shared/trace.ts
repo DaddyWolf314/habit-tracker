@@ -487,8 +487,9 @@ export function traceTimerCommand(
 
 // ── Phrasing + decoders (the read side the UI renders through) ────────────────
 
-function humanize(id: string): string {
-	return id.replace(/_/g, " ");
+/** Underscore-and-lowercase id → readable words: `rituals_completed` → "rituals completed". */
+export function humanize(id: string): string {
+	return id.replace(/_/g, " ").trim();
 }
 
 /**
