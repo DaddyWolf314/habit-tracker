@@ -1,5 +1,5 @@
 {
-	"version": 2,
+	"version": 3,
 	"counters": [
 		{
 			"id": "rituals_completed_today",
@@ -35,25 +35,25 @@
 		},
 		{
 			"id": "orgasms_lifetime",
-			"name": "Orgasms (lifetime)",
+			"name": "Sub's orgasms (lifetime)",
 			"valence": "neutral",
 			"reset": "never"
 		},
 		{
 			"id": "orgasms_permitted",
-			"name": "Orgasms permitted",
+			"name": "Sub's orgasms permitted",
 			"valence": "neutral",
 			"reset": "never"
 		},
 		{
 			"id": "orgasms_unpermitted",
-			"name": "Orgasms unpermitted",
+			"name": "Sub's orgasms unpermitted",
 			"valence": "negative",
 			"reset": "never"
 		},
 		{
 			"id": "orgasms_denied",
-			"name": "Orgasms denied",
+			"name": "Sub's orgasms denied",
 			"valence": "neutral",
 			"reset": "never"
 		},
@@ -68,6 +68,12 @@
 			"name": "Check-ins (week)",
 			"valence": "positive",
 			"reset": "weekly"
+		},
+		{
+			"id": "dom_orgasms_lifetime",
+			"name": "Dom's orgasms (lifetime)",
+			"valence": "neutral",
+			"reset": "never"
 		}
 	]
 }

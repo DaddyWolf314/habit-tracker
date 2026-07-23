@@ -1073,14 +1073,19 @@ export class CoupleDO extends DurableObject<Env> {
 
 	/**
 	 * Seeds the ship-time defaults into a couple: the starter seven plus the
-	 * reserved counter-manipulation types. Idempotent (`INSERT OR IGNORE`) so it is
-	 * safe to re-run; the version is recorded so a later template revision can be
-	 * reconciled.
+	 * reserved counter-manipulation types. Upserts the *definition* on a version
+	 * bump — mirroring the counter seeding — so a template revision (e.g. the
+	 * orgasm type's subject-qualified `permitted` awaiting entry, ADR 0003)
+	 * actually reaches already-seeded couples. Safe because starter types are
+	 * pack-owned: there is no editing surface for them, so an upsert can never
+	 * clobber a couple's customization (custom types have distinct ids and are
+	 * untouched). Idempotent; the version is recorded to guard re-runs.
 	 */
 	private seedDefaults(): void {
 		for (const type of DEFAULT_EVENT_TYPES) {
 			this.sql.exec(
-				`INSERT OR IGNORE INTO event_types (id, definition) VALUES (?, ?)`,
+				`INSERT INTO event_types (id, definition) VALUES (?, ?)
+					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
 				type.id,
 				JSON.stringify(type),
 			);

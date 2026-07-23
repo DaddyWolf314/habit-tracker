@@ -128,6 +128,10 @@ export const DEFAULT_ANCHORS: readonly string[] = [
 	"since_last_infraction",
 	"since_last_orgasm",
 	"since_last_check_in",
+	// Dom-side visibility (ADR 0003): reset by R21 on a dom-subject orgasm. The
+	// naming convention is glossary law — an unqualified name means the sub's,
+	// the dom_ marker means the dom's.
+	"since_dom_last_orgasm",
 ];
 
 /** The default timers the pack opens/closes (§7). The state machine is Phase 4. */
