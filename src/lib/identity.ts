@@ -54,7 +54,7 @@ export function storeDeviceToken(token: string): void {
 }
 
 /** Clears every credential this device holds — both the secret and any token. */
-export function clearSecret(): void {
+export function clearCredentials(): void {
 	localStorage.removeItem(STORAGE_KEY);
 	localStorage.removeItem(DEVICE_TOKEN_KEY);
 }

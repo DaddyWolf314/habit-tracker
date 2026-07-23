@@ -17,7 +17,7 @@ import {
 	redeemInvite,
 } from "#/lib/api.ts";
 import {
-	clearSecret,
+	clearCredentials,
 	generateSecret,
 	hasIdentity,
 	secretFromMnemonic,
@@ -61,7 +61,7 @@ export function Onboarding() {
 			.catch((err) => {
 				// A stored credential the server no longer honours (e.g. a revoked
 				// device token) should not linger and re-fail every load.
-				if (err instanceof ApiError && err.status === 401) clearSecret();
+				if (err instanceof ApiError && err.status === 401) clearCredentials();
 				setStage({ name: "intro" });
 			});
 	}, []);

@@ -6,7 +6,7 @@ import {
 	sha256Base64url,
 } from "./crypto.ts";
 import {
-	clearSecret,
+	clearCredentials,
 	generateSecret,
 	getBearer,
 	hasIdentity,
@@ -107,7 +107,7 @@ describe("device credentials", () => {
 	it("clears both the secret and the token", () => {
 		storeSecret(generateSecret().secret);
 		storeDeviceToken(randomToken());
-		clearSecret();
+		clearCredentials();
 		expect(getBearer()).toBeNull();
 		expect(hasIdentity()).toBe(false);
 		expect(hasRootSecret()).toBe(false);
