@@ -4,7 +4,11 @@ import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, awaitedRulings } from "#/shared/adjudication.ts";
 import { reevaluate } from "#/shared/engine.ts";
-import type { EventType, MetadataField } from "#/shared/event-types.ts";
+import {
+	awaitingKeysFor,
+	type EventType,
+	type MetadataField,
+} from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import {
@@ -52,7 +56,13 @@ export function QueuePanel({
 	const queue = events.flatMap((event) => {
 		const type = typeMap.get(event.type);
 		if (!type) return [];
-		const rulings = awaitedRulings(event, type, selfRole);
+		// Subject-qualified awaiting entries (ADR 0003) ask for no ruling when the
+		// event's subject doesn't match — resolved through the same seam the DO uses.
+		const subjectRole = resolveSubjectRole(
+			event.subject,
+			(id) => members.find((m) => m.member_id === id)?.role,
+		);
+		const rulings = awaitedRulings(event, type, selfRole, subjectRole);
 		return rulings.length > 0 ? [{ event, type, rulings }] : [];
 	});
 
@@ -128,17 +138,18 @@ function QueueItem({
 	 * only; no effect-waiving (a scoring-layer concern).
 	 */
 	function previewEffects(): string[] {
+		// Same resolution seam the DO uses (ADR 0003), so the preview and the
+		// commit agree on which subject-qualified rules and awaiting entries apply.
+		const subjectRole = resolveSubjectRole(
+			event.subject,
+			(id) => members.find((m) => m.member_id === id)?.role,
+		);
 		const before = {
 			type: event.type,
 			metadata: event.composite_metadata,
 			occurred_at: event.occurred_at,
-			// Same resolution seam the DO uses (ADR 0003), so the preview and the
-			// commit agree on which subject-qualified rules are in play.
-			subject_role: resolveSubjectRole(
-				event.subject,
-				(id) => members.find((m) => m.member_id === id)?.role,
-			),
-			awaiting: type.awaiting,
+			subject_role: subjectRole,
+			awaiting: awaitingKeysFor(type.awaiting, subjectRole),
 		};
 		const after = {
 			...before,

@@ -64,6 +64,36 @@ describe("awaitedRulings", () => {
 	it("is empty for a retracted event", () => {
 		expect(awaitedRulings(event({ retracted: true }), type, "dom")).toEqual([]);
 	});
+
+	describe("subject-qualified awaiting entries (ADR 0003)", () => {
+		const qualifiedType = {
+			...type,
+			awaiting: [{ key: "permitted", subject_role: "sub" }],
+		} as unknown as EventType;
+
+		it("asks for the ruling when the subject resolves to the qualified role", () => {
+			const rulings = awaitedRulings(event(), qualifiedType, "dom", "sub");
+			expect(rulings.map((r) => r.key)).toEqual(["permitted"]);
+		});
+
+		it("asks for no ruling on a dom-subject event — nobody adjudicates the authority", () => {
+			// Even if a stale `pending` flag reached the client, the entry is not in
+			// force for a dom subject, so the queue never shows a card.
+			expect(awaitedRulings(event(), qualifiedType, "dom", "dom")).toEqual([]);
+		});
+
+		it("asks for no ruling when the subject role is unresolved", () => {
+			expect(awaitedRulings(event(), qualifiedType, "dom", undefined)).toEqual(
+				[],
+			);
+		});
+
+		it("bare entries keep asking regardless of subject role", () => {
+			expect(
+				awaitedRulings(event(), type, "dom", "dom").map((r) => r.key),
+			).toEqual(["permitted"]);
+		});
+	});
 });
 
 describe("isOwnPending", () => {

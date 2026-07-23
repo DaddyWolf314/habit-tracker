@@ -23,8 +23,12 @@ import {
 	routeClosedTimerDuration,
 	rulesEffectiveAt,
 } from "#/shared/engine.ts";
-import type { EventType } from "#/shared/event-types.ts";
-import { eventTypeSchema } from "#/shared/event-types.ts";
+import {
+	type AwaitingEntry,
+	awaitingKeysFor,
+	type EventType,
+	eventTypeSchema,
+} from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
 import {
 	amendmentToExportRow,
@@ -930,6 +934,7 @@ export class CoupleDO extends DurableObject<Env> {
 				event,
 				eventAmendments,
 				types.get(event.type),
+				this.subjectRole(event.subject),
 			);
 			if (exportView(view, me.id) === null) continue;
 			events.push(eventToExportRow(event));
@@ -1451,7 +1456,12 @@ export class CoupleDO extends DurableObject<Env> {
 		if (type.subject_required && !input.subject) {
 			throw coupleError("BAD_REQUEST", "this event type requires a subject");
 		}
-		this.validateMetadata(type, input.metadata, role);
+		this.validateMetadata(
+			type,
+			input.metadata,
+			role,
+			this.subjectRole(input.subject),
+		);
 		// No silent default (ADR 0001): a journaling-capable type must carry an
 		// explicit visibility choice, so a private reflection can never fall through
 		// to the most-exposed level by omission. A non-journaling type may omit it —
@@ -1517,7 +1527,7 @@ export class CoupleDO extends DurableObject<Env> {
 
 		// A freshly-appended event has no amendments yet, so composite == its own
 		// metadata; the shape is built the same way it is read back (handoff §4.2).
-		return deriveEventView(event, [], type);
+		return deriveEventView(event, [], type, this.subjectRole(event.subject));
 	}
 
 	/**
@@ -1537,6 +1547,7 @@ export class CoupleDO extends DurableObject<Env> {
 				event,
 				amendmentsByEvent.get(event.id) ?? [],
 				types.get(event.type),
+				this.subjectRole(event.subject),
 			);
 			const visible = visibleView(view, me.id);
 			if (visible) views.push(visible);
@@ -1584,6 +1595,7 @@ export class CoupleDO extends DurableObject<Env> {
 			actorRole: me.role as Role | null,
 			actorMemberId: me.id,
 			amendments: priorAmendments,
+			subjectRole: this.subjectRole(event.subject),
 		});
 		if (!check.ok) {
 			throw coupleError(
@@ -1606,7 +1618,12 @@ export class CoupleDO extends DurableObject<Env> {
 		// responding to a *sealed* entry gets back the existence row plus their own
 		// response, never the sub's prose. The author always sees their own entry in
 		// full. (A `secret` entry is unreachable here — validation refuses it.)
-		const view = deriveEventView(event, amendments, type);
+		const view = deriveEventView(
+			event,
+			amendments,
+			type,
+			this.subjectRole(event.subject),
+		);
 		return visibleView(view, me.id) ?? view;
 	}
 
@@ -1626,12 +1643,13 @@ export class CoupleDO extends DurableObject<Env> {
 	): void {
 		const before = compositeMetadata(event, priorAmendments);
 		const after = compositeMetadata(event, [...priorAmendments, amendment]);
+		const subjectRole = this.subjectRole(event.subject);
 		const context = (metadata: Record<string, MetadataValue>) => ({
 			type: event.type,
 			metadata,
 			occurred_at: event.occurred_at,
-			subject_role: this.subjectRole(event.subject),
-			awaiting: type.awaiting,
+			subject_role: subjectRole,
+			awaiting: awaitingKeysFor(type.awaiting, subjectRole),
 		});
 		// Effective-dating keys off the target event's log-time, never the ruling
 		// time — a late ruling fires the rule version in force when the event was
@@ -2039,18 +2057,20 @@ export class CoupleDO extends DurableObject<Env> {
 	private applyRules(
 		event: Event,
 		composite: Record<string, MetadataValue>,
-		awaiting: string[],
+		awaiting: AwaitingEntry[],
 	): void {
 		// Resolve the rules in force at this event's log-time. On a live append that
 		// is "now" (today's rules); on a rebuild it is each past event's own
 		// log-time, so replay reproduces history rather than re-deriving it under
-		// today's rules (ADR 0002).
+		// today's rules (ADR 0002). The subject role resolves once and scopes both
+		// the qualified rules and the awaiting entries in force (ADR 0003).
+		const subjectRole = this.subjectRole(event.subject);
 		const { fired, nearMisses } = evaluateRules(this.rulesAt(event.logged_at), {
 			type: event.type,
 			metadata: composite,
 			occurred_at: event.occurred_at,
-			subject_role: this.subjectRole(event.subject),
-			awaiting,
+			subject_role: subjectRole,
+			awaiting: awaitingKeysFor(awaiting, subjectRole),
 		});
 		for (const rule of fired) {
 			for (const op of rule.ops) {
@@ -2798,23 +2818,27 @@ export class CoupleDO extends DurableObject<Env> {
 	/**
 	 * Validates event metadata against the type schema: no unknown keys, required
 	 * keys present, each value the right kind and within bounds, and the actor's
-	 * role permitted to set each key (handoff §5). `awaiting` keys may be left
-	 * unset — that is what makes the event pending.
+	 * role permitted to set each key (handoff §5). `awaiting` keys *in force for
+	 * the event's subject* (ADR 0003) may be left unset — that is what makes the
+	 * event pending; a required key whose awaiting entry doesn't apply to this
+	 * subject must be supplied like any other required key.
 	 */
 	private validateMetadata(
 		type: EventType,
 		metadata: Record<string, MetadataValue>,
 		role: Role | null,
+		subjectRole: Role | undefined,
 	): void {
 		for (const key of Object.keys(metadata)) {
 			if (!type.metadata[key]) {
 				throw coupleError("BAD_REQUEST", `unknown metadata key: ${key}`);
 			}
 		}
+		const awaited = new Set(awaitingKeysFor(type.awaiting, subjectRole));
 		for (const [key, field] of Object.entries(type.metadata)) {
 			const value = metadata[key];
 			if (value === undefined) {
-				if (field.required && !type.awaiting.includes(key)) {
+				if (field.required && !awaited.has(key)) {
 					throw coupleError("BAD_REQUEST", `missing required metadata: ${key}`);
 				}
 				continue;

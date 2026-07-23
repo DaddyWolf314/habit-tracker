@@ -3,9 +3,9 @@ import {
 	COUNTER_RESET_TYPE,
 } from "#/templates/index.ts";
 import type { Amendment } from "./amendments.ts";
-import type { EventType } from "./event-types.ts";
+import { awaitingKeysFor, type EventType } from "./event-types.ts";
 import type { Event, EventView } from "./events.ts";
-import type { MetadataValue } from "./roles.ts";
+import type { MetadataValue, Role } from "./roles.ts";
 
 /**
  * Pure projection logic — the single source of truth for how the event log
@@ -115,16 +115,22 @@ export function isRetracted(amendments: Amendment[] = []): boolean {
 
 /**
  * Whether an event is *pending* (handoff §5): any of its type's `awaiting` keys
- * is unset in composite state. This single derivation is the adjudication-queue
- * mechanism; a retracted event is never pending.
+ * *in force for its subject* (ADR 0003 — a qualified entry gates only when the
+ * subject resolves to its role) is unset in composite state. This single
+ * derivation is the adjudication-queue mechanism; a retracted event is never
+ * pending. `subjectRole` is the event's resolved subject role — callers resolve
+ * it via `resolveSubjectRole`, exactly as the rule engine's context does.
  */
 export function isPending(
 	eventType: Pick<EventType, "awaiting">,
 	composite: MetadataBag,
 	retracted = false,
+	subjectRole?: Role,
 ): boolean {
 	if (retracted) return false;
-	return eventType.awaiting.some((key) => composite[key] === undefined);
+	return awaitingKeysFor(eventType.awaiting, subjectRole).some(
+		(key) => composite[key] === undefined,
+	);
 }
 
 /**
@@ -133,12 +139,15 @@ export function isPending(
  * status — all folded on read, never stored. The single place the server, the
  * DO, and the client agree on what an amended event *currently means*. A missing
  * `eventType` (an event of a since-removed type) touches nothing, so it is never
- * pending.
+ * pending. `subjectRole` is the event's resolved subject role (ADR 0003),
+ * resolved by the caller — qualified awaiting entries gate pending only when it
+ * matches.
  */
 export function deriveEventView(
 	event: Event,
 	amendments: Amendment[] = [],
 	eventType?: Pick<EventType, "awaiting">,
+	subjectRole?: Role,
 ): EventView {
 	const composite = compositeMetadata(event, amendments);
 	const retracted = isRetracted(amendments);
@@ -146,7 +155,9 @@ export function deriveEventView(
 		...event,
 		amendments,
 		composite_metadata: composite,
-		pending: eventType ? isPending(eventType, composite, retracted) : false,
+		pending: eventType
+			? isPending(eventType, composite, retracted, subjectRole)
+			: false,
 		retracted,
 	};
 }

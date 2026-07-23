@@ -1,6 +1,10 @@
 import { adjudicableKeys } from "./amendment-validation.ts";
 import type { Amendment } from "./amendments.ts";
-import type { EventType, MetadataField } from "./event-types.ts";
+import {
+	awaitingKeysFor,
+	type EventType,
+	type MetadataField,
+} from "./event-types.ts";
 import type { EventView } from "./events.ts";
 import { formatMetaValue, type Role } from "./roles.ts";
 
@@ -18,18 +22,22 @@ export interface AwaitedRuling {
 
 /**
  * The rulings a role is being asked to make on an event: its type's `awaiting`
- * keys that are still unset in composite state and that the role is
- * `adjudicated_by` for. Empty unless the event is genuinely pending (never for a
- * resolved or retracted event) — this is exactly the dom's queue.
+ * keys *in force for the event's subject* (ADR 0003 — a subject-qualified entry
+ * asks for no ruling when the subject doesn't match) that are still unset in
+ * composite state and that the role is `adjudicated_by` for. Empty unless the
+ * event is genuinely pending (never for a resolved or retracted event) — this
+ * is exactly the dom's queue. `subjectRole` is the event's resolved subject
+ * role, via the same `resolveSubjectRole` seam the engine context uses.
  */
 export function awaitedRulings(
 	event: Pick<EventView, "composite_metadata" | "pending" | "retracted">,
 	type: EventType,
 	role: Role | null,
+	subjectRole?: Role,
 ): AwaitedRuling[] {
 	if (!event.pending || event.retracted) return [];
 	const rulable = new Set(adjudicableKeys(type, role));
-	return type.awaiting
+	return awaitingKeysFor(type.awaiting, subjectRole)
 		.filter(
 			(key) => rulable.has(key) && event.composite_metadata[key] === undefined,
 		)

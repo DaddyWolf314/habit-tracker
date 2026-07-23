@@ -115,6 +115,31 @@ describe("composite state + pending", () => {
 		expect(isPending(type, { outcome: "full", permitted: true })).toBe(false);
 		expect(isPending(type, { outcome: "full" }, true)).toBe(false); // retracted
 	});
+
+	it("a subject-qualified entry gates pending only for its role (ADR 0003)", () => {
+		const type = {
+			awaiting: [{ key: "permitted", subject_role: "sub" as const }],
+		};
+		// Sub-subject event: unchanged — pending until `permitted` is ruled.
+		expect(isPending(type, {}, false, "sub")).toBe(true);
+		expect(isPending(type, { permitted: true }, false, "sub")).toBe(false);
+		// Dom-subject event: never pending — nobody adjudicates the authority.
+		expect(isPending(type, {}, false, "dom")).toBe(false);
+		// No subject / unresolved role: the qualified entry is not in force.
+		expect(isPending(type, {}, false, undefined)).toBe(false);
+	});
+
+	it("bare keys keep gating regardless of subject alongside qualified ones", () => {
+		const type = {
+			awaiting: [
+				"severity",
+				{ key: "permitted", subject_role: "sub" as const },
+			],
+		};
+		expect(isPending(type, {}, false, "dom")).toBe(true); // severity still gates
+		expect(isPending(type, { severity: "minor" }, false, "dom")).toBe(false);
+		expect(isPending(type, { severity: "minor" }, false, "sub")).toBe(true);
+	});
 });
 
 describe("isRetracted", () => {
@@ -209,6 +234,17 @@ describe("deriveEventView — the composite read view (handoff §4.2, §4.6)", (
 
 	it("without a known type, pending is false (unknown types touch nothing)", () => {
 		expect(deriveEventView(event, [], undefined).pending).toBe(false);
+	});
+
+	it("threads the subject role into pending (ADR 0003)", () => {
+		const qualified = {
+			awaiting: [{ key: "permitted", subject_role: "sub" as const }],
+		};
+		// A dom-subject orgasm with `permitted` unset is never pending — it enters
+		// no queue and inflates no notification count (the count is derived from
+		// `pending`); the sub-subject flow is unchanged.
+		expect(deriveEventView(event, [], qualified, "dom").pending).toBe(false);
+		expect(deriveEventView(event, [], qualified, "sub").pending).toBe(true);
 	});
 });
 

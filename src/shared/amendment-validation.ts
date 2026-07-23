@@ -29,6 +29,12 @@ export interface AmendmentContext {
 	actorMemberId: string;
 	/** Amendments already recorded against this event. */
 	amendments: Amendment[];
+	/**
+	 * The target event's resolved subject role (ADR 0003), via
+	 * `resolveSubjectRole` — subject-qualified awaiting entries gate pending (and
+	 * thus note/retract windows) only when it matches.
+	 */
+	subjectRole?: Role;
 }
 
 export type AmendmentValidation =
@@ -58,7 +64,7 @@ export function validateAmendment(
 	}
 
 	const composite = compositeMetadata(ctx.event, ctx.amendments);
-	const pending = isPending(ctx.eventType, composite);
+	const pending = isPending(ctx.eventType, composite, false, ctx.subjectRole);
 
 	switch (input.kind) {
 		case "adjudication":

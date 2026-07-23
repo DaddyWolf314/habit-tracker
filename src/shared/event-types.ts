@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { permissionListSchema, valenceSchema } from "./roles.ts";
+import {
+	permissionListSchema,
+	type Role,
+	roleSchema,
+	valenceSchema,
+} from "./roles.ts";
 
 /**
  * Event-type schema format (handoff §5). Stored per-couple in the DO; the
@@ -38,6 +43,39 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 ]);
 export type MetadataField = z.infer<typeof metadataFieldSchema>;
 
+/**
+ * One `awaiting` entry (handoff §5, ADR 0003). A bare key gates pending status
+ * regardless of subject — today's meaning, unchanged. A qualified entry gates
+ * only when the event's subject resolves to the named role: the starter
+ * `orgasm`'s `permitted` is awaited only for a sub-subject event, so a
+ * dom-subject orgasm is never pending — nobody adjudicates the authority.
+ */
+export const awaitingEntrySchema = z.union([
+	z.string(),
+	z.object({ key: z.string(), subject_role: roleSchema }),
+]);
+export type AwaitingEntry = z.infer<typeof awaitingEntrySchema>;
+
+/**
+ * The awaited keys *in force* for an event whose subject resolves to
+ * `subjectRole` (via `resolveSubjectRole` — the same seam rule conditions use).
+ * Every consumer of `awaiting` — pending derivation, the queue, the engine's
+ * near-miss filter, the composer's "leave blank to defer" hint — reads through
+ * this, so a qualified entry can never gate one surface and not another.
+ */
+export function awaitingKeysFor(
+	awaiting: AwaitingEntry[],
+	subjectRole: Role | undefined,
+): string[] {
+	return awaiting.flatMap((entry) =>
+		typeof entry === "string"
+			? [entry]
+			: entry.subject_role === subjectRole
+				? [entry.key]
+				: [],
+	);
+}
+
 export const eventTypeSchema = z.object({
 	id: z.string(),
 	label: z.string(),
@@ -47,10 +85,13 @@ export const eventTypeSchema = z.object({
 	subject_required: z.boolean().default(false),
 	metadata: z.record(z.string(), metadataFieldSchema).default({}),
 	/**
-	 * Metadata keys whose absence in composite state makes an event *pending*.
+	 * Entries whose keys' absence in composite state makes an event *pending*.
 	 * This single property is the adjudication-queue mechanism (handoff §5).
+	 * An entry may be subject-role-qualified (ADR 0003) — see
+	 * {@link awaitingEntrySchema}; read via {@link awaitingKeysFor}, never
+	 * directly.
 	 */
-	awaiting: z.array(z.string()).default([]),
+	awaiting: z.array(awaitingEntrySchema).default([]),
 	note_prompt: z.string().optional(),
 	/**
 	 * Journaling capability (ADR 0001). Only a journaling-capable type may carry a
