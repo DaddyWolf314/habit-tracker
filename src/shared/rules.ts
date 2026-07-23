@@ -54,6 +54,13 @@ export const effectSchema = z.discriminatedUnion("verb", [
 		tag: z.string().optional(),
 		/** Route an event metadata value as the tag (e.g. `activity`). Routing, not a literal. */
 		tag_from: z.string().optional(),
+		/**
+		 * Route an event metadata number as the countdown duration in ms from
+		 * assignment (e.g. `task_assigned`'s `duration_ms`). Its presence makes the
+		 * opened timer a *countdown* (deadline `occurred_at + duration_ms`) rather
+		 * than a stopwatch. Routing, not a literal — the rule never computes the value.
+		 */
+		duration_from: z.string().optional(),
 	}),
 	z.object({
 		verb: z.literal("close_timer"),

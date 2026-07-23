@@ -1,5 +1,5 @@
 {
-	"version": 3,
+	"version": 4,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -52,6 +52,32 @@
 			},
 			"awaiting": ["quality"],
 			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "task_assigned",
+			"label": "Task assigned",
+			"icon": "clipboard-list",
+			"valence": "neutral",
+			"log_permission": ["dom", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"task_id": {
+					"kind": "ref",
+					"ref_kind": "task",
+					"label": "Task",
+					"required": true,
+					"set_permission": ["dom", "switch"]
+				},
+				"duration_ms": {
+					"kind": "number",
+					"min": 1,
+					"label": "Time allowed (ms)",
+					"required": true,
+					"set_permission": ["dom", "switch"]
+				}
+			},
+			"awaiting": [],
+			"note_prompt": "What is the task?"
 		},
 		{
 			"id": "infraction",
@@ -111,6 +137,25 @@
 			},
 			"awaiting": [{ "key": "permitted", "subject_role": "sub" }],
 			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "denial_started",
+			"label": "Denial started",
+			"icon": "lock",
+			"valence": "neutral",
+			"log_permission": ["dom", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"duration_ms": {
+					"kind": "number",
+					"min": 1,
+					"label": "Denial length (ms)",
+					"required": true,
+					"set_permission": ["dom", "switch"]
+				}
+			},
+			"awaiting": [],
+			"note_prompt": "Anything to say about this denial?"
 		},
 		{
 			"id": "session_started",

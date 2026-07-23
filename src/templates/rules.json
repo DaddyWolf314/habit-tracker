@@ -1,5 +1,5 @@
 {
-	"version": 4,
+	"version": 5,
 	"rules": [
 		{
 			"id": "R1",
@@ -193,6 +193,29 @@
 			"effects": [
 				{ "verb": "reset_anchor", "anchor": "since_dom_last_orgasm" },
 				{ "verb": "increment_counter", "counter": "dom_orgasms_lifetime" }
+			]
+		},
+		{
+			"id": "R22",
+			"condition": { "type": "task_assigned", "metadata": {} },
+			"effects": [
+				{
+					"verb": "open_timer",
+					"timer": "task_countdown",
+					"match_on": { "task_id": "task_id" },
+					"duration_from": "duration_ms"
+				}
+			]
+		},
+		{
+			"id": "R23",
+			"condition": { "type": "denial_started", "metadata": {} },
+			"effects": [
+				{
+					"verb": "open_timer",
+					"timer": "denial_period",
+					"duration_from": "duration_ms"
+				}
 			]
 		}
 	]

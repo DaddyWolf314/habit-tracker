@@ -81,7 +81,44 @@ describe("effect verb resolution (handoff §4.3)", () => {
 			op: "open",
 			match_on: { session_id: "s1" },
 			tag: "service",
+			// No duration_from: a stopwatch carries no routed deadline.
+			duration_ms: undefined,
 		});
+	});
+
+	it("open timer routes a per-event duration via duration_from (countdown)", () => {
+		const eff: Effect = {
+			verb: "open_timer",
+			timer: "task_countdown",
+			match_on: { task_id: "task_id" },
+			duration_from: "duration_ms",
+		};
+		expect(
+			resolveEffect(
+				eff,
+				ctx("task_assigned", { task_id: "t7", duration_ms: 3_600_000 }),
+			),
+		).toEqual({
+			kind: "timer",
+			timer: "task_countdown",
+			op: "open",
+			match_on: { task_id: "t7" },
+			tag: undefined,
+			duration_ms: 3_600_000,
+		});
+	});
+
+	it("open timer drops a non-numeric duration_from value (routes, never coerces)", () => {
+		const eff: Effect = {
+			verb: "open_timer",
+			timer: "task_countdown",
+			duration_from: "duration_ms",
+		};
+		// A string metadata value is not a duration; unlike tag_from we never
+		// format it — the countdown simply gets no routed deadline.
+		expect(
+			resolveEffect(eff, ctx("task_assigned", { duration_ms: "soon" })),
+		).toMatchObject({ duration_ms: undefined });
 	});
 
 	it("close timer carries status and the match resolved from the event", () => {

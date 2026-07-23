@@ -14,11 +14,11 @@ const counterIds = new Set(DEFAULT_COUNTERS.map((c) => c.id));
 const anchors = new Set(DEFAULT_ANCHORS);
 const timers = new Set(DEFAULT_TIMERS);
 
-describe("R1–R21 default rule pack (handoff §7, ADR 0001, ADR 0003)", () => {
-	it("installs exactly R1 through R21", () => {
-		expect(DEFAULT_RULES).toHaveLength(21);
+describe("R1–R23 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)", () => {
+	it("installs exactly R1 through R23", () => {
+		expect(DEFAULT_RULES).toHaveLength(23);
 		expect(DEFAULT_RULES.map((r) => r.id)).toEqual(
-			Array.from({ length: 21 }, (_, i) => `R${i + 1}`),
+			Array.from({ length: 23 }, (_, i) => `R${i + 1}`),
 		);
 	});
 
@@ -83,6 +83,71 @@ describe("R1–R21 default rule pack (handoff §7, ADR 0001, ADR 0003)", () => {
 		});
 		expect(fired).toEqual([]);
 		expect(nearMisses).toEqual([]);
+	});
+
+	it("R22 opens the task countdown from a task_assigned, routing its duration (ADR 0004)", () => {
+		const { fired } = evaluateRules(DEFAULT_RULES, {
+			type: "task_assigned",
+			metadata: { task_id: "t7", duration_ms: 3_600_000 },
+			occurred_at: 1000,
+		});
+		expect(fired.map((f) => f.rule_id)).toEqual(["R22"]);
+		expect(fired[0]?.ops).toEqual([
+			{
+				kind: "timer",
+				timer: "task_countdown",
+				op: "open",
+				match_on: { task_id: "t7" },
+				tag: undefined,
+				duration_ms: 3_600_000,
+			},
+		]);
+	});
+
+	it("R4 closes by task_id exactly what R22 opened (assign→complete pairing, ADR 0004)", () => {
+		const assigned = evaluateRules(DEFAULT_RULES, {
+			type: "task_assigned",
+			metadata: { task_id: "t7", duration_ms: 60_000 },
+			occurred_at: 1,
+		});
+		const completed = evaluateRules(DEFAULT_RULES, {
+			type: "task_completed",
+			metadata: { task_id: "t7" },
+			occurred_at: 2,
+		});
+		const openMatch = assigned.fired[0]?.ops.find(
+			(op) => op.kind === "timer" && op.op === "open",
+		);
+		const closeOp = completed.fired
+			.flatMap((f) => f.ops)
+			.find((op) => op.kind === "timer" && op.op === "close");
+		// The close matches on the same resolved ref the open pinned.
+		expect(closeOp).toMatchObject({
+			timer: "task_countdown",
+			op: "close",
+			match_on: { task_id: "t7" },
+			status: "completed",
+		});
+		expect(openMatch).toMatchObject({ match_on: { task_id: "t7" } });
+	});
+
+	it("R23 opens the denial period from a denial_started, routing its duration (ADR 0004)", () => {
+		const { fired } = evaluateRules(DEFAULT_RULES, {
+			type: "denial_started",
+			metadata: { duration_ms: 86_400_000 },
+			occurred_at: 500,
+		});
+		expect(fired.map((f) => f.rule_id)).toEqual(["R23"]);
+		expect(fired[0]?.ops).toEqual([
+			{
+				kind: "timer",
+				timer: "denial_period",
+				op: "open",
+				match_on: undefined,
+				tag: undefined,
+				duration_ms: 86_400_000,
+			},
+		]);
 	});
 
 	it("an unpermitted sub orgasm fans out across R10/R12/R14 (max fan-out)", () => {

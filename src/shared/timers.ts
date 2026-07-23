@@ -37,20 +37,6 @@ export const DEFAULT_STOPWATCH_MAX_MS: number = 12 * HOUR_MS;
 export const timerKindSchema = z.enum(["stopwatch", "countdown"]);
 export type TimerKind = z.infer<typeof timerKindSchema>;
 
-/**
- * What the dom sends to assign a countdown (handoff §4.5 — "dom-started countdown
- * = assignment"). `timer` is the countdown definition (e.g. `task_countdown`),
- * `match` the ref keys a later close matches on (e.g. `{ task_id }`), and
- * `duration_ms` the time allowed from assignment.
- */
-export const assignCountdownInputSchema = z.object({
-	timer: z.string(),
-	duration_ms: z.number().int().positive(),
-	match: z.record(z.string(), metadataValueSchema).default({}),
-	tag: z.string().optional(),
-});
-export type AssignCountdownInput = z.infer<typeof assignCountdownInputSchema>;
-
 /** What the dom sends to extend a countdown — the extra time to grant. */
 export const extendTimerInputSchema = z.object({
 	by_ms: z.number().int().positive(),

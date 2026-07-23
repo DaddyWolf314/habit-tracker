@@ -104,13 +104,14 @@ export const traceDetailSchema = z.discriminatedUnion("kind", [
 	}),
 	z.object({
 		kind: z.literal("timer_command"),
-		command: z.enum(["assign", "pause", "resume", "extend"]),
+		// Live dom control over a running countdown (ADR 0004). Opening is no longer
+		// a command — it is a rule firing on a `task_assigned`/`denial_started` event —
+		// so there is no `assign`; `cancel` calls a live countdown off early.
+		command: z.enum(["pause", "resume", "extend", "cancel"]),
 		timer_id: z.string(),
 		deadline_at: z.number().optional(),
 		remaining_ms: z.number().optional(),
 		by_ms: z.number().optional(),
-		match: matchSchema.optional(),
-		tag: z.string().optional(),
 	}),
 ]);
 export type TraceDetail = z.infer<typeof traceDetailSchema>;
@@ -468,13 +469,11 @@ export function traceTimerCommand(
 	at: number,
 	timer: string,
 	info: {
-		command: "assign" | "pause" | "resume" | "extend";
+		command: "pause" | "resume" | "extend" | "cancel";
 		timer_id: string;
 		deadline_at?: number;
 		remaining_ms?: number;
 		by_ms?: number;
-		match?: Record<string, MetadataValue>;
-		tag?: string;
 	},
 ): TraceEntry {
 	return {
