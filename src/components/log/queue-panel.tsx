@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { anchorLabel } from "#/components/log/anchors-panel.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, awaitedRulings } from "#/shared/adjudication.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
-import { reevaluate } from "#/shared/engine.ts";
+import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
 import {
 	awaitingKeysFor,
 	type EventType,
@@ -18,7 +17,8 @@ import {
 	type Role,
 	resolveSubjectRole,
 } from "#/shared/roles.ts";
-import type { Rule } from "#/shared/rules.ts";
+import type { VersionedRule } from "#/shared/rules.ts";
+import { anchorLabel } from "#/templates/index.ts";
 import {
 	formatElapsed,
 	formatMetaValue,
@@ -50,7 +50,7 @@ export function QueuePanel({
 }: {
 	events: EventView[];
 	types: EventType[];
-	rules: Rule[];
+	rules: VersionedRule[];
 	members: RoleMember[];
 	anchors?: AnchorView[];
 	selfRole: Role | null;
@@ -109,12 +109,17 @@ function QueueItem({
 }: {
 	event: EventView;
 	type: EventType;
-	rules: Rule[];
+	rules: VersionedRule[];
 	rulings: AwaitedRuling[];
 	members: RoleMember[];
 	anchors: AnchorView[];
 	onAmended: () => void;
 }) {
+	// Effective-dating keys off the target event's log-time, never the viewing
+	// time (ADR 0002) — the same resolution the DO's reevaluateOnAmendment
+	// applies on commit, so the preview and the evidence can't cite a rule
+	// version that won't actually govern the ruling.
+	const rulesInForce = rulesEffectiveAt(rules, event.logged_at);
 	const [values, setValues] = useState<Record<string, string>>({});
 	const [note, setNote] = useState("");
 	const [stage, setStage] = useState<"edit" | "confirm">("edit");
@@ -162,7 +167,7 @@ function QueueItem({
 			...before,
 			metadata: { ...event.composite_metadata, ...patch },
 		};
-		return reevaluate(rules, before, after).flatMap((fired) =>
+		return reevaluate(rulesInForce, before, after).flatMap((fired) =>
 			fired.ops.map(summarizeEffectOp),
 		);
 	}
@@ -192,14 +197,16 @@ function QueueItem({
 	const effects = stage === "confirm" ? previewEffects() : [];
 
 	// Adjudication evidence (#78, ADR 0003): the anchors this event type's rules
-	// can reset are the clocks the ruling is judged against — for an orgasm,
+	// can reset are the anchors the ruling is judged against — for an orgasm,
 	// "since sub's last" and "since dom's last" side by side, so "was this
 	// permitted" is ruled with the protocol state on screen. Derived from the
-	// rule set, not hard-coded, so custom types get the same evidence for free.
+	// rule versions in force at the event's log-time (disabled ones excluded —
+	// they can't fire), so custom types get the same evidence for free and a
+	// since-changed rule can't inject stale chips.
 	const evidence = (() => {
 		const relevant = new Set(
-			rules
-				.filter((r) => r.condition.type === event.type)
+			rulesInForce
+				.filter((r) => r.enabled !== false && r.condition.type === event.type)
 				.flatMap((r) => r.effects)
 				.flatMap((e) => (e.verb === "reset_anchor" ? [e.anchor] : [])),
 		);

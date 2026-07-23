@@ -11,7 +11,7 @@ import {
 	listCounters,
 	listEvents,
 	listEventTypes,
-	listRules,
+	listRuleHistory,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
@@ -19,7 +19,7 @@ import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { Rule } from "#/shared/rules.ts";
+import type { VersionedRule } from "#/shared/rules.ts";
 
 /**
  * The Log surface (handoff §9 surface 3, plus the counters/composer it needs to
@@ -30,7 +30,9 @@ import type { Rule } from "#/shared/rules.ts";
 export function LogView() {
 	const [ready, setReady] = useState(false);
 	const [types, setTypes] = useState<EventType[]>([]);
-	const [rules, setRules] = useState<Rule[]>([]);
+	// Versioned, not flat: the queue resolves the version in force at each
+	// event's log-time (ADR 0002), exactly as the DO will on commit.
+	const [rules, setRules] = useState<VersionedRule[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
 	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	const [events, setEvents] = useState<EventView[]>([]);
@@ -53,7 +55,7 @@ export function LogView() {
 			const [typeRes, ruleRes, counterRes, anchorRes, eventRes, roleRes] =
 				await Promise.all([
 					listEventTypes(),
-					listRules(),
+					listRuleHistory(),
 					listCounters(),
 					listAnchors(),
 					listEvents(),

@@ -21,6 +21,7 @@ import {
 	type RuleChangeNotice,
 	ruleChangeNotice,
 } from "#/shared/notifications.ts";
+import type { Role } from "#/shared/roles.ts";
 import {
 	describeCondition,
 	describeRule,
@@ -34,7 +35,7 @@ import {
 	ruleFromVersion,
 	type VersionedRule,
 } from "#/shared/rules.ts";
-import { DEFAULT_ANCHORS } from "#/templates/index.ts";
+import { anchorLabel, DEFAULT_ANCHORS } from "#/templates/index.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
@@ -394,7 +395,7 @@ function RuleEditor({
 	// Subject-role qualifier (ADR 0003): "" means unqualified — the rule matches
 	// regardless of who the event is about. Kept across type changes (the clause
 	// is type-independent; every event may carry a subject).
-	const [subjectRole, setSubjectRole] = useState<string>(
+	const [subjectRole, setSubjectRole] = useState<Role | "">(
 		seed?.condition.subject_role ?? "",
 	);
 	const [conditions, setConditions] = useState<ConditionDraft[]>(
@@ -410,6 +411,14 @@ function RuleEditor({
 	);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Two-stage save (#77, mirroring the queue's ruling flow): "Review rule"
+	// builds and snapshots the draft, the confirm sheet renders that snapshot
+	// through the shared phrasing, and only "Confirm" commits it.
+	const [stage, setStage] = useState<"edit" | "confirm">("edit");
+	const [confirmed, setConfirmed] = useState<{
+		id: string;
+		def: RuleDefinition;
+	} | null>(null);
 
 	const type = types.find((t) => t.id === typeId);
 	const metaKeys = type ? Object.keys(type.metadata) : [];
@@ -429,9 +438,7 @@ function RuleEditor({
 		return describeCondition(
 			{
 				type: type.id,
-				...(subjectRole
-					? { subject_role: subjectRole as "dom" | "sub" | "switch" }
-					: {}),
+				...(subjectRole ? { subject_role: subjectRole } : {}),
 				metadata,
 			},
 			type,
@@ -466,9 +473,7 @@ function RuleEditor({
 		const def: RuleDefinition = {
 			condition: {
 				type: typeId,
-				...(subjectRole
-					? { subject_role: subjectRole as "dom" | "sub" | "switch" }
-					: {}),
+				...(subjectRole ? { subject_role: subjectRole } : {}),
 				metadata,
 			},
 			effects: built,
@@ -482,24 +487,75 @@ function RuleEditor({
 		return { id, def };
 	};
 
-	const save = async () => {
+	const review = () => {
 		setError(null);
 		const result = build();
 		if (!result) return;
+		setConfirmed(result);
+		setStage("confirm");
+	};
+
+	const save = async () => {
+		if (!confirmed) return;
+		setError(null);
 		setBusy(true);
 		try {
 			if (existing) {
-				await updateRule(existing.id, result.def);
+				await updateRule(existing.id, confirmed.def);
 			} else {
-				await createRule({ id: result.id, ...result.def });
+				await createRule({ id: confirmed.id, ...confirmed.def });
 			}
 			onSaved();
 		} catch (err) {
+			// Server validation keeps its inline surface — the sheet stays up with
+			// the message, and "Back" returns to the pickers to fix the draft.
 			setError(err instanceof Error ? err.message : "Couldn't save the rule.");
 		} finally {
 			setBusy(false);
 		}
 	};
+
+	// The confirm sheet (#77): the snapshotted draft through the one shared
+	// phrasing path (describeRule), so "what will fire" reads identically to the
+	// rules screen and the trace's "what fired" — subject clause included.
+	if (stage === "confirm" && confirmed) {
+		const described = describeRule(
+			{ id: confirmed.id, ...confirmed.def },
+			type,
+		);
+		return (
+			<section className="rounded-lg border border-primary/40 p-4">
+				<h2 className="text-lg font-semibold">
+					{existing ? `Edit ${existing.id}` : "New rule"}
+				</h2>
+				<div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3">
+					<p className="text-xs font-medium text-muted-foreground">
+						This rule will read:
+					</p>
+					<p className="text-sm font-medium">{described.when}</p>
+					<ul className="space-y-1 text-sm text-muted-foreground">
+						{described.effects.map((phrase, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: phrases are positional
+							<li key={i}>→ {phrase}</li>
+						))}
+					</ul>
+					{error && <p className="text-sm text-destructive">{error}</p>}
+					<div className="flex gap-2">
+						<Button onClick={save} disabled={busy}>
+							{busy ? "…" : existing ? "Save changes" : "Create rule"}
+						</Button>
+						<Button
+							variant="ghost"
+							onClick={() => setStage("edit")}
+							disabled={busy}
+						>
+							Back
+						</Button>
+					</div>
+				</div>
+			</section>
+		);
+	}
 
 	return (
 		<section className="rounded-lg border border-primary/40 p-4">
@@ -547,7 +603,9 @@ function RuleEditor({
 					<select
 						className={`${fieldClass} mt-1`}
 						value={subjectRole}
-						onChange={(e) => setSubjectRole(e.target.value)}
+						// The options below are exactly the Role enum plus "" — the only
+						// values the picker can produce.
+						onChange={(e) => setSubjectRole(e.target.value as Role | "")}
 					>
 						<option value="">anyone</option>
 						<option value="dom">the dom</option>
@@ -681,8 +739,8 @@ function RuleEditor({
 			{error && <p className="mt-3 text-sm text-destructive">{error}</p>}
 
 			<div className="mt-4 flex gap-2">
-				<Button onClick={save} disabled={busy}>
-					{busy ? "…" : existing ? "Save changes" : "Create rule"}
+				<Button onClick={review} disabled={busy}>
+					Review rule
 				</Button>
 				<Button variant="ghost" onClick={onCancel} disabled={busy}>
 					Cancel
@@ -762,7 +820,7 @@ function EffectTarget({
 				<option value="">clock…</option>
 				{DEFAULT_ANCHORS.map((a) => (
 					<option key={a} value={a}>
-						{a.replace(/_/g, " ")}
+						{anchorLabel(a)}
 					</option>
 				))}
 			</select>

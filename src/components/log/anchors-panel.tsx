@@ -1,4 +1,5 @@
 import type { AnchorView } from "#/shared/anchors.ts";
+import { anchorLabel } from "#/templates/index.ts";
 
 /**
  * Elapsed-since anchors panel (handoff §4.5, §9 today view; #78). Each anchor
@@ -40,22 +41,6 @@ function sortForDisplay(anchors: AnchorView[]): AnchorView[] {
 	const at = rest.findIndex((a) => a.anchor === "since_last_orgasm");
 	if (at === -1) return anchors;
 	return [...rest.slice(0, at + 1), dom, ...rest.slice(at + 1)];
-}
-
-/**
- * Display labels for the pack anchors, following the glossary naming
- * convention (an unqualified name means the sub's; the dom_ marker the
- * dom's). Unknown/custom anchors fall back to humanizing the id.
- */
-export function anchorLabel(id: string): string {
-	switch (id) {
-		case "since_last_orgasm":
-			return "since sub's last orgasm";
-		case "since_dom_last_orgasm":
-			return "since dom's last orgasm";
-		default:
-			return id.replace(/_/g, " ");
-	}
 }
 
 function elapsedText(days: number | null): string {
