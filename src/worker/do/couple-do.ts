@@ -19,6 +19,7 @@ import {
 	applyCounterOp,
 	type EffectOp,
 	evaluateRules,
+	type RuleEventContext,
 	reevaluate,
 	routeClosedTimerDuration,
 	rulesEffectiveAt,
@@ -1648,21 +1649,13 @@ export class CoupleDO extends DurableObject<Env> {
 	): void {
 		const before = compositeMetadata(event, priorAmendments);
 		const after = compositeMetadata(event, [...priorAmendments, amendment]);
-		const subjectRole = this.subjectRole(event.subject);
-		const context = (metadata: Record<string, MetadataValue>) => ({
-			type: event.type,
-			metadata,
-			occurred_at: event.occurred_at,
-			subject_role: subjectRole,
-			awaiting: awaitingKeysFor(type.awaiting, subjectRole),
-		});
 		// Effective-dating keys off the target event's log-time, never the ruling
 		// time — a late ruling fires the rule version in force when the event was
 		// logged, so adjudicating the past can't smuggle in a newer rule (ADR 0002).
 		const fired = reevaluate(
 			this.rulesAt(event.logged_at),
-			context(before),
-			context(after),
+			this.ruleContext(event, before, type.awaiting),
+			this.ruleContext(event, after, type.awaiting),
 		);
 
 		this.timersDirty = false;
@@ -2067,16 +2060,11 @@ export class CoupleDO extends DurableObject<Env> {
 		// Resolve the rules in force at this event's log-time. On a live append that
 		// is "now" (today's rules); on a rebuild it is each past event's own
 		// log-time, so replay reproduces history rather than re-deriving it under
-		// today's rules (ADR 0002). The subject role resolves once and scopes both
-		// the qualified rules and the awaiting entries in force (ADR 0003).
-		const subjectRole = this.subjectRole(event.subject);
-		const { fired, nearMisses } = evaluateRules(this.rulesAt(event.logged_at), {
-			type: event.type,
-			metadata: composite,
-			occurred_at: event.occurred_at,
-			subject_role: subjectRole,
-			awaiting: awaitingKeysFor(awaiting, subjectRole),
-		});
+		// today's rules (ADR 0002).
+		const { fired, nearMisses } = evaluateRules(
+			this.rulesAt(event.logged_at),
+			this.ruleContext(event, composite, awaiting),
+		);
 		for (const rule of fired) {
 			for (const op of rule.ops) {
 				this.applyEffectOp(event, rule.rule_id, op);
@@ -3351,6 +3339,29 @@ export class CoupleDO extends DurableObject<Env> {
 			(memberId) =>
 				this.members().find((m) => m.id === memberId)?.role as Role | null,
 		);
+	}
+
+	/**
+	 * The engine context for one snapshot of an event's metadata (ADR 0003): the
+	 * subject role resolves once and scopes both the qualified rules and the
+	 * awaiting keys in force. The single place a `RuleEventContext` is built from
+	 * an event, so the append, rebuild, and re-adjudication paths can never drift
+	 * on how a subject or an awaiting entry gates evaluation — the lockstep
+	 * {@link awaitingKeysFor} exists to guarantee.
+	 */
+	private ruleContext(
+		event: Pick<Event, "type" | "occurred_at" | "subject">,
+		metadata: Record<string, MetadataValue>,
+		awaiting: AwaitingEntry[],
+	): RuleEventContext {
+		const subjectRole = this.subjectRole(event.subject);
+		return {
+			type: event.type,
+			metadata,
+			occurred_at: event.occurred_at,
+			subject_role: subjectRole,
+			awaiting: awaitingKeysFor(awaiting, subjectRole),
+		};
 	}
 
 	protected memberByIdentity(identityHash: string): MemberRow | undefined {
