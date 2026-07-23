@@ -109,6 +109,25 @@ export function durationMinutes(durationMs: number): number {
 }
 
 /**
+ * A remaining-time span rendered for the today view: the two largest non-zero
+ * units, coarsening as the span grows (`1d 1h`, `1h 2m`, `1m 30s`, `45s`).
+ * Isomorphic and pure so the client can tick it every second off
+ * {@link countdownRemainingMs}. Negative/zero clamps to `0s` — an overdue
+ * countdown reads as done, never as negative time.
+ */
+export function formatRemaining(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	const days = Math.floor(totalSeconds / 86_400);
+	const hours = Math.floor((totalSeconds % 86_400) / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (days > 0) return `${days}d ${hours}h`;
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
+	return `${seconds}s`;
+}
+
+/**
  * Finds the open stopwatch a close refers to, by matching every key in the
  * resolved `match_on` (handoff §4.5 — "ended with no matching started → reject").
  * An empty/absent match pins no key and so matches *nothing* (never all opens):

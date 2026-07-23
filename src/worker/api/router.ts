@@ -16,6 +16,7 @@ import {
 	revokeDeviceInputSchema,
 } from "#/shared/identity.ts";
 import { introspectInputSchema } from "#/shared/introspection.ts";
+import { extendTimerInputSchema } from "#/shared/timers.ts";
 import {
 	type AuthContext,
 	authenticate,
@@ -282,6 +283,48 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.getCounterTrace(auth.identityHash, counterId)
 					.then((trace) => json(trace)),
 			);
+		}
+
+		// ── Phase 4: countdowns (assignment is an event; these are live control) ─
+		// Assigning is not a route — it is a `task_assigned`/`denial_started` event
+		// logged via /api/events (ADR 0004). These endpoints only read timers and
+		// carry the dom's live control over a running countdown; the DO's assertDom
+		// rejects a non-dom on every write with FORBIDDEN → 403.
+		if (path === "/api/timers" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.listTimers(auth.identityHash).then((timers) => json({ timers })),
+			);
+		}
+		const timerPauseMatch = path.match(/^\/api\/timers\/([^/]+)\/pause$/);
+		if (timerPauseMatch && method === "POST") {
+			const id = decodeURIComponent(timerPauseMatch[1]);
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.pauseTimer(auth.identityHash, id).then((t) => json(t)),
+			);
+		}
+		const timerResumeMatch = path.match(/^\/api\/timers\/([^/]+)\/resume$/);
+		if (timerResumeMatch && method === "POST") {
+			const id = decodeURIComponent(timerResumeMatch[1]);
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.resumeTimer(auth.identityHash, id).then((t) => json(t)),
+			);
+		}
+		const timerCancelMatch = path.match(/^\/api\/timers\/([^/]+)\/cancel$/);
+		if (timerCancelMatch && method === "POST") {
+			const id = decodeURIComponent(timerCancelMatch[1]);
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.cancelTimer(auth.identityHash, id).then((t) => json(t)),
+			);
+		}
+		const timerExtendMatch = path.match(/^\/api\/timers\/([^/]+)\/extend$/);
+		if (timerExtendMatch && method === "POST") {
+			const id = decodeURIComponent(timerExtendMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, extendTimerInputSchema);
+				if ("response" in parsed) return parsed.response;
+				const t = await stub.extendTimer(auth.identityHash, id, parsed.data);
+				return json(t);
+			});
 		}
 
 		// ── Phase 3: rules engine ──────────────────────────────────────────────

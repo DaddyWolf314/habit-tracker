@@ -21,6 +21,7 @@ import type {
 import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
 import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
+import type { TimerView } from "#/shared/timers.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
 
@@ -396,4 +397,35 @@ export function getCounterTrace(counterId: string): Promise<CounterTrace> {
 	return apiFetch<CounterTrace>(
 		`/api/counters/trace?counter_id=${encodeURIComponent(counterId)}`,
 	);
+}
+
+/** Active + closed timers as live views for the today screen (handoff §9). */
+export function listTimers(): Promise<{ timers: TimerView[] }> {
+	return apiFetch<{ timers: TimerView[] }>("/api/timers");
+}
+
+// Dom live control over a running countdown (ADR 0004). There is deliberately no
+// `assignTimer` — assigning is a `task_assigned` / `denial_started` event logged
+// via {@link logEvent}; a rule opens the countdown.
+function timerCommand(timerId: string, verb: string, body?: unknown) {
+	return apiFetch<TimerView>(
+		`/api/timers/${encodeURIComponent(timerId)}/${verb}`,
+		{ method: "POST", body },
+	);
+}
+
+export function pauseTimer(timerId: string): Promise<TimerView> {
+	return timerCommand(timerId, "pause");
+}
+
+export function resumeTimer(timerId: string): Promise<TimerView> {
+	return timerCommand(timerId, "resume");
+}
+
+export function cancelTimer(timerId: string): Promise<TimerView> {
+	return timerCommand(timerId, "cancel");
+}
+
+export function extendTimer(timerId: string, byMs: number): Promise<TimerView> {
+	return timerCommand(timerId, "extend", { by_ms: byMs });
 }
