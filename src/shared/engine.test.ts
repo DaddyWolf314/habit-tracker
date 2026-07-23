@@ -257,3 +257,112 @@ describe("reevaluate on amendment (handoff §4.2, §7)", () => {
 		).toEqual([]);
 	});
 });
+
+describe("subject-role qualifier (ADR 0003)", () => {
+	const domRule = rule({
+		id: "Rdom",
+		condition: { type: "orgasm", subject_role: "dom", metadata: {} },
+	});
+	const subRule = rule({
+		id: "Rsub",
+		condition: { type: "orgasm", subject_role: "sub", metadata: {} },
+	});
+
+	function subjectCtx(
+		subjectRole: RuleEventContext["subject_role"],
+		metadata: RuleEventContext["metadata"] = {},
+	): RuleEventContext {
+		return {
+			type: "orgasm",
+			metadata,
+			occurred_at: 1000,
+			subject_role: subjectRole,
+		};
+	}
+
+	it("fires only when the event's subject resolves to the qualified role", () => {
+		expect(matchRule(domRule, subjectCtx("dom"))).toEqual({ status: "fired" });
+		expect(matchRule(subRule, subjectCtx("sub"))).toEqual({ status: "fired" });
+	});
+
+	it("a wrong subject role is a near-miss with plain-language phrasing", () => {
+		expect(matchRule(subRule, subjectCtx("dom"))).toEqual({
+			status: "near_miss",
+			reason: "Rsub didn't fire: subject is not the sub",
+			awaiting: [],
+			subject_mismatch: true,
+		});
+	});
+
+	it("an event with no subject never matches a qualified rule", () => {
+		expect(matchRule(domRule, ctx("orgasm"))).toMatchObject({
+			status: "near_miss",
+			subject_mismatch: true,
+		});
+	});
+
+	it("dom/sub qualifiers are dormant in a switch/switch couple", () => {
+		// Both members are `switch`, so no subject ever resolves to dom or sub.
+		expect(matchRule(domRule, subjectCtx("switch")).status).toBe("near_miss");
+		expect(matchRule(subRule, subjectCtx("switch")).status).toBe("near_miss");
+		// A switch-qualified custom rule does match.
+		const switchRule = rule({
+			id: "Rsw",
+			condition: { type: "orgasm", subject_role: "switch", metadata: {} },
+		});
+		expect(matchRule(switchRule, subjectCtx("switch")).status).toBe("fired");
+	});
+
+	it("an unqualified rule matches regardless of subject role", () => {
+		const plain = rule({
+			id: "R",
+			condition: { type: "orgasm", metadata: {} },
+		});
+		expect(matchRule(plain, subjectCtx("dom")).status).toBe("fired");
+		expect(matchRule(plain, ctx("orgasm")).status).toBe("fired");
+	});
+
+	it("a subject mismatch is terminal: no metadata keys are 'awaited'", () => {
+		// The subject is fixed at logging, so a ruling can never make this rule
+		// fire — reporting "waiting on: permitted" would be a false promise.
+		const conditional = rule({
+			id: "Rc",
+			condition: {
+				type: "orgasm",
+				subject_role: "sub",
+				metadata: { permitted: true },
+			},
+		});
+		const result = matchRule(conditional, subjectCtx("dom"));
+		expect(result).toMatchObject({ status: "near_miss", awaiting: [] });
+	});
+
+	it("subject-mismatch near-misses surface even under the awaiting filter", () => {
+		// Structural dormancy must stay legible in the trace ("why didn't the
+		// sub's rules fire on the dom's orgasm") even though nothing is awaited.
+		const { nearMisses } = evaluateRules([subRule], {
+			...subjectCtx("dom"),
+			awaiting: ["permitted"],
+		});
+		expect(nearMisses.map((n) => n.rule_id)).toEqual(["Rsub"]);
+	});
+
+	it("reevaluate honors the qualifier: a ruling cannot un-dormant a rule", () => {
+		const conditional = rule({
+			id: "Rc",
+			condition: {
+				type: "orgasm",
+				subject_role: "sub",
+				metadata: { permitted: true },
+			},
+		});
+		// Dom-subject orgasm ruled permitted=true: the sub-qualified rule still
+		// never fires — the qualifier is checked identically on re-evaluation.
+		const fired = reevaluate(
+			[conditional],
+			subjectCtx("dom"),
+			subjectCtx("dom", { permitted: true }),
+		);
+		expect(fired).toEqual([]);
+	});
+});

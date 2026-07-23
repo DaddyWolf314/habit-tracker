@@ -7,7 +7,11 @@ import { reevaluate } from "#/shared/engine.ts";
 import type { EventType, MetadataField } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import type { MetadataValue, Role } from "#/shared/roles.ts";
+import {
+	type MetadataValue,
+	type Role,
+	resolveSubjectRole,
+} from "#/shared/roles.ts";
 import type { Rule } from "#/shared/rules.ts";
 import {
 	formatElapsed,
@@ -128,6 +132,12 @@ function QueueItem({
 			type: event.type,
 			metadata: event.composite_metadata,
 			occurred_at: event.occurred_at,
+			// Same resolution seam the DO uses (ADR 0003), so the preview and the
+			// commit agree on which subject-qualified rules are in play.
+			subject_role: resolveSubjectRole(
+				event.subject,
+				(id) => members.find((m) => m.member_id === id)?.role,
+			),
 			awaiting: type.awaiting,
 		};
 		const after = {

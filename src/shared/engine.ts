@@ -1,4 +1,4 @@
-import type { MetadataValue } from "./roles.ts";
+import type { MetadataValue, Role } from "./roles.ts";
 import {
 	type Rule,
 	type RuleCondition,
@@ -81,6 +81,13 @@ export interface RuleEventContext {
 	/** Time-anchored effects (anchor resets) use `occurred_at`, not the log time. */
 	occurred_at: number;
 	/**
+	 * The role the event's subject resolves to (ADR 0003), resolved by the caller
+	 * via `resolveSubjectRole` — the engine stays member-id-free. Undefined when
+	 * the event has no subject (or the subject's role is unconfirmed); a
+	 * subject-qualified rule then never matches.
+	 */
+	subject_role?: Role;
+	/**
 	 * The event type's `awaiting` keys (handoff §5). When provided, only near-
 	 * misses that are *pending* on one of these keys are surfaced — a rule waiting
 	 * on `permitted` is genuine pending-adjudication signal ("R11/R12 waiting on:
@@ -93,20 +100,42 @@ export interface RuleEventContext {
 /**
  * The outcome of testing one rule against one event:
  *  - `irrelevant` — the event type doesn't match; the rule is not shown at all.
- *  - `fired`      — type matched and every metadata equality held.
+ *  - `fired`      — type matched, the subject-role qualifier (if any) held, and
+ *    every metadata equality held.
  *  - `near_miss`  — type matched but a condition was unmet. `awaiting` lists the
  *    keys that were simply *unset* (the pending, resolve-on-adjudication case);
  *    a present-but-wrong value is a near-miss too but is not "waiting on"
- *    anything.
+ *    anything. `subject_mismatch` marks a near-miss on the subject-role
+ *    qualifier (ADR 0003): structural — the subject is fixed at logging, so the
+ *    rule can never fire on this event, and no adjudication is awaited.
  */
 export type MatchResult =
 	| { status: "irrelevant" }
 	| { status: "fired" }
-	| { status: "near_miss"; reason: string; awaiting: string[] };
+	| {
+			status: "near_miss";
+			reason: string;
+			awaiting: string[];
+			subject_mismatch?: boolean;
+	  };
 
 /** Tests a single rule's condition against an event's composite state. */
 export function matchRule(rule: Rule, ctx: RuleEventContext): MatchResult {
 	if (rule.condition.type !== ctx.type) return { status: "irrelevant" };
+	// Subject-role qualifier (ADR 0003): checked before metadata because a
+	// mismatch is terminal — the subject never changes, so metadata "waiting on"
+	// keys would be a false promise ("R12 waiting on: permitted" for an event it
+	// can never fire on). A dom/sub qualifier in a switch/switch couple lands
+	// here on every event: dormant by design.
+	const wanted = rule.condition.subject_role;
+	if (wanted !== undefined && ctx.subject_role !== wanted) {
+		return {
+			status: "near_miss",
+			reason: `${rule.id} didn't fire: subject is not the ${wanted}`,
+			awaiting: [],
+			subject_mismatch: true,
+		};
+	}
 	return classifyMetadata(rule.id, rule.condition, ctx.metadata);
 }
 
@@ -180,7 +209,7 @@ export function evaluateRules(
 				rule_id: rule.id,
 				ops: rule.effects.map((effect) => resolveEffect(effect, ctx)),
 			});
-		} else if (result.status === "near_miss" && isPending(result, ctx)) {
+		} else if (result.status === "near_miss" && isSurfaced(result, ctx)) {
 			nearMisses.push({
 				rule_id: rule.id,
 				reason: result.reason,
@@ -219,11 +248,18 @@ export function reevaluate(
  * type is awaiting adjudication for. With no `awaiting` context, every near-miss
  * is surfaced (used by the pure pack tests). This is what keeps routine events —
  * a non-late ritual, a set-but-wrong value — from burying the trace in noise.
+ *
+ * A subject-role mismatch (ADR 0003) is always surfaced, awaiting filter or
+ * not: it is structural, not transient — the whole family of rules qualified
+ * for the other role went dormant on this event, and the consent-record view
+ * must be able to answer "why didn't the sub's orgasm rules fire" on a
+ * dom-subject orgasm without a debugger.
  */
-function isPending(
-	nearMiss: { awaiting: string[] },
+function isSurfaced(
+	nearMiss: { awaiting: string[]; subject_mismatch?: boolean },
 	ctx: RuleEventContext,
 ): boolean {
+	if (nearMiss.subject_mismatch) return true;
 	if (ctx.awaiting === undefined) return true;
 	return nearMiss.awaiting.some((key) => ctx.awaiting?.includes(key));
 }

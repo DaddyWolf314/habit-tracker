@@ -31,6 +31,13 @@ export function validateRule(
 		return fail(`unknown event type: ${rule.condition.type}`);
 	}
 
+	// The subject-role qualifier (ADR 0003) needs no per-type check: every event
+	// may carry a subject regardless of `subject_required` (which governs whether
+	// one *must* be given, not whether one may), and the schema already constrains
+	// the clause to the role enum. A qualifier that matches no member (e.g. `dom`
+	// in a switch/switch couple) is *valid* — the rule is dormant by design, never
+	// a creation error, because roles are couple state, not schema.
+
 	// Condition keys must exist on the type, and their values must fit the field.
 	for (const [key, value] of Object.entries(rule.condition.metadata)) {
 		const field = type.metadata[key];

@@ -27,7 +27,12 @@ function valueText(value: MetadataValue): string {
 	return humanize(String(value));
 }
 
-/** "when a ritual is logged" plus each metadata equality, e.g. "and late is yes". */
+/**
+ * "when a ritual is logged" plus the subject-role qualifier ("about the sub",
+ * ADR 0003) and each metadata equality, e.g. "and late is yes". One renderer:
+ * the rules screen, the confirm sheet, and the chain view all read the clause
+ * through here, so "what will fire" and "what fired" phrase it identically.
+ */
 export function describeCondition(
 	condition: RuleCondition,
 	type?: EventType,
@@ -37,7 +42,10 @@ export function describeCondition(
 		const fieldLabel = type?.metadata[key]?.label ?? humanize(key);
 		return `${fieldLabel} is ${valueText(value)}`;
 	});
-	const when = `when ${typeLabel} is logged`;
+	const about = condition.subject_role
+		? ` about the ${condition.subject_role}`
+		: "";
+	const when = `when ${typeLabel} is logged${about}`;
 	return clauses.length ? `${when} and ${clauses.join(" and ")}` : when;
 }
 

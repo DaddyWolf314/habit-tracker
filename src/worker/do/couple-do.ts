@@ -68,7 +68,12 @@ import {
 	RECOVERY_WAIT_MS,
 	recoveryView,
 } from "#/shared/recovery.ts";
-import type { MetadataValue, Role, Visibility } from "#/shared/roles.ts";
+import {
+	type MetadataValue,
+	type Role,
+	resolveSubjectRole,
+	type Visibility,
+} from "#/shared/roles.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
 import { validateRule, validateRuleVersion } from "#/shared/rule-validation.ts";
 import type {
@@ -1625,6 +1630,7 @@ export class CoupleDO extends DurableObject<Env> {
 			type: event.type,
 			metadata,
 			occurred_at: event.occurred_at,
+			subject_role: this.subjectRole(event.subject),
 			awaiting: type.awaiting,
 		});
 		// Effective-dating keys off the target event's log-time, never the ruling
@@ -2043,6 +2049,7 @@ export class CoupleDO extends DurableObject<Env> {
 			type: event.type,
 			metadata: composite,
 			occurred_at: event.occurred_at,
+			subject_role: this.subjectRole(event.subject),
 			awaiting,
 		});
 		for (const rule of fired) {
@@ -3301,6 +3308,20 @@ export class CoupleDO extends DurableObject<Env> {
 		return this.sql
 			.exec<MemberRow>(`SELECT id, identity_hash, role, joined_at FROM members`)
 			.toArray();
+	}
+
+	/**
+	 * The role an event's subject resolves to (ADR 0003), via the shared
+	 * `resolveSubjectRole` seam — the engine itself stays member-id-free. Roles
+	 * are fixed after mutual confirmation, so resolving at replay time yields the
+	 * same role as at append time and a rebuild reproduces history.
+	 */
+	protected subjectRole(subject: string | undefined): Role | undefined {
+		return resolveSubjectRole(
+			subject,
+			(memberId) =>
+				this.members().find((m) => m.id === memberId)?.role as Role | null,
+		);
 	}
 
 	protected memberByIdentity(identityHash: string): MemberRow | undefined {

@@ -50,6 +50,24 @@ describe("describeCondition", () => {
 			}),
 		).toBe("when custom thing is logged and my key is some val");
 	});
+
+	it("renders the subject-role qualifier as 'about the <role>' (ADR 0003)", () => {
+		expect(
+			describeCondition(
+				{ type: "orgasm", subject_role: "dom", metadata: {} },
+				types.get("orgasm"),
+			),
+		).toBe("when Orgasm is logged about the dom");
+	});
+
+	it("places the qualifier before metadata clauses", () => {
+		expect(
+			describeCondition(
+				{ type: "orgasm", subject_role: "sub", metadata: { permitted: false } },
+				types.get("orgasm"),
+			),
+		).toBe("when Orgasm is logged about the sub and Permitted? is no");
+	});
 });
 
 describe("describeEffect — the shared effect phrasing (CONTEXT.md, Trace)", () => {
