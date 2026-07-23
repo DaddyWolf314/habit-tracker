@@ -12,13 +12,16 @@ import {
 	getNotifications,
 	getRoles,
 	getSession,
+	linkDevice,
 	proposeRoles,
 	redeemInvite,
 } from "#/lib/api.ts";
 import {
+	clearCredentials,
 	generateSecret,
 	hasIdentity,
 	secretFromMnemonic,
+	storeDeviceToken,
 	storeSecret,
 } from "#/lib/identity.ts";
 import type {
@@ -32,6 +35,7 @@ type Stage =
 	| { name: "loading" }
 	| { name: "intro" }
 	| { name: "recover" }
+	| { name: "link" }
 	| { name: "join" }
 	| { name: "ceremony"; mnemonic: string }
 	| { name: "home"; session: Session };
@@ -54,7 +58,12 @@ export function Onboarding() {
 		}
 		getSession()
 			.then((session) => setStage({ name: "home", session }))
-			.catch(() => setStage({ name: "intro" }));
+			.catch((err) => {
+				// A stored credential the server no longer honours (e.g. a revoked
+				// device token) should not linger and re-fail every load.
+				if (err instanceof ApiError && err.status === 401) clearCredentials();
+				setStage({ name: "intro" });
+			});
 	}, []);
 
 	async function handleCreate() {
@@ -97,6 +106,26 @@ export function Onboarding() {
 					: err instanceof Error
 						? err.message
 						: "Couldn't recover.";
+			setError(message);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function handleLink(token: string) {
+		setBusy(true);
+		setError(null);
+		try {
+			const session = await linkDevice(token); // validate before persisting
+			storeDeviceToken(token.trim());
+			setStage({ name: "home", session });
+		} catch (err) {
+			const message =
+				err instanceof ApiError && err.status === 401
+					? "That device token isn't valid or has been revoked."
+					: err instanceof Error
+						? err.message
+						: "Couldn't link this device.";
 			setError(message);
 		} finally {
 			setBusy(false);
@@ -159,6 +188,15 @@ export function Onboarding() {
 						>
 							I already have a recovery phrase
 						</Button>
+						<Button
+							variant="link"
+							onClick={() => {
+								setError(null);
+								setStage({ name: "link" });
+							}}
+						>
+							Add this device with a token
+						</Button>
 					</div>
 				</Centered>
 			);
@@ -172,6 +210,18 @@ export function Onboarding() {
 						setStage({ name: "intro" });
 					}}
 					onSubmit={handleRecover}
+				/>
+			);
+		case "link":
+			return (
+				<LinkDeviceForm
+					busy={busy}
+					error={error}
+					onCancel={() => {
+						setError(null);
+						setStage({ name: "intro" });
+					}}
+					onSubmit={handleLink}
 				/>
 			);
 		case "join":
@@ -230,6 +280,49 @@ function RecoverForm({
 					disabled={busy || value.trim() === ""}
 				>
 					{busy ? "Recovering…" : "Recover"}
+				</Button>
+			</div>
+		</Centered>
+	);
+}
+
+function LinkDeviceForm({
+	busy,
+	error,
+	onCancel,
+	onSubmit,
+}: {
+	busy: boolean;
+	error: string | null;
+	onCancel: () => void;
+	onSubmit: (token: string) => void;
+}) {
+	const [value, setValue] = useState("");
+	return (
+		<Centered>
+			<h2 className="text-2xl font-bold">Add this device</h2>
+			<p className="max-w-md text-muted-foreground">
+				On a device you're already signed in on, open{" "}
+				<strong>Your devices</strong>, generate a device token, and paste it
+				here. It gives this device its own key — revocable on its own, without
+				touching your recovery phrase.
+			</p>
+			<input
+				className="w-full max-w-md rounded-md border bg-background p-3 text-sm"
+				placeholder="device token"
+				value={value}
+				onChange={(e) => setValue(e.target.value)}
+			/>
+			{error && <ErrorText>{error}</ErrorText>}
+			<div className="flex gap-2">
+				<Button variant="outline" onClick={onCancel} disabled={busy}>
+					Back
+				</Button>
+				<Button
+					onClick={() => onSubmit(value)}
+					disabled={busy || value.trim() === ""}
+				>
+					{busy ? "Linking…" : "Add device"}
 				</Button>
 			</div>
 		</Centered>

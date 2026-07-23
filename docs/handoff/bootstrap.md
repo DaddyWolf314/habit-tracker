@@ -39,6 +39,7 @@ Same philosophy as the kink survey tool; the routing layer is nearly copy-paste.
 
 - An authenticated device can mint additional per-device tokens, each individually revocable.
 - Device list lives in the member's record **inside the couple DO**; a "your devices" panel supports "log out that device."
+- A new device is onboarded by pasting a minted token ("Add this device with a token" on the intro screen). The token is already a valid bearer, so linking needs no dedicated endpoint — the client validates it against `/api/session`, then stores it. A token-only device holds **no** recovery phrase (the root stays cold); the client keeps the bearer distinct from the root secret for exactly this reason.
 - The recovery phrase becomes a rarely-used root credential; day-to-day auth is device tokens.
 
 ### Pairing flow
