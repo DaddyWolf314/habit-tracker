@@ -17,8 +17,9 @@ import type {
 	AuditEntry,
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
+import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
-import type { Rule } from "#/shared/rules.ts";
+import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
 
@@ -276,6 +277,71 @@ export function getEventTrace(eventId: string): Promise<{ rows: TraceRow[] }> {
  */
 export function listRules(): Promise<{ rules: Rule[] }> {
 	return apiFetch<{ rules: Rule[] }>("/api/rules");
+}
+
+/**
+ * The full rule set with provenance and effective-dated version history (#64) for
+ * the rules screen. A pure read — acknowledging rule-change notices is the
+ * explicit {@link ackRuleChanges}.
+ */
+export function listRuleHistory(): Promise<{ rules: VersionedRule[] }> {
+	return apiFetch<{ rules: VersionedRule[] }>("/api/rules/history");
+}
+
+/**
+ * The rule changes the caller hasn't acknowledged yet (#64): the partner's
+ * authoring actions plus any upstream default changes to adopted rules. The
+ * rules screen renders each via `ruleChangeNotice` and acks with
+ * {@link ackRuleChanges} once shown.
+ */
+export function listRuleChanges(): Promise<{ changes: RuleChangeNotice[] }> {
+	return apiFetch<{ changes: RuleChangeNotice[] }>("/api/rules/changes");
+}
+
+/** Marks the caller's rule-change notices seen, clearing them from the badge. */
+export function ackRuleChanges(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/rules/changes/seen", {
+		method: "POST",
+		body: {},
+	});
+}
+
+/** Creates a custom rule (dom/switch only). Body is a flat rule with an id. */
+export function createRule(rule: Rule): Promise<Rule> {
+	return apiFetch<Rule>("/api/rules", { method: "POST", body: rule });
+}
+
+/** Edits a rule's condition/effects (dom/switch only); appends a new version. */
+export function updateRule(
+	id: string,
+	definition: RuleDefinition,
+): Promise<Rule> {
+	return apiFetch<Rule>(`/api/rules/${encodeURIComponent(id)}`, {
+		method: "PUT",
+		body: definition,
+	});
+}
+
+/** Enables or disables a rule (dom/switch only) — an effective-dated toggle. */
+export function setRuleEnabled(
+	id: string,
+	enabled: boolean,
+): Promise<VersionedRule> {
+	return apiFetch<VersionedRule>(
+		`/api/rules/${encodeURIComponent(id)}/enabled`,
+		{ method: "PUT", body: { enabled } },
+	);
+}
+
+/**
+ * Removes a rule (dom/switch only). A custom rule that never fired is purged; any
+ * pack rule or one that has fired collapses to a disable (ADR 0002). `purged`
+ * says which happened.
+ */
+export function deleteRule(id: string): Promise<{ purged: boolean }> {
+	return apiFetch<{ purged: boolean }>(`/api/rules/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
 }
 
 export function listCounters(): Promise<{ counters: Counter[] }> {

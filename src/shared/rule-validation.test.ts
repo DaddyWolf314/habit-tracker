@@ -6,8 +6,12 @@ import {
 	DEFAULT_TIMERS,
 	STARTER_EVENT_TYPES,
 } from "#/templates/index.ts";
-import { type RuleValidationContext, validateRule } from "./rule-validation.ts";
-import { type Rule, ruleSchema } from "./rules.ts";
+import {
+	type RuleValidationContext,
+	validateRule,
+	validateRuleVersion,
+} from "./rule-validation.ts";
+import { type Rule, type RuleVersion, ruleSchema } from "./rules.ts";
 
 const ctx: RuleValidationContext = {
 	eventTypes: new Map(STARTER_EVENT_TYPES.map((t) => [t.id, t])),
@@ -120,5 +124,73 @@ describe("rule creation-time validation (handoff §4.3)", () => {
 			],
 		});
 		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+});
+
+/** A proposed rule version for the edit path, with a throwaway effective_from. */
+function version(
+	partial: Partial<RuleVersion> & Pick<RuleVersion, "condition">,
+): RuleVersion {
+	return {
+		effective_from: 1_000,
+		effects: [{ verb: "increment_counter", counter: "demerits", by: 1 }],
+		enabled: true,
+		...partial,
+	};
+}
+
+describe("edit-path validation (ADR 0002) — identical to a create", () => {
+	it("accepts a valid edit — a re-pointed default rule still validates", () => {
+		// Edit R2 (late ritual) to cost +2 demerits instead of +1: valid, like a create.
+		const v = version({
+			condition: { type: "ritual_completed", metadata: { late: true } },
+			effects: [{ verb: "increment_counter", counter: "demerits", by: 2 }],
+		});
+		expect(validateRuleVersion("R2", v, ctx)).toEqual({ ok: true });
+	});
+
+	it("rejects an edit conditioning on an unknown key, with a clear error", () => {
+		const v = version({
+			condition: { type: "orgasm", metadata: { wombat: true } },
+		});
+		const result = validateRuleVersion("R11", v, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("wombat");
+	});
+
+	it("rejects an edit targeting an unknown projection, with a clear error", () => {
+		const v = version({
+			condition: { type: "orgasm", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "ghost", by: 1 }],
+		});
+		const result = validateRuleVersion("R11", v, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("ghost");
+	});
+
+	it("is exactly validateRule on the flattened version — effective_from is irrelevant", () => {
+		const condition = { type: "check_in" as const, metadata: {} };
+		const effects = [
+			{ verb: "increment_counter" as const, counter: "check_ins_week", by: 1 },
+		];
+		const early = validateRuleVersion(
+			"custom-1",
+			version({ condition, effects, effective_from: 0 }),
+			ctx,
+		);
+		const late = validateRuleVersion(
+			"custom-1",
+			version({ condition, effects, effective_from: 9_999_999 }),
+			ctx,
+		);
+		const asCreate = validateRule(
+			rule({ id: "custom-1", condition, effects }),
+			ctx,
+		);
+		expect(early).toEqual(asCreate);
+		expect(late).toEqual(asCreate);
+		expect(asCreate).toEqual({ ok: true });
 	});
 });

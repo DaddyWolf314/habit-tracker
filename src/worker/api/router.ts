@@ -290,6 +290,58 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				return json(rule, 201);
 			});
 		}
+		// ── #64: rules screen — view, edit, enable/disable, delete ──────────────
+		if (path === "/api/rules/history" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listRuleHistory(auth.identityHash)
+					.then((rules) => json({ rules })),
+			);
+		}
+		if (path === "/api/rules/changes" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listRuleChanges(auth.identityHash)
+					.then((changes) => json({ changes })),
+			);
+		}
+		// Acknowledging notices is an explicit POST, never a side effect of a GET.
+		if (path === "/api/rules/changes/seen" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.ackRuleChanges(auth.identityHash).then(() => json({ ok: true })),
+			);
+		}
+		const ruleMatch = path.match(/^\/api\/rules\/([^/]+)$/);
+		if (ruleMatch) {
+			const id = decodeURIComponent(ruleMatch[1]);
+			if (method === "PUT") {
+				return await withAuth(request, env, async ({ auth, stub }) => {
+					const body = await request.json().catch(() => null);
+					const rule = await stub.updateRule(auth.identityHash, id, body);
+					return json(rule);
+				});
+			}
+			if (method === "DELETE") {
+				return await withAuth(request, env, ({ auth, stub }) =>
+					stub.deleteRule(auth.identityHash, id).then((r) => json(r)),
+				);
+			}
+		}
+		const ruleEnabledMatch = path.match(/^\/api\/rules\/([^/]+)\/enabled$/);
+		if (ruleEnabledMatch && method === "PUT") {
+			const id = decodeURIComponent(ruleEnabledMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const body = (await request.json().catch(() => null)) as {
+					enabled?: unknown;
+				} | null;
+				const rule = await stub.setRuleEnabled(
+					auth.identityHash,
+					id,
+					body?.enabled === true,
+				);
+				return json(rule);
+			});
+		}
 		return errorResponse("not found", 404);
 	} catch (error) {
 		const { status, message } = statusFromError(error);

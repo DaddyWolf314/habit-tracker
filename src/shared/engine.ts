@@ -1,5 +1,11 @@
 import type { MetadataValue } from "./roles.ts";
-import type { Rule, RuleCondition } from "./rules.ts";
+import {
+	type Rule,
+	type RuleCondition,
+	type RuleVersion,
+	ruleFromVersion,
+	type VersionedRule,
+} from "./rules.ts";
 
 /**
  * The rule engine (handoff §4.3) — a pure, dependency-free fold from an event to
@@ -15,6 +21,57 @@ import type { Rule, RuleCondition } from "./rules.ts";
  * load-bearing for adjudication (a pending orgasm's `permitted` is unset, so
  * R11/R12 wait rather than fire), and every such skip surfaces as a near-miss.
  */
+
+/**
+ * Effective-dated resolution (ADR 0002, spec #64). Collapses the couple's
+ * versioned rule history to the flat rule set in force at a given **log-time** —
+ * the time an event entered the log (or a rule edit did), never an event's
+ * `occurred_at`. For each rule it selects the latest version whose
+ * `effective_from` is at or before `logTime`; a rule whose earliest version
+ * begins after `logTime` did not yet exist and is omitted.
+ *
+ * The result is a plain `Rule[]` that {@link evaluateRules} / {@link reevaluate}
+ * consume unchanged, so the version-aware seam sits entirely here: a rebuild
+ * passes each event's log-time through this and *reproduces* history rather than
+ * re-deriving it under today's rules, and a late adjudication resolves the
+ * version that was in force when the target event was logged — never a newer one.
+ *
+ * A version disabled from `T` is still *resolved* for events logged before `T`
+ * (the earlier, enabled version wins) and, at or after `T`, resolves to an
+ * `enabled: false` rule that `evaluateRules` then skips — so disabling stays a
+ * forward-only, effective-dated state change, not a retroactive un-firing.
+ */
+export function rulesEffectiveAt(
+	rules: VersionedRule[],
+	logTime: number,
+): Rule[] {
+	const resolved: Rule[] = [];
+	for (const rule of rules) {
+		const version = versionInForceAt(rule.versions, logTime);
+		if (!version) continue; // Rule did not exist yet at this log-time.
+		resolved.push(ruleFromVersion(rule.id, version));
+	}
+	return resolved;
+}
+
+/**
+ * The version in force at `logTime`: the one with the greatest `effective_from`
+ * at or before it. Returns `undefined` when every version begins after `logTime`
+ * (the rule did not yet exist). Order-independent — versions need not be sorted.
+ */
+function versionInForceAt(
+	versions: RuleVersion[],
+	logTime: number,
+): RuleVersion | undefined {
+	let chosen: RuleVersion | undefined;
+	for (const version of versions) {
+		if (version.effective_from > logTime) continue;
+		if (!chosen || version.effective_from >= chosen.effective_from) {
+			chosen = version;
+		}
+	}
+	return chosen;
+}
 
 /** The slice of an event the engine reasons over: its type and composite state. */
 export interface RuleEventContext {

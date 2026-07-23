@@ -157,6 +157,36 @@ export const DO_MIGRATIONS: string[][] = [
 	// preserving the "everything in the log is shared" invariant for the whole
 	// accountability spine.
 	[`ALTER TABLE events ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'`],
+	// v8 — Rules become user-editable and effective-dated (#64, ADR 0002). A rule
+	// keeps its stable identity row and gains provenance: `origin` (a shipped `R#`
+	// pack rule vs. a custom one) and `adopted` (a pack rule the couple has edited,
+	// frozen against future pack overwrites). Its definition history moves to an
+	// append-only `rule_versions` table keyed by `effective_from` (log-time), so an
+	// edit appends a version and replay picks the version in force at each event's
+	// log-time. Backfill: every existing rule becomes a single version effective
+	// from 0 — so replay before any edit is byte-for-byte unchanged — with origin
+	// derived from the `R#` namespace. `rules.definition`/`enabled` are retained as
+	// a mirror of the latest version (kept in step by the single write path).
+	[
+		`ALTER TABLE rules ADD COLUMN origin TEXT NOT NULL DEFAULT 'custom'`,
+		`ALTER TABLE rules ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0`,
+		`CREATE TABLE IF NOT EXISTS rule_versions (
+			rule_id TEXT NOT NULL,
+			effective_from INTEGER NOT NULL,
+			definition TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			PRIMARY KEY (rule_id, effective_from)
+		)`,
+		`INSERT INTO rule_versions (rule_id, effective_from, definition, enabled)
+			SELECT id, 0, definition, enabled FROM rules`,
+		`UPDATE rules SET origin = CASE WHEN id GLOB 'R[0-9]*' THEN 'pack' ELSE 'custom' END`,
+	],
+	// v9 — #64 user story 33: an adopted rule whose shipped default has moved on.
+	// Pack reconciliation sets this when a bump finds a new default for a rule the
+	// couple has adopted (and so will never overwrite); the rules screen surfaces
+	// it as a "new default" notice, and the flag clears when the couple next edits
+	// the rule — they've seen the new default and made their choice.
+	[`ALTER TABLE rules ADD COLUMN upstream_changed INTEGER NOT NULL DEFAULT 0`],
 ];
 
 const VERSION_KEY = "schema_version";

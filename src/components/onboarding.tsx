@@ -371,6 +371,11 @@ function Home({
 						Open the log
 					</Link>
 				)}
+				{session.roles_active && (
+					<Link to="/rules" className="text-sm underline">
+						Rules
+					</Link>
+				)}
 				<Link to="/devices" className="text-sm underline">
 					Manage devices
 				</Link>

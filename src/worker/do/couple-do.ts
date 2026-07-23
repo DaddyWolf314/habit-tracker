@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import type { ZodType } from "zod";
 import { ulid } from "#/lib/ulid.ts";
 import { validateAmendment } from "#/shared/amendment-validation.ts";
 import type { Amendment, AmendmentInput } from "#/shared/amendments.ts";
@@ -20,6 +21,7 @@ import {
 	evaluateRules,
 	reevaluate,
 	routeClosedTimerDuration,
+	rulesEffectiveAt,
 } from "#/shared/engine.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
@@ -47,7 +49,14 @@ import type {
 } from "#/shared/introspection.ts";
 import { explainProjection } from "#/shared/introspection.ts";
 import { type Floor, satisfiesFloor } from "#/shared/journaling.ts";
-import { unreadCount } from "#/shared/notifications.ts";
+import {
+	RULE_CHANGE_ACTION_PREFIX,
+	type RuleChangeKind,
+	type RuleChangeNotice,
+	ruleChangeAction,
+	ruleChangeKindFromAction,
+	unreadCount,
+} from "#/shared/notifications.ts";
 import {
 	applyCounterEvent,
 	compositeMetadata,
@@ -60,9 +69,22 @@ import {
 	recoveryView,
 } from "#/shared/recovery.ts";
 import type { MetadataValue, Role, Visibility } from "#/shared/roles.ts";
-import { validateRule } from "#/shared/rule-validation.ts";
-import type { Rule } from "#/shared/rules.ts";
-import { ruleSchema } from "#/shared/rules.ts";
+import { reconcilePack } from "#/shared/rule-reconciliation.ts";
+import { validateRule, validateRuleVersion } from "#/shared/rule-validation.ts";
+import type {
+	Rule,
+	RuleDefinition,
+	RuleIdentity,
+	RuleOrigin,
+	RuleVersion,
+	VersionedRule,
+} from "#/shared/rules.ts";
+import {
+	latestVersion,
+	ruleDefinitionSchema,
+	ruleSchema,
+	versionFromDefinition,
+} from "#/shared/rules.ts";
 import { catchUpFireAt, dueItems, earliestFireAt } from "#/shared/scheduler.ts";
 import {
 	DAY_MS,
@@ -207,8 +229,26 @@ interface CounterRow {
 	[key: string]: SqlStorageValue;
 }
 
-interface RuleRow {
+/**
+ * The `audit_log` actor for changes the shipped rule pack makes (#64, user story
+ * 33) — a pack bump has no member behind it. Distinct from every member id, so
+ * an upstream-changed row counts toward *both* members' unread rule changes.
+ */
+const PACK_ACTOR = "pack";
+
+/** A row in the `rules` identity table: a stable id plus its provenance (#64). */
+interface RuleIdentityRow {
 	id: string;
+	origin: string;
+	adopted: number;
+	upstream_changed: number;
+	[key: string]: SqlStorageValue;
+}
+
+/** A row in the `rule_versions` table: one effective-dated revision (#64). */
+interface RuleVersionRow {
+	rule_id: string;
+	effective_from: number;
 	definition: string;
 	enabled: number;
 	[key: string]: SqlStorageValue;
@@ -854,6 +894,7 @@ export class CoupleDO extends DurableObject<Env> {
 			unread: unreadCount({
 				pending_events: events.filter((e) => e.pending).length,
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
+				rule_changes: this.ruleChangesUnseen(me.id),
 			}),
 		};
 	}
@@ -913,7 +954,7 @@ export class CoupleDO extends DurableObject<Env> {
 			consent_history: await this.listConsentHistory(identityHash),
 			events,
 			amendments,
-			rules: this.rules().map(ruleToExportRow),
+			rules: this.currentRules().map(ruleToExportRow),
 			counters: this.counterRows().map((row) =>
 				counterToExportRow(this.rowToCounter(row)),
 			),
@@ -1061,14 +1102,48 @@ export class CoupleDO extends DurableObject<Env> {
 				JSON.stringify(counter),
 			);
 		}
-		for (const rule of DEFAULT_RULES) {
-			this.sql.exec(
-				`INSERT INTO rules (id, definition, enabled) VALUES (?, ?, ?)
-					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
-				rule.id,
-				JSON.stringify(rule),
-				rule.enabled === false ? 0 : 1,
+		// Adopt-on-edit reconciliation (ADR 0002): install brand-new pack rules and
+		// upsert un-adopted ones the pack changed, but never overwrite a rule the
+		// couple has edited. On the very first seed everything is an add, effective
+		// from 0 so the pack applies to the whole log; a later bump stamps changes at
+		// the bump time so they only bind events logged after it (forward-only).
+		const effectiveFrom = seeded === 0 ? 0 : Date.now();
+		const reconciliation = reconcilePack(
+			DEFAULT_RULES,
+			this.versionedRules(),
+			effectiveFrom,
+		);
+		for (const rule of reconciliation.added) {
+			this.writeRuleVersion(
+				{ id: rule.id, origin: rule.origin, adopted: rule.adopted },
+				rule.versions[0] as RuleVersion,
 			);
+		}
+		for (const { id, version } of reconciliation.upserted) {
+			this.writeRuleVersion({ id, origin: "pack", adopted: false }, version);
+		}
+		// Adopted rules the bump skipped (#64, user story 33): never overwritten, but
+		// when the shipped default now differs from the couple's edited definition,
+		// say so — flag the rule for a "new default" badge and record one
+		// system-actor audit row so both members' unread counts surface it. The flag
+		// (not the audit row) is the state: it clears when the couple next edits the
+		// rule, and a bump that finds no diff clears it too.
+		for (const { id, changedUpstream } of reconciliation.skipped) {
+			const alreadyFlagged = this.ruleIdentity(id)?.upstream_changed === 1;
+			this.sql.exec(
+				`UPDATE rules SET upstream_changed = ? WHERE id = ?`,
+				changedUpstream ? 1 : 0,
+				id,
+			);
+			if (changedUpstream && !alreadyFlagged) {
+				this.sql.exec(
+					`INSERT INTO audit_log (at, actor, action, target) VALUES (?, ?, ?, ?)`,
+					effectiveFrom,
+					PACK_ACTOR,
+					ruleChangeAction("upstream_changed"),
+					id,
+				);
+			}
 		}
 		// Anchors are pure state (an id + reset timestamp); seed each unset, and on a
 		// version bump leave an existing anchor's `since` untouched — only the anchor
@@ -1082,30 +1157,77 @@ export class CoupleDO extends DurableObject<Env> {
 		this.setSetting("rule_pack_version", String(RULE_PACK_VERSION));
 	}
 
-	/** The couple's installed rules (R1–R18 template + any custom), enabled flag applied. */
+	/**
+	 * The couple's installed rules (R1–R18 template + any custom) as a flat set,
+	 * each at its current definition. Viewing is open to any member; this feeds the
+	 * client-side ruling preview (the same rules the DO's `reevaluate` applies).
+	 */
 	async listRules(identityHash: string): Promise<Rule[]> {
 		this.requireMember(identityHash);
-		return this.rules();
+		return this.currentRules();
 	}
 
 	/**
-	 * Creates a custom rule. It is validated against the couple's event-type
-	 * schema and known projections at creation (handoff §4.3) — conditioning on a
-	 * nonexistent key or targeting an unknown projection is rejected here, not
-	 * silently skipped forever at runtime. First-class and identical in shape to
-	 * the R1–R18 template.
+	 * The full rule set with provenance and effective-dated version history (#64)
+	 * for the rules screen: origin (pack vs custom), whether a pack rule has been
+	 * adopted (and whether its shipped default has since changed upstream), and
+	 * every revision. Viewing is open to any member (a sub is never bound by a rule
+	 * they cannot see). A pure read — acknowledging rule-change notices is the
+	 * explicit {@link ackRuleChanges}, never a side effect of looking.
+	 */
+	async listRuleHistory(identityHash: string): Promise<VersionedRule[]> {
+		this.requireMember(identityHash);
+		return this.versionedRules();
+	}
+
+	/**
+	 * The rule changes the caller hasn't acknowledged yet (#64, user stories 33 +
+	 * 35): every change made by someone other than them — the partner's authoring
+	 * actions plus the pack's upstream-changed flags — since they last acked. The
+	 * rules screen composes each into a sentence (`ruleChangeNotice`), so the sub
+	 * always learns the current terms; the same rows drive the unread-count badge.
+	 */
+	async listRuleChanges(identityHash: string): Promise<RuleChangeNotice[]> {
+		const me = this.requireMember(identityHash);
+		const seen = Number(this.getSetting(`rules_seen_at_${me.id}`) ?? "0");
+		const rows = this.sql
+			.exec<{ at: number; action: string; target: string | null }>(
+				`SELECT at, action, target FROM audit_log
+					WHERE action LIKE ? AND actor != ? AND at > ?
+					ORDER BY at ASC, id ASC`,
+				`${RULE_CHANGE_ACTION_PREFIX}%`,
+				me.id,
+				seen,
+			)
+			.toArray();
+		return rows.flatMap((row) => {
+			const kind = ruleChangeKindFromAction(row.action);
+			return kind && row.target
+				? [{ kind, rule_id: row.target, at: row.at }]
+				: [];
+		});
+	}
+
+	/**
+	 * Marks the caller's rule-change notices seen (#64). The explicit
+	 * acknowledgement the rules screen sends once the notices have been shown —
+	 * kept out of the history read so a GET never mutates state.
+	 */
+	async ackRuleChanges(identityHash: string): Promise<void> {
+		const me = this.requireMember(identityHash);
+		this.markRuleChangesSeen(me.id);
+	}
+
+	/**
+	 * Creates a custom rule (#64). Authoring is gated to dom/switch; the rule is
+	 * validated against the couple's event-type schema and known projections at
+	 * creation (handoff §4.3) — conditioning on a nonexistent key or targeting an
+	 * unknown projection is rejected here, not silently skipped forever at runtime.
+	 * Recorded as the rule's first effective-dated version, effective from now.
 	 */
 	async createRule(identityHash: string, definition: unknown): Promise<Rule> {
-		this.requireMember(identityHash);
-		this.assertLive();
-		const parsed = ruleSchema.safeParse(definition);
-		if (!parsed.success) {
-			throw coupleError(
-				"BAD_REQUEST",
-				parsed.error.issues[0]?.message ?? "invalid rule",
-			);
-		}
-		const rule = parsed.data;
+		const me = this.requireAuthor(identityHash);
+		const rule = this.parseRulePayload(ruleSchema, definition);
 		// The default pack owns the `R<n>` id namespace; a custom rule may not squat
 		// an id a future pack version could ship (its reseed would then silently skip
 		// the shipped rule, diverging this couple from every other).
@@ -1115,32 +1237,119 @@ export class CoupleDO extends DurableObject<Env> {
 				"the R# id namespace is reserved for the default pack",
 			);
 		}
-		if (this.ruleById(rule.id)) {
+		if (this.ruleIdentity(rule.id)) {
 			throw coupleError("CONFLICT", "a rule with that id already exists");
 		}
-		// Conditioning on the internal `counter_*` sugar is a silent no-op: those
-		// events move counters via direct manipulation and never reach the engine,
-		// so reject it at creation rather than accept a rule that can never fire.
-		if (isReservedTypeId(rule.condition.type)) {
-			throw coupleError(
-				"BAD_REQUEST",
-				"rules cannot condition on the reserved counter_ types",
+		this.assertRuleFireable(rule);
+		const validation = validateRule(rule, this.ruleValidationCtx());
+		if (!validation.ok) throw coupleError("BAD_REQUEST", validation.error);
+		const effectiveFrom = Date.now();
+		this.writeRuleVersion(
+			{ id: rule.id, origin: "custom", adopted: false },
+			versionFromDefinition(rule, effectiveFrom),
+		);
+		this.recordRuleChange(me, "create", rule.id, effectiveFrom);
+		return rule;
+	}
+
+	/**
+	 * Edits an existing rule's condition and/or effects (#64). Authoring is gated to
+	 * dom/switch. The edit appends a new effective-dated version rather than
+	 * mutating in place, so events already logged keep the consequences they
+	 * received (forward-only, ADR 0002). Editing a default-pack rule *adopts* it,
+	 * freezing it against future pack overwrites. Validated identically to a create.
+	 */
+	async updateRule(
+		identityHash: string,
+		id: string,
+		definition: unknown,
+	): Promise<Rule> {
+		const me = this.requireAuthor(identityHash);
+		const existing = this.requireRule(id);
+		const def = this.parseRulePayload(ruleDefinitionSchema, definition);
+		const rule: Rule = { id, ...def };
+		this.assertRuleFireable(rule);
+		const effectiveFrom = Date.now();
+		const version = versionFromDefinition(def, effectiveFrom);
+		const validation = validateRuleVersion(
+			id,
+			version,
+			this.ruleValidationCtx(),
+		);
+		if (!validation.ok) throw coupleError("BAD_REQUEST", validation.error);
+		this.writeRuleVersion(this.editedIdentity(existing), version);
+		// Editing answers the "new default available" notice (user story 33): the
+		// member has seen the upstream default and chosen their definition anyway.
+		this.sql.exec(`UPDATE rules SET upstream_changed = 0 WHERE id = ?`, id);
+		this.recordRuleChange(me, "edit", id, effectiveFrom);
+		return rule;
+	}
+
+	/**
+	 * Enables or disables a rule (#64), gated to dom/switch. A disable is an
+	 * effective-dated state change, not a deletion: it appends a version carrying
+	 * the current definition with the new `enabled` flag, so the rule stops (or
+	 * resumes) firing for events logged after the change while earlier events still
+	 * replay under the version in force when they were logged. Toggling a pack rule
+	 * adopts it.
+	 */
+	async setRuleEnabled(
+		identityHash: string,
+		id: string,
+		enabled: boolean,
+	): Promise<VersionedRule> {
+		const me = this.requireAuthor(identityHash);
+		const existing = this.requireRule(id);
+		const current = latestVersion(existing);
+		if (current.enabled === enabled) return existing; // no-op, no audit noise
+		const effectiveFrom = Date.now();
+		this.writeRuleVersion(
+			this.editedIdentity(existing),
+			versionFromDefinition({ ...current, enabled }, effectiveFrom),
+		);
+		this.recordRuleChange(
+			me,
+			enabled ? "enable" : "disable",
+			id,
+			effectiveFrom,
+		);
+		return this.requireRule(id);
+	}
+
+	/**
+	 * Removes a rule (#64), gated to dom/switch. A true hard purge is allowed only
+	 * for a custom rule that has never fired (zero trace references) — nothing in
+	 * the log depends on it. Any pack rule, or any rule that has ever fired,
+	 * collapses to a **disable** instead, so past events it affected still replay
+	 * correctly (ADR 0002) — audited as `rule.disable`, the ADR op that actually
+	 * happened. Every removal request writes an audit row, even a collapse onto an
+	 * already-disabled rule (no version to append, but the actor's action is still
+	 * recorded — "every change is accountable" beats audit silence). Returns
+	 * whether it was purged or disabled.
+	 */
+	async deleteRule(
+		identityHash: string,
+		id: string,
+	): Promise<{ purged: boolean }> {
+		const me = this.requireAuthor(identityHash);
+		const existing = this.requireRule(id);
+		const at = Date.now();
+		const purgeable = existing.origin === "custom" && !this.ruleHasFired(id);
+		if (purgeable) {
+			this.sql.exec(`DELETE FROM rule_versions WHERE rule_id = ?`, id);
+			this.sql.exec(`DELETE FROM rules WHERE id = ?`, id);
+			this.recordRuleChange(me, "purge", id, at);
+			return { purged: true };
+		}
+		const current = latestVersion(existing);
+		if (current.enabled) {
+			this.writeRuleVersion(
+				this.editedIdentity(existing),
+				versionFromDefinition({ ...current, enabled: false }, at),
 			);
 		}
-		const result = validateRule(rule, {
-			eventTypes: new Map(this.eventTypes().map((t) => [t.id, t])),
-			counters: new Set(this.counterRows().map((r) => r.id)),
-			anchors: new Set(DEFAULT_ANCHORS),
-			timers: new Set(DEFAULT_TIMERS),
-		});
-		if (!result.ok) throw coupleError("BAD_REQUEST", result.error);
-		this.sql.exec(
-			`INSERT INTO rules (id, definition, enabled) VALUES (?, ?, ?)`,
-			rule.id,
-			JSON.stringify(rule),
-			rule.enabled === false ? 0 : 1,
-		);
-		return rule;
+		this.recordRuleChange(me, "disable", id, at);
+		return { purged: false };
 	}
 
 	/** The couple's event-type schema set (starter seven + any custom types). */
@@ -1418,7 +1627,14 @@ export class CoupleDO extends DurableObject<Env> {
 			occurred_at: event.occurred_at,
 			awaiting: type.awaiting,
 		});
-		const fired = reevaluate(this.rules(), context(before), context(after));
+		// Effective-dating keys off the target event's log-time, never the ruling
+		// time — a late ruling fires the rule version in force when the event was
+		// logged, so adjudicating the past can't smuggle in a newer rule (ADR 0002).
+		const fired = reevaluate(
+			this.rulesAt(event.logged_at),
+			context(before),
+			context(after),
+		);
 
 		this.timersDirty = false;
 		for (const rule of fired) {
@@ -1819,7 +2035,11 @@ export class CoupleDO extends DurableObject<Env> {
 		composite: Record<string, MetadataValue>,
 		awaiting: string[],
 	): void {
-		const { fired, nearMisses } = evaluateRules(this.rules(), {
+		// Resolve the rules in force at this event's log-time. On a live append that
+		// is "now" (today's rules); on a rebuild it is each past event's own
+		// log-time, so replay reproduces history rather than re-deriving it under
+		// today's rules (ADR 0002).
+		const { fired, nearMisses } = evaluateRules(this.rulesAt(event.logged_at), {
 			type: event.type,
 			metadata: composite,
 			occurred_at: event.occurred_at,
@@ -2398,7 +2618,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private stopwatchDefinitionNames(): Set<string> {
 		const names = new Set<string>();
-		for (const rule of this.rules()) {
+		for (const rule of this.currentRules()) {
 			for (const effect of rule.effects) {
 				if (effect.verb === "open_timer") names.add(effect.timer);
 			}
@@ -2783,27 +3003,250 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * The installed rules, ordered by id so evaluation is deterministic (matters
-	 * for replay/rebuild). The stored `enabled` flag overrides the definition's,
-	 * so toggling a rule off never has to rewrite its JSON.
+	 * The installed rules with their full effective-dated version history (#64,
+	 * ADR 0002), ordered by id so evaluation is deterministic (matters for
+	 * replay/rebuild) and each rule's versions ascending by `effective_from`. Each
+	 * version's `enabled` column overrides the definition JSON, so toggling a rule
+	 * never rewrites a body.
 	 */
-	private rules(): Rule[] {
+	private versionedRules(): VersionedRule[] {
+		const versionsByRule = new Map<string, RuleVersion[]>();
+		for (const row of this.sql
+			.exec<RuleVersionRow>(
+				`SELECT rule_id, effective_from, definition, enabled FROM rule_versions
+					ORDER BY rule_id, effective_from`,
+			)
+			.toArray()) {
+			const def = JSON.parse(row.definition) as RuleDefinition;
+			const list = versionsByRule.get(row.rule_id) ?? [];
+			list.push({
+				effective_from: row.effective_from,
+				condition: def.condition,
+				effects: def.effects,
+				enabled: row.enabled === 1,
+			});
+			versionsByRule.set(row.rule_id, list);
+		}
 		return this.sql
-			.exec<RuleRow>(`SELECT id, definition, enabled FROM rules ORDER BY id`)
+			.exec<RuleIdentityRow>(
+				`SELECT id, origin, adopted, upstream_changed FROM rules ORDER BY id`,
+			)
 			.toArray()
 			.map((row) => ({
-				...(JSON.parse(row.definition) as Rule),
-				enabled: row.enabled === 1,
-			}));
+				id: row.id,
+				origin: row.origin as RuleOrigin,
+				adopted: row.adopted === 1,
+				upstream_changed: row.upstream_changed === 1,
+				versions: versionsByRule.get(row.id) ?? [],
+			}))
+			.filter((rule) => rule.versions.length > 0);
 	}
 
-	private ruleById(id: string): RuleRow | undefined {
+	/** The flat rule set in force at a log-time — what the engine reads (#64). */
+	private rulesAt(logTime: number): Rule[] {
+		return rulesEffectiveAt(this.versionedRules(), logTime);
+	}
+
+	/**
+	 * The current flat rule set — the latest version of every rule, including
+	 * disabled ones (enabled:false). Used for export and the client preview seam;
+	 * `MAX_SAFE_INTEGER` is a log-time past every `effective_from`.
+	 */
+	private currentRules(): Rule[] {
+		return this.rulesAt(Number.MAX_SAFE_INTEGER);
+	}
+
+	private ruleIdentity(id: string): RuleIdentityRow | undefined {
 		return this.sql
-			.exec<RuleRow>(
-				`SELECT id, definition, enabled FROM rules WHERE id = ?`,
+			.exec<RuleIdentityRow>(
+				`SELECT id, origin, adopted, upstream_changed FROM rules WHERE id = ?`,
 				id,
 			)
 			.toArray()[0];
+	}
+
+	private versionedRuleById(id: string): VersionedRule | undefined {
+		return this.versionedRules().find((rule) => rule.id === id);
+	}
+
+	/**
+	 * Writes a rule's identity row and appends one effective-dated version — the
+	 * single write path for every authoring op (create/edit/enable/disable) and for
+	 * pack seeding, so the identity-row mirror (`definition`/`enabled`) never drifts
+	 * from the newest version in `rule_versions`. Callers stamp `effective_from`
+	 * with the current log-time so replay picks the right version per event.
+	 *
+	 * Nothing in post-v8 code reads the mirror — it is kept in step deliberately,
+	 * not speculatively: pre-versioning code reads the whole engine's rules from
+	 * `rules.definition`/`enabled`, so a maintained mirror keeps a rollback to that
+	 * code (and the v8 backfill it would re-run from) correct instead of stale.
+	 */
+	private writeRuleVersion(identity: RuleIdentity, version: RuleVersion): void {
+		const definition = JSON.stringify({
+			condition: version.condition,
+			effects: version.effects,
+		});
+		const enabled = version.enabled ? 1 : 0;
+		this.sql.exec(
+			`INSERT INTO rules (id, definition, enabled, origin, adopted)
+				VALUES (?, ?, ?, ?, ?)
+				ON CONFLICT(id) DO UPDATE SET
+					definition = excluded.definition,
+					enabled = excluded.enabled,
+					origin = excluded.origin,
+					adopted = excluded.adopted`,
+			identity.id,
+			definition,
+			enabled,
+			identity.origin,
+			identity.adopted ? 1 : 0,
+		);
+		this.sql.exec(
+			`INSERT INTO rule_versions (rule_id, effective_from, definition, enabled)
+				VALUES (?, ?, ?, ?)
+				ON CONFLICT(rule_id, effective_from) DO UPDATE SET
+					definition = excluded.definition,
+					enabled = excluded.enabled`,
+			identity.id,
+			version.effective_from,
+			definition,
+			enabled,
+		);
+	}
+
+	/**
+	 * Gates a rule-authoring op (create/edit/enable/disable/purge — #64, ADR 0002)
+	 * to `role ∈ {dom, switch}` on a confirmed, active dynamic. Viewing is open to
+	 * any member (see {@link listRules}/{@link listRuleHistory}); only shaping the
+	 * automation that binds the sub is restricted, so it can't be quietly rewritten
+	 * by the sub — a switch authors just as a dom does.
+	 */
+	private requireAuthor(identityHash: string): MemberRow {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		const role = me.role as Role | null;
+		if (role !== "dom" && role !== "switch") {
+			throw coupleError("FORBIDDEN", "only a dom or switch may change rules");
+		}
+		return me;
+	}
+
+	/**
+	 * Parses an authoring payload (a full flat rule on create, a bare definition
+	 * on edit) against its schema, turning the first issue into a client-facing
+	 * BAD_REQUEST.
+	 */
+	private parseRulePayload<T>(schema: ZodType<T>, input: unknown): T {
+		const parsed = schema.safeParse(input);
+		if (!parsed.success) {
+			throw coupleError(
+				"BAD_REQUEST",
+				parsed.error.issues[0]?.message ?? "invalid rule",
+			);
+		}
+		return parsed.data;
+	}
+
+	private requireRule(id: string): VersionedRule {
+		const rule = this.versionedRuleById(id);
+		if (!rule) throw coupleError("NOT_FOUND", "no such rule");
+		return rule;
+	}
+
+	/**
+	 * The identity row after an authoring write: editing or toggling a pack rule
+	 * adopts it (freezes it against pack bumps, ADR 0002).
+	 */
+	private editedIdentity(rule: VersionedRule): RuleIdentity {
+		return {
+			id: rule.id,
+			origin: rule.origin,
+			adopted: rule.origin === "pack" ? true : rule.adopted,
+		};
+	}
+
+	/**
+	 * Rejects conditioning on the internal `counter_*` sugar: those events move
+	 * counters via direct manipulation and never reach the engine, so such a rule
+	 * could never fire. Caught at author time rather than silently skipping forever.
+	 */
+	private assertRuleFireable(rule: Rule): void {
+		if (isReservedTypeId(rule.condition.type)) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"rules cannot condition on the reserved counter_ types",
+			);
+		}
+	}
+
+	/** The projections and event types a rule may reference, for validation. */
+	private ruleValidationCtx() {
+		return {
+			eventTypes: new Map(this.eventTypes().map((t) => [t.id, t])),
+			counters: new Set(this.counterRows().map((r) => r.id)),
+			anchors: new Set(DEFAULT_ANCHORS),
+			timers: new Set(DEFAULT_TIMERS),
+		};
+	}
+
+	/** Whether a rule has ever fired (or been traced) — a trace references it. */
+	private ruleHasFired(id: string): boolean {
+		return (
+			this.sql
+				.exec<{ n: number }>(
+					`SELECT 1 AS n FROM trace WHERE caused_by_rule = ? LIMIT 1`,
+					id,
+				)
+				.toArray().length > 0
+		);
+	}
+
+	// ── Rule-change audit + partner notice (#64, ADR 0002) ────────────────────
+
+	/**
+	 * Records a rule change to the `audit_log` (actor, action, target rule) and
+	 * bumps the couple's rule-change sequence so the *partner* — the member who did
+	 * not make the change — sees an in-app notice. Rule changes never write to the
+	 * event log: they are configuration, not part of the append-only record of what
+	 * happened. Transparency (audit + notice) stands in for a consent handshake, so
+	 * dom/switch-only authoring stays visible to the sub bound by the rules.
+	 */
+	private recordRuleChange(
+		actor: MemberRow,
+		kind: RuleChangeKind,
+		ruleId: string,
+		at: number,
+	): void {
+		this.sql.exec(
+			`INSERT INTO audit_log (at, actor, action, target) VALUES (?, ?, ?, ?)`,
+			at,
+			actor.id,
+			ruleChangeAction(kind),
+			ruleId,
+		);
+	}
+
+	/** A member's count of rule changes made by their partner since they last looked. */
+	private ruleChangesUnseen(memberId: string): number {
+		const seen = Number(this.getSetting(`rules_seen_at_${memberId}`) ?? "0");
+		const row = this.sql
+			.exec<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM audit_log
+					WHERE action LIKE ? AND actor != ? AND at > ?`,
+				`${RULE_CHANGE_ACTION_PREFIX}%`,
+				memberId,
+				seen,
+			)
+			.toArray()[0];
+		return row?.n ?? 0;
+	}
+
+	/** Marks the caller's rule-change notices seen — opening the rules screen acks. */
+	private markRuleChangesSeen(memberId: string): void {
+		this.setSetting(`rules_seen_at_${memberId}`, String(Date.now()));
 	}
 
 	private counterById(id: string): CounterRow | undefined {

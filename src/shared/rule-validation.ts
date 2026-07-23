@@ -1,6 +1,6 @@
 import type { EventType, MetadataField } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
-import type { Rule } from "./rules.ts";
+import { type Rule, type RuleVersion, ruleFromVersion } from "./rules.ts";
 
 /**
  * Creation-time rule validation (handoff §4.3). A rule is checked against the
@@ -47,6 +47,23 @@ export function validateRule(
 		if (error) return fail(error);
 	}
 	return { ok: true };
+}
+
+/**
+ * Validates a proposed rule *version* on the edit path (ADR 0002, spec #64). An
+ * edit appends a new version rather than mutating in place, so it is checked
+ * exactly like a create: the version is stamped onto its rule id via
+ * {@link ruleFromVersion} and run through the same {@link validateRule}. Editing
+ * a rule to condition on an unknown key or target an unknown projection therefore
+ * fails with the same clear error a bad create would — the effective-from stamp
+ * is validation-irrelevant. Pure, so the client editor and the DO agree exactly.
+ */
+export function validateRuleVersion(
+	id: string,
+	version: RuleVersion,
+	ctx: RuleValidationContext,
+): RuleValidation {
+	return validateRule(ruleFromVersion(id, version), ctx);
 }
 
 function checkEffectTarget(
