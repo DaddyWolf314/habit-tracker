@@ -13,6 +13,8 @@ import type { Device } from "#/shared/identity.ts";
 export function DevicesPanel() {
 	const [devices, setDevices] = useState<Device[] | null>(null);
 	const [freshToken, setFreshToken] = useState<string | null>(null);
+	const [copied, setCopied] = useState(false);
+	const [label, setLabel] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [ready, setReady] = useState(false);
@@ -34,9 +36,12 @@ export function DevicesPanel() {
 	async function handleMint() {
 		setBusy(true);
 		setError(null);
+		setCopied(false);
 		try {
-			const { token } = await mintDevice();
+			const trimmed = label.trim();
+			const { token } = await mintDevice(trimmed === "" ? undefined : trimmed);
 			setFreshToken(token);
+			setLabel("");
 			await refresh();
 		} catch (err) {
 			setError(
@@ -44,6 +49,16 @@ export function DevicesPanel() {
 			);
 		} finally {
 			setBusy(false);
+		}
+	}
+
+	async function handleCopy(token: string) {
+		try {
+			await navigator.clipboard.writeText(token);
+			setCopied(true);
+		} catch {
+			// Clipboard may be unavailable (insecure context); the token is still
+			// visible for manual copy, so this is a best-effort convenience.
 		}
 	}
 
@@ -94,25 +109,44 @@ export function DevicesPanel() {
 				<div className="mt-4 rounded-md border border-primary/40 bg-primary/5 p-4">
 					<p className="text-sm font-medium">New device token — copy it now.</p>
 					<p className="mt-1 text-xs text-muted-foreground">
-						This is the only time it's shown.
+						This is the only time it's shown. On your other device, choose{" "}
+						<strong>Add this device with a token</strong> and paste it.
 					</p>
 					<code className="mt-2 block overflow-x-auto rounded bg-muted p-2 text-xs">
 						{freshToken}
 					</code>
-					<Button
-						variant="ghost"
-						size="sm"
-						className="mt-2"
-						onClick={() => setFreshToken(null)}
-					>
-						Done
-					</Button>
+					<div className="mt-2 flex gap-2">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => handleCopy(freshToken)}
+						>
+							{copied ? "Copied" : "Copy"}
+						</Button>
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => {
+								setFreshToken(null);
+								setCopied(false);
+							}}
+						>
+							Done
+						</Button>
+					</div>
 				</div>
 			)}
 
 			{error && <p className="mt-4 text-sm text-destructive">{error}</p>}
 
-			<div className="mt-6">
+			<div className="mt-6 flex flex-wrap items-center gap-2">
+				<input
+					className="rounded-md border bg-background p-2 text-sm"
+					placeholder="Name this device (optional)"
+					value={label}
+					onChange={(e) => setLabel(e.target.value)}
+					maxLength={100}
+				/>
 				<Button onClick={handleMint} disabled={busy}>
 					{busy ? "…" : "Generate a device token"}
 				</Button>

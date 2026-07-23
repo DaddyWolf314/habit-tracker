@@ -80,6 +80,17 @@ export function getSession(): Promise<Session> {
 	return apiFetch<Session>("/api/session");
 }
 
+/**
+ * Adopts a minted device token as this device's bearer by confirming it against
+ * the session whoami. A device token is already a valid bearer (the server just
+ * hashes it), so linking a new device needs no dedicated endpoint — only this
+ * validation before the caller persists the token. Throws {@link ApiError} 401
+ * if the token is unknown or revoked.
+ */
+export function linkDevice(token: string): Promise<Session> {
+	return apiFetch<Session>("/api/session", { bearer: token.trim() });
+}
+
 export function mintDevice(label?: string): Promise<MintDeviceResult> {
 	return apiFetch<MintDeviceResult>("/api/devices", {
 		method: "POST",
