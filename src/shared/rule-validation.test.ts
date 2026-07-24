@@ -135,6 +135,86 @@ describe("rule creation-time validation (handoff §4.3)", () => {
 		expect(result.error).toContain("phantom_counter");
 	});
 
+	it("rejects an open_timer routing duration from a key the type does not define", () => {
+		// Typo'd `duration_from` would silently open a never-expiring stopwatch
+		// instead of a countdown — exactly the invisible-at-runtime failure this
+		// module exists to catch at creation.
+		const r = rule({
+			id: "X",
+			condition: { type: "task_assigned", metadata: {} },
+			effects: [
+				{
+					verb: "open_timer",
+					timer: "task_countdown",
+					duration_from: "durationms",
+				},
+			],
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("durationms");
+	});
+
+	it("rejects an open_timer routing duration from a non-number field", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "task_assigned", metadata: {} },
+			effects: [
+				{
+					verb: "open_timer",
+					timer: "task_countdown",
+					duration_from: "task_id", // a ref, not a number
+				},
+			],
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("task_id");
+	});
+
+	it("rejects a match_on ref pointing at a key the type does not define", () => {
+		// A typo'd event key makes every close resolve an incomplete match and
+		// orphan — no session would ever close, with no error anywhere.
+		const r = rule({
+			id: "X",
+			condition: { type: "session_ended", metadata: {} },
+			effects: [
+				{
+					verb: "close_timer",
+					timer: "session_stopwatch",
+					match_on: { session_id: "sessionid" },
+					status: "completed",
+				},
+			],
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("sessionid");
+	});
+
+	it("rejects a route_when gate on a key the type does not define", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "session_ended", metadata: {} },
+			effects: [
+				{
+					verb: "close_timer",
+					timer: "session_stopwatch",
+					status: "completed",
+					route_duration_to: "service_minutes_week",
+					route_when: { activty: "service" },
+				},
+			],
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("activty");
+	});
+
 	it("rejects a fractional counter `by` at the schema layer (createRule parses first)", () => {
 		const parsed = ruleSchema.safeParse({
 			id: "X",

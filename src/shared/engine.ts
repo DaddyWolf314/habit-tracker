@@ -401,11 +401,13 @@ export function routeClosedTimerDuration(
  * `{ session_id: "session_id" }`) into concrete values pulled from the event —
  * the routing that lets a close find the matching open.
  *
- * A referenced key that is unset on the event is left out of the resolved match,
- * so an incomplete match resolves to *fewer* constraints, never the intended
- * ones. The Phase 4 timer matcher that consumes this must treat a match that
- * fails to pin a required key as "no matching timer → trace note" (handoff §4.5,
- * "ended with no matching started → reject"), NOT as "match any/all open timers".
+ * A referenced key that is unset on the event voids the *whole* match: the
+ * resolved value is `{}`, which the Phase 4 timer matcher treats as "no matching
+ * timer → trace note" (handoff §4.5, "ended with no matching started →
+ * reject"). Dropping only the unset key would leave a match with *fewer*
+ * constraints and let a close grab an open timer it never referenced — an
+ * incomplete reference must orphan, never widen. (`undefined` — a rule with no
+ * `match_on` at all — stays the singleton close.)
  */
 function resolveMatchOn(
 	matchOn: Record<string, string> | undefined,
@@ -415,7 +417,8 @@ function resolveMatchOn(
 	const resolved: Record<string, MetadataValue> = {};
 	for (const [timerKey, eventKey] of Object.entries(matchOn)) {
 		const value = ctx.metadata[eventKey];
-		if (value !== undefined) resolved[timerKey] = value;
+		if (value === undefined) return {};
+		resolved[timerKey] = value;
 	}
 	return resolved;
 }

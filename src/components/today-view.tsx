@@ -27,6 +27,20 @@ export function TodayView() {
 		setTimers(timers);
 	}, []);
 
+	// The post-mutation callback children fire un-awaited: unlike the quiet
+	// poll, a refetch failure right after a mutation must surface — the screen
+	// would otherwise keep showing the pre-mutation timers with no explanation.
+	const refreshAfterMutation = useCallback(async () => {
+		try {
+			await refresh();
+			setError(null);
+		} catch (err) {
+			setError(
+				err instanceof Error ? err.message : "Couldn't refresh your timers.",
+			);
+		}
+	}, [refresh]);
+
 	const loadAll = useCallback(async () => {
 		try {
 			const [timerRes, roleRes] = await Promise.all([listTimers(), getRoles()]);
@@ -90,7 +104,7 @@ export function TodayView() {
 				timers={timers}
 				selfRole={selfRole}
 				partnerId={partner?.member_id ?? null}
-				onChange={refresh}
+				onChange={refreshAfterMutation}
 			/>
 		</div>
 	);

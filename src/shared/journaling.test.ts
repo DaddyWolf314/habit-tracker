@@ -35,6 +35,17 @@ describe("promptRef / promptFloor — reading the pairing fields", () => {
 		expect(promptRef({ metadata: { prompt_id: 7 } })).toBeUndefined();
 	});
 
+	it("treats an empty-string prompt_id as no ref at all", () => {
+		// A ref that names nothing pairs with nothing — an empty-ref entry must
+		// not "answer" an empty-ref prompt, and is self-directed like any refless
+		// entry.
+		expect(promptRef(prompt({ prompt_id: "" }))).toBeUndefined();
+		expect(isSelfDirected(answer("shared", ""))).toBe(true);
+		expect(pairsWith(answer("shared", ""), prompt({ prompt_id: "" }))).toBe(
+			false,
+		);
+	});
+
 	it("reads a sealed/shared floor, and undefined for absent, secret, or junk", () => {
 		expect(promptFloor(prompt({ floor: "sealed" }))).toBe("sealed");
 		expect(promptFloor(prompt({ floor: "shared" }))).toBe("shared");

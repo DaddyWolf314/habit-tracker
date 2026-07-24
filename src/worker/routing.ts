@@ -13,14 +13,3 @@ export function coupleStubById(
 	const id = env.COUPLE_DO.idFromString(coupleDoId);
 	return env.COUPLE_DO.get(id);
 }
-
-/**
- * Name-keyed stub. Used only by the Phase 0 WebSocket dev path, which addresses
- * a DO by a caller-supplied couple name before real auth exists.
- */
-export function coupleStub(
-	env: Env,
-	coupleId: string,
-): DurableObjectStub<CoupleDO> {
-	return env.COUPLE_DO.getByName(coupleId);
-}

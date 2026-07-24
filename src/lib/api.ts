@@ -62,11 +62,21 @@ export async function apiFetch<T>(
 	});
 
 	const text = await response.text();
-	const data = text ? JSON.parse(text) : null;
 	if (!response.ok) {
-		throw new ApiError(response.status, data?.error ?? response.statusText);
+		// An error body isn't always ours — an edge 52x page or plain-text limit
+		// error is not JSON, and must still surface as ApiError (callers key on
+		// `status`), never as a bare SyntaxError from the parse.
+		let message = "";
+		try {
+			const data = text ? (JSON.parse(text) as { error?: unknown }) : null;
+			if (typeof data?.error === "string") message = data.error;
+		} catch {}
+		throw new ApiError(
+			response.status,
+			message || response.statusText || `HTTP ${response.status}`,
+		);
 	}
-	return data as T;
+	return (text ? JSON.parse(text) : null) as T;
 }
 
 /** Creates the couple with a freshly generated secret (Partner A). */
@@ -77,8 +87,13 @@ export function createIdentity(bearer: string): Promise<CreateIdentityResult> {
 	});
 }
 
-export function getSession(): Promise<Session> {
-	return apiFetch<Session>("/api/session");
+export function getSession(bearer?: string): Promise<Session> {
+	// An explicit bearer lets recovery validate a candidate secret *before*
+	// persisting it as this device's identity (the handleLink pattern).
+	return apiFetch<Session>(
+		"/api/session",
+		bearer === undefined ? {} : { bearer },
+	);
 }
 
 /**
