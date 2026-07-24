@@ -14,11 +14,11 @@ const counterIds = new Set(DEFAULT_COUNTERS.map((c) => c.id));
 const anchors = new Set(DEFAULT_ANCHORS);
 const timers = new Set(DEFAULT_TIMERS);
 
-describe("R1–R23 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)", () => {
-	it("installs exactly R1 through R23", () => {
-		expect(DEFAULT_RULES).toHaveLength(23);
+describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)", () => {
+	it("installs exactly R1 through R25", () => {
+		expect(DEFAULT_RULES).toHaveLength(25);
 		expect(DEFAULT_RULES.map((r) => r.id)).toEqual(
-			Array.from({ length: 23 }, (_, i) => `R${i + 1}`),
+			Array.from({ length: 25 }, (_, i) => `R${i + 1}`),
 		);
 	});
 
@@ -218,12 +218,19 @@ describe("R1–R23 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		// A couple seeded on the pre-qualifier pack: drop R21 (which didn't exist)
 		// and strip subject_role to reconstruct the v3 definitions, installed at 0.
 		const BUMP_AT = 1_000;
-		const oldPack = DEFAULT_RULES.filter((r) => r.id !== "R21").map((r) => ({
-			...r,
-			condition: { type: r.condition.type, metadata: r.condition.metadata },
-		}));
+		// This bump predates the edge rules (R24/R25); scope the reconstruction to
+		// the qualifier-era pack so they don't pollute the added/upserted sets.
+		const qualifierPack = DEFAULT_RULES.filter(
+			(r) => r.id !== "R24" && r.id !== "R25",
+		);
+		const oldPack = qualifierPack
+			.filter((r) => r.id !== "R21")
+			.map((r) => ({
+				...r,
+				condition: { type: r.condition.type, metadata: r.condition.metadata },
+			}));
 		const installed = reconcilePack(oldPack, [], 0).added;
-		const bump = reconcilePack(DEFAULT_RULES, installed, BUMP_AT);
+		const bump = reconcilePack(qualifierPack, installed, BUMP_AT);
 		// R21 is brand-new; the qualified R10–R14 are forward-only upserts.
 		expect(bump.added.map((r) => r.id)).toEqual(["R21"]);
 		expect(bump.upserted.map((u) => u.id).sort()).toEqual(

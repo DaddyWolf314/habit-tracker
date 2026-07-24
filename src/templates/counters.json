@@ -1,5 +1,5 @@
 {
-	"version": 3,
+	"version": 4,
 	"counters": [
 		{
 			"id": "rituals_completed_today",
@@ -72,6 +72,18 @@
 		{
 			"id": "dom_orgasms_lifetime",
 			"name": "Dom's orgasms (lifetime)",
+			"valence": "neutral",
+			"reset": "never"
+		},
+		{
+			"id": "edges_sub",
+			"name": "Sub's edges (lifetime)",
+			"valence": "neutral",
+			"reset": "never"
+		},
+		{
+			"id": "edges_dom",
+			"name": "Dom's edges (lifetime)",
 			"valence": "neutral",
 			"reset": "never"
 		}
