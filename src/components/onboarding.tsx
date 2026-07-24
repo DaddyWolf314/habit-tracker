@@ -24,6 +24,7 @@ import {
 	storeDeviceToken,
 	storeSecret,
 } from "#/lib/identity.ts";
+import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type {
 	InviteResult,
 	RoleConfirmationState,
@@ -493,19 +494,34 @@ function Home({
  * Content-free notification badge (handoff §3.5, #42). Shows only an unread
  * count — "You have N new items" — never any relationship content, so a glance
  * reveals nothing. Hidden when there is nothing to report.
+ *
+ * Refreshes on the same 15s + foreground cadence as the surfaces themselves
+ * (#92) so the count doesn't sit stale from mount, and links to the Log — the
+ * one place those new items (a partner's event, an incoming ruling) actually
+ * land — so the badge is somewhere to go, not just a number.
  */
 function NotificationBadge() {
 	const [unread, setUnread] = useState(0);
-	useEffect(() => {
-		getNotifications()
-			.then((r) => setUnread(r.unread))
-			.catch(() => setUnread(0));
+	const refresh = useCallback(async () => {
+		setUnread((await getNotifications()).unread);
 	}, []);
+	useEffect(() => {
+		refresh().catch(() => setUnread(0));
+	}, [refresh]);
+	// Home only renders once identity exists, but gate anyway — the hook's own
+	// contract is not to poll a space this device can't read.
+	useLiveRefresh(refresh, {
+		intervalMs: LIVE_REFRESH_MS,
+		enabled: hasIdentity(),
+	});
 	if (unread === 0) return null;
 	return (
-		<p className="mt-3 inline-block rounded-full bg-primary/10 px-3 py-1 text-sm font-medium">
+		<Link
+			to="/log"
+			className="mt-3 inline-block rounded-full bg-primary/10 px-3 py-1 text-sm font-medium hover:bg-primary/20"
+		>
 			You have {unread} new item{unread === 1 ? "" : "s"}
-		</p>
+		</Link>
 	);
 }
 

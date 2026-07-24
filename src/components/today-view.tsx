@@ -5,6 +5,7 @@ import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.ts
 import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
 import { getRoles, listOpenPrompts, listTimers } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
+import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { TimerView } from "#/shared/timers.ts";
@@ -14,10 +15,9 @@ import type { TimerView } from "#/shared/timers.ts";
  * MVP"). Owns the timer list and refreshes it after every mutation, plus a
  * low-frequency poll so a countdown the alarm expires server-side stops reading
  * as running without a page reload. Live *ticking* is a pure display concern and
- * lives in {@link CountdownsPanel}; there is no WebSocket push (a non-goal here,
- * ADR 0004).
+ * lives in {@link CountdownsPanel}; there is no WebSocket push yet (the
+ * architecture plans one, handoff §3.2).
  */
-const POLL_MS = 15_000;
 
 export function TodayView() {
 	const [ready, setReady] = useState(false);
@@ -72,16 +72,13 @@ export function TodayView() {
 	}, [loadAll]);
 
 	// The alarm sweep flips a passed-deadline countdown to `expired` server-side;
-	// with no live push a periodic re-list surfaces that so the screen never shows
-	// a stale running countdown. A swallowed error keeps a transient blip quiet —
-	// loadAll already surfaced the first-load failure.
-	useEffect(() => {
-		if (!hasIdentity()) return;
-		const id = setInterval(() => {
-			refresh().catch(() => {});
-		}, POLL_MS);
-		return () => clearInterval(id);
-	}, [refresh]);
+	// with no live push a periodic re-list (plus a re-list on foreground) surfaces
+	// that so the screen never shows a stale running countdown. Errors are
+	// swallowed — loadAll already surfaced any first-load failure.
+	useLiveRefresh(refresh, {
+		intervalMs: LIVE_REFRESH_MS,
+		enabled: ready && hasIdentity(),
+	});
 
 	const self = members.find((m) => m.is_self);
 	const selfRole = self?.role ?? null;

@@ -5,6 +5,8 @@ import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
 import { QueuePanel } from "#/components/log/queue-panel.tsx";
+import { Button } from "#/components/ui/button.tsx";
+import { Sheet, SheetContent, SheetTrigger } from "#/components/ui/sheet.tsx";
 import {
 	getRoles,
 	listAnchors,
@@ -15,6 +17,7 @@ import {
 	listRuleHistory,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
+import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
@@ -28,6 +31,11 @@ import type { VersionedRule } from "#/shared/rules.ts";
  * be usable on its own). A couple could live on Phase 2 alone: shared tallies
  * with a full, append-only history. Event types, counters, and the log are
  * loaded together and refreshed after every mutation.
+ *
+ * The stream gets the page: the composer opens as a sheet off a floating button
+ * and the counters fold behind a summary row (#91), so this reads as a log. It
+ * also stays live — a low-frequency poll plus a foreground refetch (#92) — so a
+ * partner's event or an incoming ruling arrives without a manual reload.
  */
 export function LogView() {
 	const [ready, setReady] = useState(false);
@@ -41,6 +49,24 @@ export function LogView() {
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [error, setError] = useState<string | null>(null);
+	const [composerOpen, setComposerOpen] = useState(false);
+
+	// Re-list the mutable surfaces (the type/rule definitions don't change under
+	// the viewer, so loadAll owns those). Throws on failure — the two callers
+	// below decide whether a failure is loud or quiet.
+	const refresh = useCallback(async () => {
+		const [{ events }, { counters }, { anchors }, { prompts }] =
+			await Promise.all([
+				listEvents(),
+				listCounters(),
+				listAnchors(),
+				listOpenPrompts(),
+			]);
+		setEvents(events);
+		setCounters(counters);
+		setAnchors(anchors);
+		setOpenPrompts(prompts);
+	}, []);
 
 	// Children fire this un-awaited after a mutation commits, so it must never
 	// reject: a failed refetch has to surface here — otherwise the panels keep
@@ -48,24 +74,23 @@ export function LogView() {
 	// with nothing on screen saying why.
 	const refreshLog = useCallback(async () => {
 		try {
-			const [{ events }, { counters }, { anchors }, { prompts }] =
-				await Promise.all([
-					listEvents(),
-					listCounters(),
-					listAnchors(),
-					listOpenPrompts(),
-				]);
-			setEvents(events);
-			setCounters(counters);
-			setAnchors(anchors);
-			setOpenPrompts(prompts);
+			await refresh();
 			setError(null);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't refresh the log.",
 			);
 		}
-	}, []);
+	}, [refresh]);
+
+	// The Log had no live path before (#92): loaded once, refetched only after
+	// the viewer's own mutations, so a partner's event or an incoming ruling —
+	// the sub's emotionally load-bearing reveal — never arrived until a manual
+	// reload. Poll on the same cadence as Today, plus on foreground.
+	useLiveRefresh(refresh, {
+		intervalMs: LIVE_REFRESH_MS,
+		enabled: ready && hasIdentity(),
+	});
 
 	const loadAll = useCallback(async () => {
 		try {
@@ -122,7 +147,9 @@ export function LogView() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl space-y-4 p-6">
+		// Bottom padding leaves room for the floating compose button so it never
+		// covers the last events in the stream.
+		<div className="mx-auto max-w-2xl space-y-4 p-6 pb-28">
 			<div className="flex items-center justify-between">
 				<h1 className="text-2xl font-bold">Log</h1>
 				<Link to="/" className="text-sm underline">
@@ -132,6 +159,7 @@ export function LogView() {
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
+			{/* Queue stays top-of-page: for the dom it is the actionable part (#91). */}
 			<QueuePanel
 				events={events}
 				types={types}
@@ -142,13 +170,11 @@ export function LogView() {
 				onAmended={refreshLog}
 			/>
 			<AnchorsPanel anchors={anchors} />
-			<CountersPanel counters={counters} onChange={refreshLog} />
-			<LogComposer
-				types={types}
-				members={members}
-				openPrompts={openPrompts}
-				onLogged={refreshLog}
-			/>
+
+			{/* Counters collapse behind a summary row so the surface reads as a log,
+			    not a dashboard — the stream below gets the page (#91). */}
+			<CountersSummary counters={counters} onChange={refreshLog} />
+
 			<EventStream
 				events={events}
 				types={types}
@@ -156,6 +182,76 @@ export function LogView() {
 				selfId={self?.member_id ?? null}
 				onAmended={refreshLog}
 			/>
+
+			{/* The primary write action floats over the stream and opens the composer
+			    as a sheet (handoff §9.4), instead of sitting buried mid-scroll. */}
+			<Sheet open={composerOpen} onOpenChange={setComposerOpen}>
+				<SheetTrigger asChild>
+					<Button className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 shadow-lg">
+						Log an event
+					</Button>
+				</SheetTrigger>
+				<SheetContent title="Log an event">
+					<LogComposer
+						types={types}
+						members={members}
+						openPrompts={openPrompts}
+						onLogged={() => {
+							refreshLog();
+							setComposerOpen(false);
+						}}
+					/>
+				</SheetContent>
+			</Sheet>
 		</div>
 	);
+}
+
+/**
+ * Counters, collapsed to a one-line summary by default (#91). Clocks moved to
+ * Today (#88) and the composer moved to a sheet, so the counters were the last
+ * panel keeping the Log from reading as a log; here they fold behind a row that
+ * still shows the live values at a glance and expands to the full editor.
+ */
+function CountersSummary({
+	counters,
+	onChange,
+}: {
+	counters: Counter[];
+	onChange: () => void;
+}) {
+	const [open, setOpen] = useState(false);
+
+	if (open) {
+		return (
+			<div className="space-y-2">
+				<div className="flex justify-end">
+					<Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+						Collapse counters
+					</Button>
+				</div>
+				<CountersPanel counters={counters} onChange={onChange} />
+			</div>
+		);
+	}
+
+	return (
+		<button
+			type="button"
+			onClick={() => setOpen(true)}
+			className="flex w-full items-center justify-between gap-3 rounded-lg border p-4 text-left hover:bg-accent/50"
+		>
+			<span className="text-lg font-semibold">Counters</span>
+			<span className="min-w-0 truncate text-sm text-muted-foreground">
+				{counters.length === 0 ? "none yet" : summarizeCounters(counters)} ›
+			</span>
+		</button>
+	);
+}
+
+/** A compact "name value" preview of the first few counters for the summary row. */
+function summarizeCounters(counters: Counter[]): string {
+	const shown = counters.slice(0, 3).map((c) => `${c.name} ${c.value}`);
+	const extra = counters.length - shown.length;
+	return extra > 0 ? `${shown.join(" · ")} +${extra} more` : shown.join(" · ");
 }

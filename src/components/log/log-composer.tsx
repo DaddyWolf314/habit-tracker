@@ -141,10 +141,8 @@ export function LogComposer({
 	}
 
 	return (
-		<section className="rounded-lg border p-4">
-			<h2 className="text-lg font-semibold">Log an event</h2>
-
-			<div className="mt-3">
+		<div className="space-y-3">
+			<div>
 				{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
 				<label className="text-xs text-muted-foreground">Type</label>
 				<select
@@ -162,7 +160,7 @@ export function LogComposer({
 			</div>
 
 			{type && (
-				<div className="mt-3 space-y-3">
+				<div className="space-y-3">
 					<div>
 						<span className="text-xs text-muted-foreground">
 							Subject{type.subject_required ? " (required)" : ""}
@@ -236,7 +234,7 @@ export function LogComposer({
 					</Button>
 				</div>
 			)}
-		</section>
+		</div>
 	);
 }
 
