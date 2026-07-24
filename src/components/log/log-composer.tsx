@@ -9,14 +9,24 @@ import {
 } from "#/shared/event-types.ts";
 import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import type { OpenPromptView } from "#/shared/journaling.ts";
 import {
 	type MetadataValue,
 	subjectRoleOf,
 	type Visibility,
 } from "#/shared/roles.ts";
+import { formatRemaining } from "#/shared/timers.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
+
+/**
+ * A minted ref is server-assigned at log time (#102) — it is not user input, so
+ * the form neither renders it nor counts it against the required check.
+ */
+function isMinted(field: MetadataField): boolean {
+	return field.kind === "ref" && field.minted === true;
+}
 
 /**
  * Log-an-event sheet (handoff §9 surface 4). The type picker offers the couple's
@@ -28,10 +38,13 @@ const fieldClass =
 export function LogComposer({
 	types,
 	members,
+	openPrompts,
 	onLogged,
 }: {
 	types: EventType[];
 	members: RoleMember[];
+	/** The caller's outstanding prompts, feeding the answer picker (#102). */
+	openPrompts: OpenPromptView[];
 	onLogged: () => void;
 }) {
 	const pickable = useMemo(
@@ -89,6 +102,7 @@ export function LogComposer({
 		const missing: string[] = [];
 		if (t.subject_required && !subject) missing.push("Subject");
 		for (const [key, field] of Object.entries(t.metadata)) {
+			if (isMinted(field)) continue;
 			if (field.required && !awaitedKeys.has(key) && !(meta[key] ?? "")) {
 				missing.push(field.label);
 			}
@@ -167,15 +181,18 @@ export function LogComposer({
 						</select>
 					</div>
 
-					{Object.entries(type.metadata).map(([key, field]) => (
-						<MetadataInput
-							key={key}
-							field={field}
-							awaiting={awaitedKeys.has(key)}
-							value={meta[key] ?? ""}
-							onChange={(v) => setMeta((m) => ({ ...m, [key]: v }))}
-						/>
-					))}
+					{Object.entries(type.metadata)
+						.filter(([, field]) => !isMinted(field))
+						.map(([key, field]) => (
+							<MetadataInput
+								key={key}
+								field={field}
+								awaiting={awaitedKeys.has(key)}
+								openPrompts={openPrompts}
+								value={meta[key] ?? ""}
+								onChange={(v) => setMeta((m) => ({ ...m, [key]: v }))}
+							/>
+						))}
 
 					<div>
 						<span className="text-xs text-muted-foreground">
@@ -227,11 +244,13 @@ export function LogComposer({
 function MetadataInput({
 	field,
 	awaiting,
+	openPrompts,
 	value,
 	onChange,
 }: {
 	field: MetadataField;
 	awaiting: boolean;
+	openPrompts: OpenPromptView[];
 	value: string;
 	onChange: (value: string) => void;
 }) {
@@ -248,6 +267,30 @@ function MetadataInput({
 			)}
 		</span>
 	);
+
+	// Answering a prompt is a pick, not a transcription (#102): the options are
+	// the caller's outstanding prompts, so the submitted ref always names a real
+	// prompt — no hand-typed id, no typo that silently never pairs. Blank stays
+	// legal: a `journal_entry` with no ref is self-directed journaling.
+	if (field.kind === "ref" && field.ref_kind === "prompt") {
+		return (
+			<div>
+				{label}
+				<select
+					className={`${fieldClass} mt-1`}
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+				>
+					<option value="">— (not answering a prompt)</option>
+					{openPrompts.map((p) => (
+						<option key={p.prompt_id} value={p.prompt_id}>
+							{promptOptionLabel(p)}
+						</option>
+					))}
+				</select>
+			</div>
+		);
+	}
 
 	if (field.kind === "boolean" || field.kind === "enum") {
 		const options = field.kind === "boolean" ? ["yes", "no"] : field.options;
@@ -283,4 +326,20 @@ function MetadataInput({
 			/>
 		</div>
 	);
+}
+
+/**
+ * One picker option: the question itself, with its countdown state as urgency.
+ * An overdue prompt stays pickable (#102) — a late answer still pairs for
+ * history, it just no longer discharges the countdown.
+ */
+function promptOptionLabel(p: OpenPromptView): string {
+	const question =
+		p.question && p.question.length > 60
+			? `${p.question.slice(0, 57)}…`
+			: (p.question ?? "(no question)");
+	if (p.expired) return `${question} — overdue`;
+	if (p.paused) return `${question} — paused`;
+	if (p.deadline_at === null) return question;
+	return `${question} — ${formatRemaining(p.deadline_at - Date.now())} left`;
 }

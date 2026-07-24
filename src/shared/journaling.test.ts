@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
 	isSelfDirected,
+	openPromptViews,
+	type PromptCountdown,
+	type PromptEvent,
 	pairsWith,
 	promptFloor,
 	promptRef,
@@ -128,5 +131,85 @@ describe("satisfiesAssignment — pairing AND clearing the floor", () => {
 		const p = prompt({ prompt_id: "p1", floor: "sealed" });
 		expect(satisfiesAssignment(answer("shared", "p2"), p)).toBe(false);
 		expect(satisfiesAssignment(answer("shared"), p)).toBe(false);
+	});
+});
+
+describe("openPromptViews — the answer picker's outstanding prompts (#102)", () => {
+	const countdown = (over: Partial<PromptCountdown> = {}): PromptCountdown => ({
+		match: { prompt_id: "p1" },
+		opened_by: "e1",
+		deadline_at: 1000,
+		expired: false,
+		...over,
+	});
+	const promptEvent = (over: Partial<PromptEvent> = {}): PromptEvent => ({
+		id: "e1",
+		subject: "sub-1",
+		note: "What are you grateful for?",
+		metadata: { prompt_id: "p1", floor: "sealed" },
+		...over,
+	});
+
+	it("joins a countdown to its prompt by opened_by and shapes the view", () => {
+		expect(openPromptViews([countdown()], [promptEvent()], "sub-1")).toEqual([
+			{
+				prompt_id: "p1",
+				question: "What are you grateful for?",
+				floor: "sealed",
+				deadline_at: 1000,
+				paused: false,
+				expired: false,
+			},
+		]);
+	});
+
+	it("falls back to the prompt_id ref for a pre-#102 timer with no opened_by", () => {
+		const views = openPromptViews(
+			[countdown({ opened_by: undefined })],
+			[promptEvent()],
+			"sub-1",
+		);
+		expect(views).toHaveLength(1);
+		expect(views[0].question).toBe("What are you grateful for?");
+	});
+
+	it("only poses prompts assigned to the caller", () => {
+		expect(openPromptViews([countdown()], [promptEvent()], "dom-1")).toEqual(
+			[],
+		);
+	});
+
+	it("drops a countdown whose prompt can't be resolved or whose ref is empty", () => {
+		// No prompt event to pose the question from.
+		expect(openPromptViews([countdown()], [], "sub-1")).toEqual([]);
+		// An empty ref names nothing, so nothing could ever answer it.
+		expect(
+			openPromptViews(
+				[countdown({ match: { prompt_id: "" } })],
+				[promptEvent()],
+				"sub-1",
+			),
+		).toEqual([]);
+	});
+
+	it("carries paused and expired countdown state into the view", () => {
+		const views = openPromptViews(
+			[
+				countdown({ paused_at: 500 }),
+				countdown({
+					match: { prompt_id: "p2" },
+					opened_by: "e2",
+					expired: true,
+				}),
+			],
+			[promptEvent(), promptEvent({ id: "e2", metadata: { prompt_id: "p2" } })],
+			"sub-1",
+		);
+		expect(views.map((v) => [v.paused, v.expired])).toEqual([
+			[true, false],
+			[false, true],
+		]);
+		// A floorless prompt reads as null, not undefined (it must serialize).
+		expect(views[1].floor).toBeNull();
 	});
 });

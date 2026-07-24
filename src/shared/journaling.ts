@@ -96,6 +96,79 @@ export function satisfiesFloor(
 }
 
 /**
+ * One outstanding prompt as the answer picker sees it (#102): the minted
+ * `prompt_id` to echo, the question to display, and enough countdown state to
+ * label urgency. `expired` marks a recently-expired-unmet prompt — a late answer
+ * is still the sub's right to log (and still pairs for history); it just no
+ * longer discharges the countdown.
+ */
+export const openPromptViewSchema = z.object({
+	prompt_id: z.string(),
+	/** The prompt's `note` — the question itself. */
+	question: z.string().nullable(),
+	floor: floorSchema.nullable(),
+	deadline_at: z.number().int().nullable(),
+	paused: z.boolean(),
+	expired: z.boolean(),
+});
+export type OpenPromptView = z.infer<typeof openPromptViewSchema>;
+
+/** The countdown state `openPromptViews` reads — a slice of the DO's TimerState. */
+export interface PromptCountdown {
+	match: Record<string, MetadataValue>;
+	/** The opening `journal_prompt`'s event id; absent on pre-#102 timers. */
+	opened_by?: string;
+	deadline_at?: number;
+	paused_at?: number;
+	expired: boolean;
+}
+
+/** The prompt-event slice `openPromptViews` joins against. */
+export interface PromptEvent extends WithMetadata {
+	id: string;
+	subject?: string | null;
+	note?: string | null;
+}
+
+/**
+ * Composes the open-prompt views for one member: each `journal_countdown` joined
+ * back to its `journal_prompt` (by `opened_by`, falling back to the `prompt_id`
+ * ref for pre-#102 timers), kept only when that prompt is assigned to
+ * `subjectId`. A countdown whose prompt can't be resolved is dropped — the
+ * picker can't pose a question it doesn't have.
+ */
+export function openPromptViews(
+	countdowns: PromptCountdown[],
+	prompts: PromptEvent[],
+	subjectId: string,
+): OpenPromptView[] {
+	const byId = new Map(prompts.map((p) => [p.id, p]));
+	const byRef = new Map<string, PromptEvent>();
+	for (const p of prompts) {
+		const ref = promptRef(p);
+		if (ref !== undefined && !byRef.has(ref)) byRef.set(ref, p);
+	}
+	const views: OpenPromptView[] = [];
+	for (const cd of countdowns) {
+		const ref = cd.match[PROMPT_ID_KEY];
+		if (typeof ref !== "string" || ref === "") continue;
+		const prompt =
+			(cd.opened_by !== undefined ? byId.get(cd.opened_by) : undefined) ??
+			byRef.get(ref);
+		if (!prompt || prompt.subject !== subjectId) continue;
+		views.push({
+			prompt_id: ref,
+			question: prompt.note ?? null,
+			floor: promptFloor(prompt) ?? null,
+			deadline_at: cd.deadline_at ?? null,
+			paused: cd.paused_at !== undefined,
+			expired: cd.expired,
+		});
+	}
+	return views;
+}
+
+/**
  * Whether an entry satisfies a prompt's assignment: it must pair with the prompt
  * *and* its visibility must clear the prompt's floor. A paired-but-below-floor
  * answer returns `false` — it does not close the countdown, which then expires

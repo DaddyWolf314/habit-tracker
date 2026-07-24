@@ -283,6 +283,7 @@
 					"ref_kind": "prompt",
 					"label": "Prompt",
 					"required": true,
+					"minted": true,
 					"set_permission": ["dom", "switch"]
 				},
 				"floor": {

@@ -176,6 +176,17 @@ export const DEFAULT_TIMERS: readonly string[] = [
  */
 export const JOURNAL_COUNTDOWN_TIMER = "journal_countdown";
 
+/** The dom-authored question event a `journal_entry` answers (ADR 0001). */
+export const JOURNAL_PROMPT_TYPE = "journal_prompt";
+
+/**
+ * How long an expired-unmet prompt stays in the answer picker (#102). A late
+ * answer is still worth pairing for history even though it no longer discharges
+ * the countdown, so the picker keeps the question around for a while rather
+ * than stranding the sub the moment the deadline passes.
+ */
+export const EXPIRED_PROMPT_GRACE_MS: number = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * Default time a sub has to answer an assigned prompt before the countdown
  * expires unmet. A first-cut policy default (the rule carries no duration, and
