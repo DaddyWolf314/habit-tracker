@@ -16,6 +16,62 @@ import { type MetadataValue, metadataValueSchema } from "./roles.ts";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * The units the assign form offers for entering a countdown's deadline (#95).
+ * Denial periods run days, so a minutes-only field forced the dom to hand-compute
+ * 4320; a unit select keeps the number small. Ordered coarsening for the dropdown.
+ */
+export const DURATION_UNITS = [
+	{ value: "minutes", label: "minutes", ms: MINUTE_MS },
+	{ value: "hours", label: "hours", ms: HOUR_MS },
+	{ value: "days", label: "days", ms: DAY_MS },
+] as const;
+export type DurationUnit = (typeof DURATION_UNITS)[number]["value"];
+
+/**
+ * Converts a duration entered as `value` of a chosen {@link DurationUnit} into
+ * milliseconds for routing as `duration_ms` (#95). Rounds to a whole ms; the
+ * caller validates the value is finite and positive. An unrecognized unit falls
+ * back to minutes so a stray value can never route NaN as a deadline.
+ */
+export function durationToMs(value: number, unit: DurationUnit): number {
+	const found = DURATION_UNITS.find((u) => u.value === unit);
+	return Math.round(value * (found?.ms ?? MINUTE_MS));
+}
+
+/** One dom extend option: the label to show and the milliseconds it grants (#95). */
+export interface ExtendChoice {
+	label: string;
+	ms: number;
+}
+
+/** The extend ladder, coarsening from a short bump to a full day. */
+const EXTEND_LADDER: readonly ExtendChoice[] = [
+	{ label: "+10m", ms: 10 * MINUTE_MS },
+	{ label: "+1h", ms: HOUR_MS },
+	{ label: "+6h", ms: 6 * HOUR_MS },
+	{ label: "+1d", ms: DAY_MS },
+];
+
+/**
+ * The extend options to offer for a countdown with `remainingMs` left (#95). A
+ * fixed +10m is useless against a multi-day countdown, so the choices track the
+ * countdown's scale: a window of the ladder around the largest rung that still
+ * fits inside the remaining time (the rung below it, that rung, and the one
+ * above). Always returns at least two options, so even a near-expired countdown
+ * offers a real grant.
+ */
+export function extendChoicesFor(remainingMs: number): ExtendChoice[] {
+	let top = 0;
+	for (let i = 0; i < EXTEND_LADDER.length; i++) {
+		if (EXTEND_LADDER[i].ms <= remainingMs) top = i;
+	}
+	const start = Math.max(0, top - 1);
+	const end = Math.min(EXTEND_LADDER.length, top + 2);
+	return EXTEND_LADDER.slice(start, end);
+}
 
 /**
  * Default per-activity max run time for a stopwatch before the alarm auto-closes

@@ -5,6 +5,8 @@ import {
 	countdownExpiryAt,
 	countdownRemainingMs,
 	durationMinutes,
+	durationToMs,
+	extendChoicesFor,
 	extendCountdown,
 	formatRemaining,
 	isCountdownExpired,
@@ -16,6 +18,10 @@ import {
 	stopwatchDurationMs,
 	stopwatchesToAutoClose,
 } from "./timers.ts";
+
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
 
 /** A small helper mirroring the DO's stored open-stopwatch shape. */
 function open(
@@ -235,5 +241,69 @@ describe("formatRemaining (today view display)", () => {
 		expect(formatRemaining(90_000_000)).toBe("1d 1h");
 		// exactly one day
 		expect(formatRemaining(86_400_000)).toBe("1d 0h");
+	});
+});
+
+describe("durationToMs (#95 — assign form deadline entry in a chosen unit)", () => {
+	it("converts minutes, hours, and days to milliseconds", () => {
+		expect(durationToMs(30, "minutes")).toBe(30 * MIN);
+		expect(durationToMs(2, "hours")).toBe(2 * HOUR);
+		expect(durationToMs(3, "days")).toBe(3 * DAY);
+	});
+
+	it("rounds a fractional value to a whole millisecond", () => {
+		// 1.5 minutes is a whole ms; a value that lands sub-ms rounds.
+		expect(durationToMs(1.5, "minutes")).toBe(90_000);
+		expect(durationToMs(0.0000005, "minutes")).toBe(
+			Math.round(0.0000005 * MIN),
+		);
+	});
+
+	it("falls back to minutes for an unknown unit rather than producing NaN", () => {
+		// The unit comes from a select, but a defensive fallback keeps a stray
+		// value from routing NaN as a deadline.
+		expect(durationToMs(5, "weeks" as never)).toBe(5 * MIN);
+	});
+});
+
+describe("extendChoicesFor (#95 — extend options scaled to the countdown)", () => {
+	it("offers short bumps for a short countdown", () => {
+		// A half-hour countdown: +10m and +1h are the sensible grants.
+		expect(extendChoicesFor(30 * MIN).map((c) => c.label)).toEqual([
+			"+10m",
+			"+1h",
+		]);
+	});
+
+	it("widens the window as the countdown grows", () => {
+		expect(extendChoicesFor(2 * HOUR).map((c) => c.label)).toEqual([
+			"+10m",
+			"+1h",
+			"+6h",
+		]);
+		expect(extendChoicesFor(12 * HOUR).map((c) => c.label)).toEqual([
+			"+1h",
+			"+6h",
+			"+1d",
+		]);
+	});
+
+	it("drops the useless +10m against a multi-day countdown", () => {
+		const labels = extendChoicesFor(3 * DAY).map((c) => c.label);
+		expect(labels).toEqual(["+6h", "+1d"]);
+		expect(labels).not.toContain("+10m");
+	});
+
+	it("still offers at least two options for a near-zero remaining", () => {
+		expect(extendChoicesFor(0).map((c) => c.label)).toEqual(["+10m", "+1h"]);
+	});
+
+	it("carries the millisecond grant matching each label", () => {
+		const choices = extendChoicesFor(2 * HOUR);
+		expect(choices).toEqual([
+			{ label: "+10m", ms: 10 * MIN },
+			{ label: "+1h", ms: HOUR },
+			{ label: "+6h", ms: 6 * HOUR },
+		]);
 	});
 });

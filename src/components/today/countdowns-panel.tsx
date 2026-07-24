@@ -9,18 +9,19 @@ import {
 	pauseTimer,
 	resumeTimer,
 } from "#/lib/api.ts";
+import { FLOOR_KEY, type Floor } from "#/shared/journaling.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
 	type Countdown,
 	countdownRemainingMs,
+	DURATION_UNITS,
+	type DurationUnit,
+	durationToMs,
+	extendChoicesFor,
 	formatRemaining,
 	isCountdownExpired,
 	type TimerView,
 } from "#/shared/timers.ts";
-
-const MINUTE_MS = 60_000;
-/** One tap extends a countdown by this much (handoff §4.5 — dom extend). */
-const EXTEND_MS = 10 * MINUTE_MS;
 
 /** Shared field styling, matching the sibling panels (journal-prompts, log). */
 const fieldClass =
@@ -152,6 +153,12 @@ export function CountdownsPanel({
 						const paused = t.paused_at != null;
 						const overdue = isCountdownExpired(c, now);
 						const taskId = taskIdOf(t);
+						// Extend options scaled to what's left (#95): a fixed +10m is
+						// useless against a multi-day denial, so the choices track the
+						// countdown's magnitude.
+						const extendChoices = extendChoicesFor(
+							countdownRemainingMs(c, now),
+						);
 						return (
 							<li key={t.id} className="rounded-md border px-3 py-2">
 								<div className="flex items-center gap-3">
@@ -191,16 +198,19 @@ export function CountdownsPanel({
 													Pause
 												</Button>
 											)}
-											<Button
-												variant="outline"
-												size="sm"
-												disabled={busy === t.id}
-												onClick={() =>
-													run(t.id, () => extendTimer(t.id, EXTEND_MS))
-												}
-											>
-												+10m
-											</Button>
+											{extendChoices.map((choice) => (
+												<Button
+													key={choice.label}
+													variant="outline"
+													size="sm"
+													disabled={busy === t.id}
+													onClick={() =>
+														run(t.id, () => extendTimer(t.id, choice.ms))
+													}
+												>
+													{choice.label}
+												</Button>
+											))}
 											<Button
 												variant="ghost"
 												size="sm"
@@ -260,11 +270,44 @@ export function CountdownsPanel({
 	);
 }
 
+/** The three things the dom can assign here; each maps to one logged event. */
+type AssignKind = "task" | "denial" | "journal";
+
 /**
- * The dom's assign form. Logs a `task_assigned` or `denial_started` event (ADR
- * 0004) via the ordinary event path — a rule opens the countdown — so there is no
- * timer-assign endpoint. `task_id` is free text (a catalog is a future concern);
- * the deadline is entered in minutes and routed as `duration_ms`.
+ * The per-kind assign copy — the tab label, the note-field prompt, and the submit
+ * verb. `journal` opens a `journal_countdown` on a policy-default deadline (R19),
+ * so it carries no duration field; task and denial route `duration_ms`.
+ */
+const ASSIGN_KINDS: Record<
+	AssignKind,
+	{ tab: string; notePrompt: string; submit: string }
+> = {
+	task: {
+		tab: "Assign task",
+		notePrompt: "What is the task?",
+		submit: "Assign",
+	},
+	denial: {
+		tab: "Start denial",
+		notePrompt: "Anything to say about this denial?",
+		submit: "Start",
+	},
+	journal: {
+		tab: "Assign prompt",
+		notePrompt: "What should they reflect on?",
+		submit: "Assign",
+	},
+};
+
+/**
+ * The dom's assign form. Logs a `task_assigned`, `denial_started`, or
+ * `journal_prompt` event (ADR 0004, R19) via the ordinary event path — a rule
+ * opens the countdown — so there is no timer-assign endpoint. The `task_id` field
+ * is a free-text name (a catalog is a future concern; issue #95). A task/denial
+ * deadline is entered as a value plus a unit and routed as `duration_ms`; a
+ * journal prompt has no duration (its countdown uses a policy default) and instead
+ * carries an optional visibility `floor` (issue #59) — its `prompt_id` is minted
+ * server-side, so it is never sent from here.
  */
 function AssignForm({
 	partnerId,
@@ -273,45 +316,68 @@ function AssignForm({
 	partnerId: string | null;
 	onAssigned: () => void;
 }) {
-	const [kind, setKind] = useState<"task" | "denial">("task");
+	const [kind, setKind] = useState<AssignKind>("task");
 	const [taskId, setTaskId] = useState("");
-	const [minutes, setMinutes] = useState("");
+	const [amount, setAmount] = useState("");
+	const [unit, setUnit] = useState<DurationUnit>("minutes");
+	const [floor, setFloor] = useState<Floor | "">("");
 	const [note, setNote] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
 	async function submit() {
-		const mins = Number(minutes);
-		if (!Number.isFinite(mins) || mins <= 0) {
-			setError("Enter a positive number of minutes.");
-			return;
-		}
-		if (kind === "task" && !taskId.trim()) {
-			setError("A task needs an id.");
-			return;
-		}
 		if (!partnerId) {
 			setError("No partner to assign to yet.");
 			return;
 		}
+		// A journal prompt's countdown runs on a policy-default deadline (R19), so it
+		// takes no duration — the question (in `note`) is what it needs.
+		const durationValue = Number(amount);
+		if (kind === "journal") {
+			if (!note.trim()) {
+				setError("Write the prompt they should reflect on.");
+				return;
+			}
+		} else {
+			if (!Number.isFinite(durationValue) || durationValue <= 0) {
+				setError("Enter a positive duration.");
+				return;
+			}
+			if (kind === "task" && !taskId.trim()) {
+				setError("A task needs a name.");
+				return;
+			}
+		}
 		setBusy(true);
 		setError(null);
 		try {
-			const duration_ms = Math.round(mins * MINUTE_MS);
-			// task_assigned adds the task ref; denial_started carries only the deadline.
-			// Both are dom-authored events about the sub (subject) — a rule opens the
-			// countdown (ADR 0004), so this goes through logEvent, not a timer command.
+			// Each kind is a dom-authored event about the sub (subject) — a rule opens
+			// the countdown (ADR 0004), so this goes through logEvent, not a timer
+			// command. journal_prompt's prompt_id is minted server-side (#102), so the
+			// metadata carries only the optional floor.
+			let type: "task_assigned" | "denial_started" | "journal_prompt";
+			const metadata: Record<string, string | number> = {};
+			if (kind === "journal") {
+				type = "journal_prompt";
+				if (floor) metadata[FLOOR_KEY] = floor;
+			} else {
+				metadata.duration_ms = durationToMs(durationValue, unit);
+				if (kind === "task") {
+					type = "task_assigned";
+					metadata.task_id = taskId.trim();
+				} else {
+					type = "denial_started";
+				}
+			}
 			await logEvent({
-				type: kind === "task" ? "task_assigned" : "denial_started",
+				type,
+				metadata,
 				subject: partnerId,
-				metadata:
-					kind === "task"
-						? { task_id: taskId.trim(), duration_ms }
-						: { duration_ms },
 				note: note.trim() || undefined,
 			});
 			setTaskId("");
-			setMinutes("");
+			setAmount("");
+			setFloor("");
 			setNote("");
 			onAssigned();
 		} catch (err) {
@@ -323,43 +389,70 @@ function AssignForm({
 
 	return (
 		<div className="mt-3 space-y-2 rounded-md border bg-muted/30 p-3">
-			<div className="flex gap-2">
-				<Button
-					variant={kind === "task" ? "default" : "ghost"}
-					size="sm"
-					onClick={() => setKind("task")}
-				>
-					Assign task
-				</Button>
-				<Button
-					variant={kind === "denial" ? "default" : "ghost"}
-					size="sm"
-					onClick={() => setKind("denial")}
-				>
-					Start denial
-				</Button>
+			<div className="flex flex-wrap gap-2">
+				{(Object.keys(ASSIGN_KINDS) as AssignKind[]).map((k) => (
+					<Button
+						key={k}
+						variant={kind === k ? "default" : "ghost"}
+						size="sm"
+						onClick={() => setKind(k)}
+					>
+						{ASSIGN_KINDS[k].tab}
+					</Button>
+				))}
 			</div>
 
 			{kind === "task" && (
 				<Input
-					placeholder="Task id (e.g. dishes)"
+					placeholder="Task (e.g. dishes)"
 					value={taskId}
 					onChange={(e) => setTaskId(e.target.value)}
 				/>
 			)}
-			<Input
-				type="number"
-				min={1}
-				placeholder="Minutes"
-				value={minutes}
-				onChange={(e) => setMinutes(e.target.value)}
-			/>
+			{kind !== "journal" && (
+				<div className="flex gap-2">
+					<Input
+						className="flex-1"
+						type="number"
+						min={1}
+						placeholder="Duration"
+						value={amount}
+						onChange={(e) => setAmount(e.target.value)}
+					/>
+					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
+					<label className="sr-only">Unit</label>
+					<select
+						className={`${fieldClass} w-28`}
+						value={unit}
+						onChange={(e) => setUnit(e.target.value as DurationUnit)}
+					>
+						{DURATION_UNITS.map((u) => (
+							<option key={u.value} value={u.value}>
+								{u.label}
+							</option>
+						))}
+					</select>
+				</div>
+			)}
+			{kind === "journal" && (
+				<div>
+					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
+					<label className="text-xs text-muted-foreground">
+						Minimum visibility to count
+					</label>
+					<select
+						className={`${fieldClass} mt-1`}
+						value={floor}
+						onChange={(e) => setFloor(e.target.value as Floor | "")}
+					>
+						<option value="">Any answer (sealed or shared)</option>
+						<option value="sealed">Sealed or higher</option>
+						<option value="shared">Shared only</option>
+					</select>
+				</div>
+			)}
 			<Textarea
-				placeholder={
-					kind === "task"
-						? "What is the task?"
-						: "Anything to say about this denial?"
-				}
+				placeholder={ASSIGN_KINDS[kind].notePrompt}
 				value={note}
 				onChange={(e) => setNote(e.target.value)}
 			/>
@@ -367,7 +460,7 @@ function AssignForm({
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
 			<Button onClick={submit} disabled={busy}>
-				{busy ? "…" : kind === "task" ? "Assign" : "Start"}
+				{busy ? "…" : ASSIGN_KINDS[kind].submit}
 			</Button>
 		</div>
 	);
