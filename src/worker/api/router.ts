@@ -295,6 +295,14 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				stub.listTimers(auth.identityHash).then((timers) => json({ timers })),
 			);
 		}
+		// The caller's outstanding journal prompts, for the answer picker (#102).
+		if (path === "/api/prompts/open" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listOpenPrompts(auth.identityHash)
+					.then((prompts) => json({ prompts })),
+			);
+		}
 		const timerPauseMatch = path.match(/^\/api\/timers\/([^/]+)\/pause$/);
 		if (timerPauseMatch && method === "POST") {
 			const id = decodeURIComponent(timerPauseMatch[1]);

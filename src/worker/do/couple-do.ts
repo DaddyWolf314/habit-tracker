@@ -53,7 +53,12 @@ import type {
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
 import { explainProjection } from "#/shared/introspection.ts";
-import { type Floor, satisfiesFloor } from "#/shared/journaling.ts";
+import {
+	type Floor,
+	type OpenPromptView,
+	openPromptViews,
+	satisfiesFloor,
+} from "#/shared/journaling.ts";
 import {
 	RULE_CHANGE_ACTION_PREFIX,
 	type RuleChangeKind,
@@ -164,9 +169,11 @@ import {
 	DEFAULT_RULES,
 	DEFAULT_TIMERS,
 	EVENT_TYPES_VERSION,
+	EXPIRED_PROMPT_GRACE_MS,
 	isBuiltinType,
 	isReservedTypeId,
 	JOURNAL_COUNTDOWN_TIMER,
+	JOURNAL_PROMPT_TYPE,
 	RULE_PACK_VERSION,
 } from "#/templates/index.ts";
 import { coupleError } from "./errors.ts";
@@ -307,6 +314,12 @@ interface TimerState {
 	match?: Record<string, MetadataValue>;
 	/** The opening `activity`, driving the per-activity max and duration routing. */
 	tag?: string;
+	/**
+	 * The event whose rule opened this timer (#102), joining a timer back to its
+	 * origin (e.g. a `journal_countdown` to its `journal_prompt`'s question).
+	 * Absent on timers opened before this field existed.
+	 */
+	opened_by?: string;
 	/** Derived duration, set on close. */
 	duration_ms?: number;
 	/**
@@ -1471,9 +1484,22 @@ export class CoupleDO extends DurableObject<Env> {
 		if (type.subject_required && !input.subject) {
 			throw coupleError("BAD_REQUEST", "this event type requires a subject");
 		}
+		const loggedAt = Date.now();
+		// Minted refs (#102) are assigned here, never accepted from the client —
+		// generation is the uniqueness guarantee (a reused `prompt_id` would let one
+		// answer close the wrong prompt's countdown). Minting precedes the insert, so
+		// the stored event carries the id and a rebuild replays it verbatim.
+		const metadata = { ...input.metadata };
+		for (const [key, field] of Object.entries(type.metadata)) {
+			if (field.kind !== "ref" || !field.minted) continue;
+			if (metadata[key] !== undefined) {
+				throw coupleError("BAD_REQUEST", `${key} is assigned by the server`);
+			}
+			metadata[key] = ulid(loggedAt);
+		}
 		this.validateMetadata(
 			type,
-			input.metadata,
+			metadata,
 			role,
 			this.subjectRole(input.subject),
 		);
@@ -1496,7 +1522,6 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 
-		const loggedAt = Date.now();
 		const event: Event = {
 			id: ulid(loggedAt),
 			type: input.type,
@@ -1504,7 +1529,7 @@ export class CoupleDO extends DurableObject<Env> {
 			subject: input.subject,
 			occurred_at: input.occurred_at ?? loggedAt,
 			logged_at: loggedAt,
-			metadata: input.metadata,
+			metadata,
 			note: input.note,
 			visibility,
 		};
@@ -2263,6 +2288,53 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * The caller's outstanding journal prompts (#102): every open `journal_countdown`
+	 * — plus those expired unmet within the grace window — joined back to its
+	 * `journal_prompt` and filtered to prompts assigned *to the caller*, so the
+	 * answer picker only poses questions that are theirs to answer. Runs the expiry
+	 * sweep first so the open/expired split is never stale on read. `journal_prompt`
+	 * is a shared, non-journaling type, so the join exposes nothing gated.
+	 */
+	async listOpenPrompts(identityHash: string): Promise<OpenPromptView[]> {
+		const me = this.requireMember(identityHash);
+		const now = Date.now();
+		this.sweepExpiredCountdowns(now);
+		this.armAlarm();
+		const rows = this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE definition = ?
+					AND (status IS NULL OR (status = 'expired' AND closed_at >= ?))
+					ORDER BY opened_at ASC, id ASC`,
+				JOURNAL_COUNTDOWN_TIMER,
+				now - EXPIRED_PROMPT_GRACE_MS,
+			)
+			.toArray();
+		const prompts = this.sql
+			.exec<EventRow>(
+				`SELECT id, type, actor, subject, occurred_at, logged_at, metadata, note, visibility
+					FROM events WHERE type = ?`,
+				JOURNAL_PROMPT_TYPE,
+			)
+			.toArray()
+			.map((row) => this.rowToEvent(row));
+		return openPromptViews(
+			rows.map((row) => {
+				const state = this.timerState(row);
+				return {
+					match: state.match ?? {},
+					opened_by: state.opened_by,
+					deadline_at: state.deadline_at,
+					paused_at: state.paused_at,
+					expired: row.status === "expired",
+				};
+			}),
+			prompts,
+			me.id,
+		);
+	}
+
+	/**
 	 * Opens a stopwatch (handoff §4.5, R15): records the in-flight instance keyed by
 	 * the opening event's ref match (e.g. `session_id`), tagged with its `activity`.
 	 * `opened_at` is the event's `occurred_at` so a backfilled session measures the
@@ -2285,6 +2357,7 @@ export class CoupleDO extends DurableObject<Env> {
 			const state: TimerState = {
 				match: op.match_on ?? {},
 				tag: op.tag,
+				opened_by: event.id,
 				deadline_at: event.occurred_at + countdownMs,
 			};
 			this.sql.exec(
@@ -2304,7 +2377,11 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 			return;
 		}
-		const state: TimerState = { match: op.match_on ?? {}, tag: op.tag };
+		const state: TimerState = {
+			match: op.match_on ?? {},
+			tag: op.tag,
+			opened_by: event.id,
+		};
 		this.sql.exec(
 			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
 				VALUES (?, 'stopwatch', ?, ?, NULL, ?, NULL)`,

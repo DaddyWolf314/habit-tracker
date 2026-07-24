@@ -11,6 +11,7 @@ import {
 	listCounters,
 	listEvents,
 	listEventTypes,
+	listOpenPrompts,
 	listRuleHistory,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
@@ -19,6 +20,7 @@ import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { VersionedRule } from "#/shared/rules.ts";
 
 /**
@@ -37,6 +39,7 @@ export function LogView() {
 	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
+	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	// Children fire this un-awaited after a mutation commits, so it must never
@@ -45,14 +48,17 @@ export function LogView() {
 	// with nothing on screen saying why.
 	const refreshLog = useCallback(async () => {
 		try {
-			const [{ events }, { counters }, { anchors }] = await Promise.all([
-				listEvents(),
-				listCounters(),
-				listAnchors(),
-			]);
+			const [{ events }, { counters }, { anchors }, { prompts }] =
+				await Promise.all([
+					listEvents(),
+					listCounters(),
+					listAnchors(),
+					listOpenPrompts(),
+				]);
 			setEvents(events);
 			setCounters(counters);
 			setAnchors(anchors);
+			setOpenPrompts(prompts);
 			setError(null);
 		} catch (err) {
 			setError(
@@ -63,21 +69,30 @@ export function LogView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [typeRes, ruleRes, counterRes, anchorRes, eventRes, roleRes] =
-				await Promise.all([
-					listEventTypes(),
-					listRuleHistory(),
-					listCounters(),
-					listAnchors(),
-					listEvents(),
-					getRoles(),
-				]);
+			const [
+				typeRes,
+				ruleRes,
+				counterRes,
+				anchorRes,
+				eventRes,
+				roleRes,
+				promptRes,
+			] = await Promise.all([
+				listEventTypes(),
+				listRuleHistory(),
+				listCounters(),
+				listAnchors(),
+				listEvents(),
+				getRoles(),
+				listOpenPrompts(),
+			]);
 			setTypes(typeRes.types);
 			setRules(ruleRes.rules);
 			setCounters(counterRes.counters);
 			setAnchors(anchorRes.anchors);
 			setEvents(eventRes.events);
 			setMembers(roleRes.members);
+			setOpenPrompts(promptRes.prompts);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the log.");
 		}
@@ -128,7 +143,12 @@ export function LogView() {
 			/>
 			<AnchorsPanel anchors={anchors} />
 			<CountersPanel counters={counters} onChange={refreshLog} />
-			<LogComposer types={types} members={members} onLogged={refreshLog} />
+			<LogComposer
+				types={types}
+				members={members}
+				openPrompts={openPrompts}
+				onLogged={refreshLog}
+			/>
 			<EventStream
 				events={events}
 				types={types}

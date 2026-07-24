@@ -18,6 +18,7 @@ import type {
 	AuditEntry,
 	IntrospectionResult,
 } from "#/shared/introspection.ts";
+import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
 import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
@@ -417,6 +418,11 @@ export function getCounterTrace(counterId: string): Promise<CounterTrace> {
 /** Active + closed timers as live views for the today screen (handoff §9). */
 export function listTimers(): Promise<{ timers: TimerView[] }> {
 	return apiFetch<{ timers: TimerView[] }>("/api/timers");
+}
+
+/** The caller's outstanding journal prompts, for the answer picker (#102). */
+export function listOpenPrompts(): Promise<{ prompts: OpenPromptView[] }> {
+	return apiFetch<{ prompts: OpenPromptView[] }>("/api/prompts/open");
 }
 
 // Dom live control over a running countdown (ADR 0004). There is deliberately no

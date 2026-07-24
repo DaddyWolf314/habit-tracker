@@ -38,6 +38,14 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("ref"),
 		// e.g. "ritual" | "task" | "rule" — what the ref points at.
 		ref_kind: z.string().optional(),
+		/**
+		 * A minted ref is *assigned by the server* at log time (a fresh ULID), never
+		 * supplied by the client — the event carrying it is the origin of the ref,
+		 * and generation is what guarantees uniqueness (#102). Non-minted refs echo
+		 * an id minted elsewhere (`journal_entry.prompt_id`, `session_id` on
+		 * `session_ended`).
+		 */
+		minted: z.boolean().optional(),
 		...metadataFieldBase,
 	}),
 ]);
