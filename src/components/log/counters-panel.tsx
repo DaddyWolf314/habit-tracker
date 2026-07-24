@@ -11,8 +11,10 @@ import {
 import {
 	adjustCounter,
 	createCounter,
+	deleteCounter,
 	getCounterTrace,
 	resetCounter,
+	updateCounter,
 } from "#/lib/api.ts";
 import type {
 	Counter,
@@ -89,6 +91,11 @@ export function CountersPanel({
 	const [error, setError] = useState<string | null>(null);
 	const [openTrace, setOpenTrace] = useState<CounterTrace | null>(null);
 	const [creating, setCreating] = useState(false);
+	// The counter whose definition the form is editing, or null when creating a new
+	// one. The form is shared between both — edit seeds it from an existing counter.
+	const [editing, setEditing] = useState<string | null>(null);
+	// The counter awaiting a delete confirmation (delete is a two-tap inline guard).
+	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 	const [kind, setKind] = useState<CounterKind>("tally");
 	const [name, setName] = useState("");
 	const [reset, setReset] = useState<CounterReset>("never");
@@ -121,9 +128,39 @@ export function CountersPanel({
 		setStreakCounter("");
 		setStreakPeriod("daily");
 		setCreating(false);
+		setEditing(null);
 	}
 
-	async function handleCreate() {
+	/** Opens the form pre-seeded from an existing counter to edit its definition. */
+	function startEdit(counter: Counter) {
+		setEditing(counter.id);
+		setName(counter.name);
+		setValence(counter.valence);
+		if (counter.streak) {
+			setKind("streak");
+			setStreakCounter(counter.streak.counter);
+			setStreakPeriod(counter.streak.period);
+			setReset("never");
+			setDailyTarget("");
+			setWeeklyTarget("");
+		} else {
+			setKind("tally");
+			setReset(counter.reset);
+			setDailyTarget(
+				counter.daily_target != null ? String(counter.daily_target) : "",
+			);
+			setWeeklyTarget(
+				counter.weekly_target != null ? String(counter.weekly_target) : "",
+			);
+			setStreakCounter("");
+			setStreakPeriod("daily");
+		}
+		setConfirmDelete(null);
+		setError(null);
+		setCreating(true);
+	}
+
+	async function handleSubmit() {
 		if (!name.trim()) return;
 		const body: CreateCounterBody = { name: name.trim(), valence };
 		if (kind === "streak") {
@@ -139,8 +176,19 @@ export function CountersPanel({
 			body.daily_target = parseTarget(dailyTarget);
 			body.weekly_target = parseTarget(weeklyTarget);
 		}
-		await run("__new__", async () => {
-			await createCounter(body);
+		const id = editing;
+		await run(id ?? "__new__", async () => {
+			if (id) {
+				// The form doesn't expose modify_permission, so carry the counter's
+				// existing value through — omitting it resets to the schema default.
+				const original = counters.find((c) => c.id === id);
+				await updateCounter(id, {
+					...body,
+					modify_permission: original?.modify_permission,
+				});
+			} else {
+				await createCounter(body);
+			}
 			resetForm();
 		});
 	}
@@ -148,8 +196,13 @@ export function CountersPanel({
 	// A streak reads its target-counter's per-period value, so only counters that
 	// carry a target for the chosen period can be tracked. Streak counters have no
 	// target of their own, so they fall out here naturally.
-	const targetableCounters = counters.filter((c) =>
-		streakPeriod === "daily" ? c.daily_target != null : c.weekly_target != null,
+	// A counter can't track itself, so the one being edited is never a target.
+	const targetableCounters = counters.filter(
+		(c) =>
+			c.id !== editing &&
+			(streakPeriod === "daily"
+				? c.daily_target != null
+				: c.weekly_target != null),
 	);
 
 	const nameById = new Map(counters.map((c) => [c.id, c.name]));
@@ -167,7 +220,7 @@ export function CountersPanel({
 				<Button
 					variant="ghost"
 					size="sm"
-					onClick={() => setCreating((c) => !c)}
+					onClick={() => (creating ? resetForm() : setCreating(true))}
 				>
 					{creating ? "Cancel" : "New counter"}
 				</Button>
@@ -314,8 +367,11 @@ export function CountersPanel({
 						</p>
 					)}
 
-					<Button onClick={handleCreate} disabled={busy === "__new__"}>
-						Create
+					<Button
+						onClick={handleSubmit}
+						disabled={busy === (editing ?? "__new__")}
+					>
+						{editing ? "Save changes" : "Create"}
 					</Button>
 				</div>
 			)}
@@ -351,7 +407,7 @@ export function CountersPanel({
 						>
 							{counter.value}
 						</span>
-						<div className="flex gap-1">
+						<div className="flex flex-wrap justify-end gap-1">
 							<Button
 								variant="outline"
 								size="sm"
@@ -380,6 +436,50 @@ export function CountersPanel({
 							>
 								Reset
 							</Button>
+							<Button
+								variant="ghost"
+								size="sm"
+								disabled={busy === counter.id}
+								onClick={() => startEdit(counter)}
+							>
+								Edit
+							</Button>
+							{confirmDelete === counter.id ? (
+								<>
+									<Button
+										variant="ghost"
+										size="sm"
+										className="text-destructive"
+										disabled={busy === counter.id}
+										onClick={() =>
+											run(counter.id, async () => {
+												await deleteCounter(counter.id);
+												setConfirmDelete(null);
+												if (editing === counter.id) resetForm();
+											})
+										}
+									>
+										Confirm
+									</Button>
+									<Button
+										variant="ghost"
+										size="sm"
+										onClick={() => setConfirmDelete(null)}
+									>
+										No
+									</Button>
+								</>
+							) : (
+								<Button
+									variant="ghost"
+									size="sm"
+									className="text-destructive"
+									disabled={busy === counter.id}
+									onClick={() => setConfirmDelete(counter.id)}
+								>
+									Delete
+								</Button>
+							)}
 						</div>
 					</li>
 				))}

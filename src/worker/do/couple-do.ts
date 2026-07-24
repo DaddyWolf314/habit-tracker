@@ -14,6 +14,7 @@ import type {
 	Counter,
 	CounterDefinition,
 	CreateCounterInput,
+	UpdateCounterInput,
 } from "#/shared/counters.ts";
 import {
 	applyCounterOp,
@@ -1782,6 +1783,84 @@ export class CoupleDO extends DurableObject<Env> {
 			JSON.stringify(definition),
 		);
 		return { ...definition, value: 0, updated_at: null };
+	}
+
+	/**
+	 * Edits a counter's definition in place (name, valence, targets, cadence,
+	 * streak). The `id` is the stable key events reference, so it is fixed and
+	 * never rewritten — only the policy changes. The cached value is left as-is: a
+	 * cadence or streak change re-derives on the next rebuild/rollover, just as a
+	 * rule edit does (handoff §4.4). Ungated like {@link createCounter}: any member
+	 * of a live couple may shape a shared counter.
+	 */
+	async updateCounter(
+		identityHash: string,
+		counterId: string,
+		input: UpdateCounterInput,
+	): Promise<Counter> {
+		this.requireMember(identityHash);
+		this.assertLive();
+		this.requireCounterRow(counterId); // 404 if it does not exist.
+		if (input.streak) {
+			// A streak folds its target at rollover, so — as on create — the target
+			// must exist, and a counter cannot fold itself (a degenerate self-streak).
+			if (input.streak.counter === counterId) {
+				throw coupleError("BAD_REQUEST", "a streak cannot track itself");
+			}
+			if (!this.counterById(input.streak.counter)) {
+				throw coupleError(
+					"BAD_REQUEST",
+					`streak target counter "${input.streak.counter}" does not exist`,
+				);
+			}
+		}
+		const definition: CounterDefinition = {
+			id: counterId,
+			name: input.name,
+			valence: input.valence,
+			daily_target: input.daily_target,
+			weekly_target: input.weekly_target,
+			reset: input.reset,
+			streak: input.streak,
+			modify_permission: input.modify_permission,
+		};
+		this.sql.exec(
+			`UPDATE counters SET definition = ? WHERE id = ?`,
+			JSON.stringify(definition),
+			counterId,
+		);
+		return this.rowToCounter(this.requireCounterRow(counterId));
+	}
+
+	/**
+	 * Removes a counter's definition. The definition is not event-sourced (only the
+	 * value is), so this is a hard delete: the row is dropped and its cached value
+	 * goes with it. Events that referenced the counter stay in the immutable log
+	 * but fold into nothing — the projection treats a reference to a deleted counter
+	 * as inert (see {@link applyDirectManipulation}). Trace rows are left as the
+	 * historical record. Refuses while a streak still folds this counter, mirroring
+	 * the create-time guard (handoff §4.4): silently orphaning the streak would make
+	 * it no-op forever. Ungated like {@link createCounter}.
+	 */
+	async deleteCounter(
+		identityHash: string,
+		counterId: string,
+	): Promise<{ id: string }> {
+		this.requireMember(identityHash);
+		this.assertLive();
+		this.requireCounterRow(counterId); // 404 if it does not exist.
+		const dependents = this.counterDefinitions().filter(
+			(def) => def.streak?.counter === counterId,
+		);
+		if (dependents.length > 0) {
+			const names = dependents.map((def) => def.name).join(", ");
+			throw coupleError(
+				"BAD_REQUEST",
+				`repoint or remove the streak(s) tracking this counter first: ${names}`,
+			);
+		}
+		this.sql.exec(`DELETE FROM counters WHERE id = ?`, counterId);
+		return { id: counterId };
 	}
 
 	/**

@@ -1,6 +1,10 @@
 import type { AmendmentInput } from "#/shared/amendments.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
-import type { Counter, CreateCounterBody } from "#/shared/counters.ts";
+import type {
+	Counter,
+	CreateCounterBody,
+	UpdateCounterBody,
+} from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView, LogEventInput } from "#/shared/events.ts";
 import type {
@@ -384,6 +388,24 @@ export function listAnchors(): Promise<{ anchors: AnchorView[] }> {
 
 export function createCounter(input: CreateCounterBody): Promise<Counter> {
 	return apiFetch<Counter>("/api/counters", { method: "POST", body: input });
+}
+
+/** Edits a counter's definition in place; the id is fixed, only the policy changes. */
+export function updateCounter(
+	id: string,
+	input: UpdateCounterBody,
+): Promise<Counter> {
+	return apiFetch<Counter>(`/api/counters/${encodeURIComponent(id)}`, {
+		method: "PUT",
+		body: input,
+	});
+}
+
+/** Deletes a counter definition (hard delete). Refused while a streak tracks it. */
+export function deleteCounter(id: string): Promise<{ id: string }> {
+	return apiFetch<{ id: string }>(`/api/counters/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
 }
 
 /** A "+N / −N" tap — sugar that appends a `counter_adjusted` event. */
