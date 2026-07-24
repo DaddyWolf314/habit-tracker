@@ -6,6 +6,7 @@ import {
 	Scripts,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
+import { PauseEverythingBar } from "../components/pause-everything";
 import { PinGate } from "../components/pin-gate";
 import TanStackQueryDevtools from "../integrations/tanstack-query/devtools";
 import { APP_NAME } from "../lib/app-config";
@@ -46,7 +47,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				<HeadContent />
 			</head>
 			<body>
-				<PinGate>{children}</PinGate>
+				<PinGate>
+					<PauseEverythingBar />
+					{children}
+				</PinGate>
 				<TanStackDevtools
 					config={{
 						position: "bottom-right",
