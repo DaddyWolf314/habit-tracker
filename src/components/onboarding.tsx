@@ -1,15 +1,12 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
-import { PinSettings } from "#/components/pin-gate.tsx";
+import { StatusSummary } from "#/components/status-summary.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import {
 	ApiError,
 	confirmRoles,
 	createIdentity,
 	createInvite,
-	dissolve,
-	exportData,
-	getNotifications,
 	getRoles,
 	getSession,
 	linkDevice,
@@ -24,7 +21,6 @@ import {
 	storeDeviceToken,
 	storeSecret,
 } from "#/lib/identity.ts";
-import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type {
 	InviteResult,
 	RoleConfirmationState,
@@ -426,6 +422,13 @@ function Ceremony({
 	);
 }
 
+/**
+ * The pre-dynamic home: pairing and role confirmation, and nothing else. Once
+ * both partners confirm, `/` stops being a place — it redirects to Today, the
+ * daily loop, and the tab bar takes over navigation (#85). Everything this page
+ * used to also carry (PIN lock, export, dissolve, devices) moved to Settings,
+ * which stays reachable from here so a half-paired couple isn't cut off from it.
+ */
 function Home({
 	session,
 	onRefresh,
@@ -433,193 +436,40 @@ function Home({
 	session: Session;
 	onRefresh: () => void | Promise<void>;
 }) {
+	const navigate = useNavigate();
 	const dissolved = session.status === "dissolved";
 	const awaitingPartner = session.member_count < 2;
+	// A dissolved space has no daily loop left, so it lands on Settings instead —
+	// the frozen-space notice and the export are both there.
+	const destination = dissolved
+		? "/settings"
+		: session.roles_active
+			? "/today"
+			: null;
+
+	useEffect(() => {
+		if (destination) navigate({ to: destination, replace: true });
+	}, [destination, navigate]);
+
+	if (destination) return null;
+
 	return (
 		<div className="mx-auto max-w-2xl p-8">
 			<h1 className="text-2xl font-bold">Your space</h1>
-			<NotificationBadge />
-			<dl className="mt-6 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-				<dt className="text-muted-foreground">Status</dt>
-				<dd className="font-medium">{session.status}</dd>
-				<dt className="text-muted-foreground">Members</dt>
-				<dd className="font-medium">{session.member_count} of 2</dd>
-				<dt className="text-muted-foreground">Your role</dt>
-				<dd className="font-medium">{session.role ?? "not set"}</dd>
-			</dl>
+			<div className="mt-6">
+				<StatusSummary session={session} />
+			</div>
 
-			{dissolved ? (
-				<p className="mt-6 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm">
-					This space has been dissolved. Everything is frozen. You can still
-					export your copy below.
-				</p>
+			{awaitingPartner ? (
+				<InvitePanel onRefresh={onRefresh} />
 			) : (
-				<>
-					{awaitingPartner && <InvitePanel onRefresh={onRefresh} />}
-					{!awaitingPartner && <RolesPanel onActivated={onRefresh} />}
-				</>
+				<RolesPanel onActivated={onRefresh} />
 			)}
 
-			<SettingsPanel dissolved={dissolved} onDissolved={onRefresh} />
-
-			<div className="mt-8">
-				<PinSettings />
-			</div>
-
-			<div className="mt-6 flex gap-4">
-				{session.roles_active && (
-					<Link to="/today" className="text-sm underline">
-						Today
-					</Link>
-				)}
-				{session.roles_active && (
-					<Link to="/log" className="text-sm underline">
-						Open the log
-					</Link>
-				)}
-				{session.roles_active && (
-					<Link to="/rules" className="text-sm underline">
-						Rules
-					</Link>
-				)}
-				<Link to="/devices" className="text-sm underline">
-					Manage devices
+			<div className="mt-6">
+				<Link to="/settings" className="text-sm underline">
+					Settings
 				</Link>
-			</div>
-		</div>
-	);
-}
-
-/**
- * Content-free notification badge (handoff §3.5, #42). Shows only an unread
- * count — "You have N new items" — never any relationship content, so a glance
- * reveals nothing. Hidden when there is nothing to report.
- *
- * Refreshes on the same 15s + foreground cadence as the surfaces themselves
- * (#92) so the count doesn't sit stale from mount, and links to the Log — the
- * one place those new items (a partner's event, an incoming ruling) actually
- * land — so the badge is somewhere to go, not just a number.
- */
-function NotificationBadge() {
-	const [unread, setUnread] = useState(0);
-	const refresh = useCallback(async () => {
-		setUnread((await getNotifications()).unread);
-	}, []);
-	useEffect(() => {
-		refresh().catch(() => setUnread(0));
-	}, [refresh]);
-	// Home only renders once identity exists, but gate anyway — the hook's own
-	// contract is not to poll a space this device can't read.
-	useLiveRefresh(refresh, {
-		intervalMs: LIVE_REFRESH_MS,
-		enabled: hasIdentity(),
-	});
-	if (unread === 0) return null;
-	return (
-		<Link
-			to="/log"
-			className="mt-3 inline-block rounded-full bg-primary/10 px-3 py-1 text-sm font-medium hover:bg-primary/20"
-		>
-			You have {unread} new item{unread === 1 ? "" : "s"}
-		</Link>
-	);
-}
-
-/**
- * Export + dissolve (handoff §2, abuse-edge). Either partner can export their
- * own copy at any time and can unilaterally dissolve — no one is trapped inside
- * the app's structure. Dissolve takes a deliberate second click instead of a
- * blocking dialog.
- */
-function SettingsPanel({
-	dissolved,
-	onDissolved,
-}: {
-	dissolved: boolean;
-	onDissolved: () => void | Promise<void>;
-}) {
-	const [busy, setBusy] = useState(false);
-	const [confirming, setConfirming] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-
-	async function handleExport() {
-		setBusy(true);
-		setError(null);
-		try {
-			const data = await exportData();
-			const blob = new Blob([JSON.stringify(data, null, 2)], {
-				type: "application/json",
-			});
-			const url = URL.createObjectURL(blob);
-			const anchor = document.createElement("a");
-			anchor.href = url;
-			anchor.download = "strawberry-export.json";
-			anchor.click();
-			URL.revokeObjectURL(url);
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Couldn't export.");
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	async function handleDissolve() {
-		setBusy(true);
-		setError(null);
-		try {
-			await dissolve();
-			setConfirming(false);
-			await onDissolved();
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Couldn't dissolve.");
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	return (
-		<div className="mt-6 rounded-md border p-4">
-			<h2 className="font-medium">Your data</h2>
-			{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-			<div className="mt-3 flex flex-wrap gap-2">
-				<Button
-					variant="outline"
-					size="sm"
-					disabled={busy}
-					onClick={handleExport}
-				>
-					Export my data
-				</Button>
-				{!dissolved &&
-					(confirming ? (
-						<>
-							<Button
-								variant="destructive"
-								size="sm"
-								disabled={busy}
-								onClick={handleDissolve}
-							>
-								Yes, dissolve everything
-							</Button>
-							<Button
-								variant="ghost"
-								size="sm"
-								disabled={busy}
-								onClick={() => setConfirming(false)}
-							>
-								Cancel
-							</Button>
-						</>
-					) : (
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={busy}
-							onClick={() => setConfirming(true)}
-						>
-							Dissolve this space
-						</Button>
-					))}
 			</div>
 		</div>
 	);

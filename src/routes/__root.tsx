@@ -8,6 +8,7 @@ import {
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { PauseEverythingBar } from "../components/pause-everything";
 import { PinGate } from "../components/pin-gate";
+import { TabBar } from "../components/tab-bar";
 import TanStackQueryDevtools from "../integrations/tanstack-query/devtools";
 import { APP_NAME } from "../lib/app-config";
 import appCss from "../styles.css?url";
@@ -50,6 +51,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				<PinGate>
 					<PauseEverythingBar />
 					{children}
+					{/* Navigation lives in the root layout so it persists across every
+					    surface (#85); it renders itself away until the dynamic is
+					    active. Last in the tree so its spacer sits below the page. */}
+					<TabBar />
 				</PinGate>
 				<TanStackDevtools
 					config={{

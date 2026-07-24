@@ -118,12 +118,7 @@ export function RulesView() {
 
 	return (
 		<div className="mx-auto max-w-2xl space-y-4 p-6">
-			<div className="flex items-center justify-between">
-				<h1 className="text-2xl font-bold">Rules</h1>
-				<Link to="/" className="text-sm underline">
-					Back
-				</Link>
-			</div>
+			<h1 className="text-2xl font-bold">Rules</h1>
 
 			<p className="text-sm text-muted-foreground">
 				These are the automations that turn what you log into your counters and
