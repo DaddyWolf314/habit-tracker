@@ -8,6 +8,7 @@ import {
 	durationToMs,
 	extendChoicesFor,
 	extendCountdown,
+	formatElapsed,
 	formatRemaining,
 	isCountdownExpired,
 	matchStopwatch,
@@ -241,6 +242,23 @@ describe("formatRemaining (today view display)", () => {
 		expect(formatRemaining(90_000_000)).toBe("1d 1h");
 		// exactly one day
 		expect(formatRemaining(86_400_000)).toBe("1d 0h");
+	});
+});
+
+describe("formatElapsed (today view stopwatch count-up display, #90)", () => {
+	it("clamps zero and negative to 0s (a close backdated before its open)", () => {
+		expect(formatElapsed(0)).toBe("0s");
+		expect(formatElapsed(-5_000)).toBe("0s");
+	});
+
+	it("shows a running session's seconds, then minutes, then hours", () => {
+		expect(formatElapsed(45_000)).toBe("45s");
+		expect(formatElapsed(90_000)).toBe("1m 30s");
+		expect(formatElapsed(3_720_000)).toBe("1h 2m");
+	});
+
+	it("coarsens a long-running session to days and hours", () => {
+		expect(formatElapsed(90_000_000)).toBe("1d 1h");
 	});
 });
 

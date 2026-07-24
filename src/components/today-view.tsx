@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
+import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
 import { getRoles, listOpenPrompts, listTimers } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -111,6 +112,12 @@ export function TodayView() {
 			</div>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
+
+			<StopwatchesPanel
+				timers={timers}
+				selfId={self?.member_id ?? null}
+				onChange={refreshAfterMutation}
+			/>
 
 			<CountdownsPanel
 				timers={timers}

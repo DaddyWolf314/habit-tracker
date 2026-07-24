@@ -165,13 +165,13 @@ export function durationMinutes(durationMs: number): number {
 }
 
 /**
- * A remaining-time span rendered for the today view: the two largest non-zero
- * units, coarsening as the span grows (`1d 1h`, `1h 2m`, `1m 30s`, `45s`).
- * Isomorphic and pure so the client can tick it every second off
- * {@link countdownRemainingMs}. Negative/zero clamps to `0s` — an overdue
- * countdown reads as done, never as negative time.
+ * A duration span rendered for the today view: the two largest non-zero units,
+ * coarsening as the span grows (`1d 1h`, `1h 2m`, `1m 30s`, `45s`). Isomorphic
+ * and pure so the client can tick it every second. Negative/zero clamps to `0s`
+ * — a span reads as done, never as negative time. Shared by {@link formatRemaining}
+ * (countdown) and {@link formatElapsed} (stopwatch) so the two never drift.
  */
-export function formatRemaining(ms: number): string {
+function formatDurationSpan(ms: number): string {
 	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
 	const days = Math.floor(totalSeconds / 86_400);
 	const hours = Math.floor((totalSeconds % 86_400) / 3600);
@@ -181,6 +181,25 @@ export function formatRemaining(ms: number): string {
 	if (hours > 0) return `${hours}h ${minutes}m`;
 	if (minutes > 0) return `${minutes}m ${seconds}s`;
 	return `${seconds}s`;
+}
+
+/**
+ * The time *left* on a countdown, for the today view — the client ticks it every
+ * second off {@link countdownRemainingMs}. Clamps to `0s` so an overdue countdown
+ * reads as done, never as negative time.
+ */
+export function formatRemaining(ms: number): string {
+	return formatDurationSpan(ms);
+}
+
+/**
+ * The time *elapsed* on a running stopwatch, for the today view (#90) — the client
+ * ticks it every second off `now - opened_at`. A stopwatch accumulates, so this
+ * counts up (unlike {@link formatRemaining}); a close backdated before its open
+ * clamps to `0s` rather than reading as negative.
+ */
+export function formatElapsed(ms: number): string {
+	return formatDurationSpan(ms);
 }
 
 /**
