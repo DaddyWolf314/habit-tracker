@@ -200,11 +200,14 @@ function stopwatchMax(
 // ── Countdowns (deadline) — handoff §4.5 ───────────────────────────────────────
 
 /**
- * An in-flight countdown (handoff §4.5). Created at assignment with a `deadline_at`;
- * the dom may pause it — freezing `remaining_ms` and stamping `paused_at` — and
- * extend it. Life intrudes, and rigid timers punish people for having jobs, so
- * pause/extend are day-one. Terminal `completed`/`failed` come from a rule close;
- * `expired` from the alarm when a running countdown passes its deadline unresolved.
+ * An in-flight countdown (handoff §4.5). Opened by a rule firing on an event
+ * (ADR 0004 — `task_assigned`→`task_countdown`, `denial_started`→`denial_period`,
+ * `journal_prompt`→`journal_countdown`) with a `deadline_at`; the dom may pause it
+ * — freezing `remaining_ms` and stamping `paused_at` — and extend or cancel it.
+ * Life intrudes, and rigid timers punish people for having jobs, so pause/extend
+ * are day-one. Terminal `completed`/`failed`/`canceled` come from a rule close or
+ * the dom; `expired` from the alarm when a running countdown passes its deadline
+ * unresolved.
  */
 export interface Countdown {
 	opened_at: number;
