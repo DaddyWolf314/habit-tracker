@@ -83,9 +83,12 @@ export function Onboarding() {
 
 	async function finishCeremony() {
 		setBusy(true);
+		setError(null);
 		try {
 			const session = await getSession();
 			setStage({ name: "home", session });
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Something went wrong.");
 		} finally {
 			setBusy(false);
 		}
@@ -96,8 +99,8 @@ export function Onboarding() {
 		setError(null);
 		try {
 			const secret = secretFromMnemonic(mnemonic);
+			const session = await getSession(secret); // validate before persisting
 			storeSecret(secret);
-			const session = await getSession();
 			setStage({ name: "home", session });
 		} catch (err) {
 			const message =
@@ -241,6 +244,7 @@ export function Onboarding() {
 				<Ceremony
 					mnemonic={stage.mnemonic}
 					busy={busy}
+					error={error}
 					onDone={finishCeremony}
 				/>
 			);
@@ -373,10 +377,12 @@ function JoinForm({
 function Ceremony({
 	mnemonic,
 	busy,
+	error,
 	onDone,
 }: {
 	mnemonic: string;
 	busy: boolean;
+	error: string | null;
 	onDone: () => void;
 }) {
 	const [saved, setSaved] = useState(false);
@@ -411,6 +417,7 @@ function Ceremony({
 				/>
 				I've written down my recovery phrase.
 			</label>
+			{error && <ErrorText>{error}</ErrorText>}
 			<Button onClick={onDone} disabled={!saved || busy}>
 				{busy ? "…" : "Continue"}
 			</Button>

@@ -131,9 +131,9 @@ export function formatRemaining(ms: number): string {
  * Finds the open stopwatch a close refers to, by matching every key in the
  * resolved `match_on` (handoff §4.5 — "ended with no matching started → reject").
  * An empty/absent match pins no key and so matches *nothing* (never all opens):
- * `engine.resolveMatchOn` drops keys the close event left unset, so a close that
- * failed to carry its `session_id` must be treated as an orphan, not as a
- * wildcard that would close an unrelated session.
+ * `engine.resolveMatchOn` resolves to `{}` whenever the close event left any
+ * referenced key unset, so a close that failed to carry its `session_id` is
+ * treated as an orphan, not as a wildcard that would close an unrelated session.
  */
 export function matchStopwatch(
 	opens: OpenStopwatch[],

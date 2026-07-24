@@ -40,7 +40,18 @@ export async function authenticate(
 ): Promise<AuthContext | null> {
 	const token = bearerToken(request);
 	if (!token) return null;
+	return authenticateToken(token, env);
+}
 
+/**
+ * Token-form of {@link authenticate}, for callers that can't use the
+ * `Authorization` header — the browser WebSocket API can't set headers, so the
+ * `/api/ws` upgrade carries its bearer token in the query string instead.
+ */
+export async function authenticateToken(
+	token: string,
+	env: Env,
+): Promise<AuthContext | null> {
 	const hash = await credentialHashOf(token);
 	const db = getRoutingDb(env.DB);
 	const row = await db

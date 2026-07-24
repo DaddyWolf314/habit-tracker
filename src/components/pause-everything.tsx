@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { getSession, pause, resume } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
@@ -23,14 +23,20 @@ export function PauseEverythingBar() {
 	const [confirmingResume, setConfirmingResume] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Bumped when a local pause/resume lands, so a poll/focus refresh that was
+	// already in flight can't overwrite the fresh state with its stale snapshot
+	// (which would flip the safeword banner back for a whole poll interval).
+	const epochRef = useRef(0);
 
 	const refresh = useCallback(async () => {
 		if (!hasIdentity()) {
 			setState("hidden");
 			return;
 		}
+		const epoch = epochRef.current;
 		try {
 			const session = await getSession();
+			if (epoch !== epochRef.current) return;
 			// Pre-pairing there is nothing to freeze, and a dissolved couple is
 			// already frozen harder than pause — the control only means something
 			// on a live, active couple.
@@ -64,6 +70,7 @@ export function PauseEverythingBar() {
 		setError(null);
 		try {
 			await pause();
+			epochRef.current++;
 			setState("paused");
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't pause.");
@@ -77,6 +84,7 @@ export function PauseEverythingBar() {
 		setError(null);
 		try {
 			await resume();
+			epochRef.current++;
 			setState("running");
 			setConfirmingResume(false);
 		} catch (err) {

@@ -43,10 +43,14 @@ const RANK: Record<Visibility, number> = { secret: 0, sealed: 1, shared: 2 };
 /** The minimal shape this module reads off an event — just its metadata. */
 type WithMetadata = { metadata: Record<string, MetadataValue> };
 
-/** The `prompt_id` an event carries, or `undefined` if it carries none. */
+/**
+ * The `prompt_id` an event carries, or `undefined` if it carries none. An empty
+ * string is "none" too — a ref that names nothing must not pair with anything
+ * (an empty-ref entry would otherwise "answer" an empty-ref prompt).
+ */
 export function promptRef(event: WithMetadata): string | undefined {
 	const ref = event.metadata[PROMPT_ID_KEY];
-	return typeof ref === "string" ? ref : undefined;
+	return typeof ref === "string" && ref !== "" ? ref : undefined;
 }
 
 /**

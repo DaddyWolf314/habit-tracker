@@ -3,7 +3,8 @@ import {
 	defaultStreamHandler,
 } from "@tanstack/react-start/server";
 import { handleApi } from "./worker/api/router.ts";
-import { coupleStub } from "./worker/routing.ts";
+import { authenticateToken, bearerToken } from "./worker/auth.ts";
+import { coupleStubById } from "./worker/routing.ts";
 
 /**
  * Custom Worker entry (replaces `@tanstack/react-start/server-entry`). It wraps
@@ -21,18 +22,21 @@ export default {
 	): Promise<Response> {
 		const url = new URL(request.url);
 
-		// WebSocket upgrade → the couple's DO holds the live-sync socket.
+		// WebSocket upgrade → the couple's DO holds the live-sync socket. The DO
+		// is resolved from the caller's bearer credential through the D1 routing
+		// table — never from client input — so a socket can only ever reach its
+		// own couple's DO. The browser WebSocket API can't set headers, so the
+		// token may arrive via `?token=` instead of `Authorization`.
 		if (url.pathname === "/api/ws") {
 			if (request.headers.get("Upgrade") !== "websocket") {
 				return new Response("expected websocket", { status: 426 });
 			}
-			// Phase 0: couple id via query param. Phase 1 resolves it from the
-			// bearer credential through the D1 routing table instead.
-			const coupleId = url.searchParams.get("couple");
-			if (!coupleId) {
-				return new Response("missing couple", { status: 400 });
+			const token = bearerToken(request) ?? url.searchParams.get("token");
+			const auth = token ? await authenticateToken(token, env) : null;
+			if (!auth) {
+				return new Response("unauthorized", { status: 401 });
 			}
-			return coupleStub(env, coupleId).fetch(request);
+			return coupleStubById(env, auth.coupleDoId).fetch(request);
 		}
 
 		// JSON API: identity, devices, pairing, roles, dissolve/export.

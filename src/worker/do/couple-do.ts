@@ -651,11 +651,19 @@ export class CoupleDO extends DurableObject<Env> {
 	 * here, making "the database ceases to exist" literally true.
 	 */
 	async purge(identityHash: string): Promise<{ couple_do_id: string }> {
+		const coupleDoId = this.ctx.id.toString();
+		// Idempotent on an already-wiped DO: if a prior attempt deleted this
+		// storage but failed before the routing rows were purged, the retry lands
+		// on freshly re-migrated, memberless storage. Report success so the
+		// caller can finish deleting its rows — refusing here would strand
+		// residual identifying routing data forever.
+		if (this.members().length === 0) {
+			return { couple_do_id: coupleDoId };
+		}
 		this.requireMember(identityHash);
 		if (this.status() !== "dissolved") {
 			throw coupleError("BAD_REQUEST", "dissolve the couple before deleting");
 		}
-		const coupleDoId = this.ctx.id.toString();
 		await this.ctx.storage.deleteAll();
 		return { couple_do_id: coupleDoId };
 	}
@@ -897,7 +905,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	async notificationCount(identityHash: string): Promise<{ unread: number }> {
 		const me = this.requireMember(identityHash);
-		const events = await this.listEvents(identityHash);
+		// Unlimited: an event awaiting adjudication must stay in the badge however
+		// deep in the log it sits — the list view's page limit doesn't apply here.
+		const events = await this.listEvents(identityHash, null);
 		const recovery = this.recoveryState();
 		return {
 			unread: unreadCount({
@@ -1541,12 +1551,15 @@ export class CoupleDO extends DurableObject<Env> {
 	 * omitted entirely, their `sealed` entries appear with the prose redacted, and
 	 * everything else (shared entries, the caller's own entries) passes through.
 	 */
-	async listEvents(identityHash: string, limit = 200): Promise<EventView[]> {
+	async listEvents(
+		identityHash: string,
+		limit: number | null = 200,
+	): Promise<EventView[]> {
 		const me = this.requireMember(identityHash);
 		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
 		const amendmentsByEvent = this.amendmentsByEvent();
 		const views: EventView[] = [];
-		for (const row of this.eventRows(limit)) {
+		for (const row of this.eventRows(limit ?? undefined)) {
 			const event = this.rowToEvent(row);
 			const view = deriveEventView(
 				event,
@@ -1795,7 +1808,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 * under today's rules and may differ from the incrementally-maintained cache,
 	 * which only ever saw the rules in force at each append. That's the intended
 	 * meaning of rebuild here; proper per-event rule versioning is a later phase.
-	 * Amendments (Phase 5) will fold into the replayed composite metadata.
+	 * Amendments fold in the same way they did live: each adjudication re-runs
+	 * its target's re-evaluation at the ruling's own timestamp (handoff §4.2, §7),
+	 * so effects a ruling unlocked survive the rebuild.
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
@@ -1820,8 +1835,8 @@ export class CoupleDO extends DurableObject<Env> {
 		// Daily/weekly counters are cleared by the off-log `scheduled_reset` alarm, not
 		// by any logged event. Replaying the whole log would therefore re-add every
 		// increment ever recorded and inflate them to lifetime totals. Repair this by
-		// replaying the resets alongside the events: whenever a day/week boundary falls
-		// between two consecutive appends (or after the last one, up to now) the
+		// replaying the resets alongside the folds: whenever a day/week boundary falls
+		// between two consecutive replay steps (or after the last one, up to now) the
 		// matching counters are zeroed, so each ends the rebuild holding only its
 		// current period's increments — the same value the live cache carries.
 		const dailyResetIds = new Set(
@@ -1852,34 +1867,60 @@ export class CoupleDO extends DurableObject<Env> {
 		// value is independent of replay order.
 		this.sql.exec(`UPDATE anchors SET since = NULL`);
 		this.sql.exec(`DELETE FROM trace`);
-		const awaitingByType = new Map(
-			this.eventTypes().map((t) => [t.id, t.awaiting]),
-		);
-		const now = Date.now();
-		let cursor: number | null = null;
+		const types = new Map(this.eventTypes().map((t) => [t.id, t]));
+		const amendmentsByEvent = this.amendmentsByEvent();
+		// Rebuild the exact live sequence: every append, plus every adjudication's
+		// re-evaluation at its ruling time (handoff §4.2, §7) — merged into one
+		// timeline so period resets fall between the same folds they did live.
+		const steps: { at: number; run: () => void }[] = [];
 		for (const row of this.eventRows(undefined, "ASC")) {
 			const event = this.rowToEvent(row);
-			// Clear any daily/weekly counters whose reset boundary the alarm would have
-			// crossed since the previous append, before folding this event in.
+			// A `secret` entry is inert on rebuild exactly as on append (ADR 0001):
+			// no rules, no projections, no trace — or the replay would leak its
+			// existence to the partner. (It can carry no adjudications either;
+			// `validateAmendment` refuses to amend a secret entry.)
+			if (event.visibility === "secret") continue;
+			const type = types.get(event.type);
+			steps.push({
+				at: event.logged_at,
+				run: () => {
+					this.applyDirectManipulation(event);
+					if (!isBuiltinType(event.type)) {
+						this.applyRules(event, event.metadata, type?.awaiting ?? []);
+					}
+				},
+			});
+			if (!type) continue;
+			const amendments = amendmentsByEvent.get(event.id) ?? [];
+			amendments.forEach((amendment, index) => {
+				if (amendment.kind !== "adjudication") return;
+				const prior = amendments.slice(0, index);
+				steps.push({
+					at: amendment.created_at,
+					run: () => this.reevaluateOnAmendment(event, type, prior, amendment),
+				});
+			});
+		}
+		// A ruling is never created before its target's append, so on a timestamp
+		// tie the stable sort keeps the append (pushed first) first.
+		steps.sort((a, b) => a.at - b.at);
+		const now = Date.now();
+		let cursor: number | null = null;
+		for (const step of steps) {
+			// Clear any daily/weekly counters whose reset boundary the alarm would
+			// have crossed since the previous step, before folding this one in.
 			if (cursor !== null) {
 				this.replayScheduledResets(
 					cursor,
-					event.logged_at,
+					step.at,
 					dailyResetIds,
 					weeklyResetIds,
 				);
 			}
-			cursor = event.logged_at;
-			this.applyDirectManipulation(event);
-			if (!isBuiltinType(event.type)) {
-				this.applyRules(
-					event,
-					event.metadata,
-					awaitingByType.get(event.type) ?? [],
-				);
-			}
+			cursor = step.at;
+			step.run();
 		}
-		// Resets that fired after the last append (up to now) still cleared the caches.
+		// Resets that fired after the last step (up to now) still cleared the caches.
 		if (cursor !== null) {
 			this.replayScheduledResets(cursor, now, dailyResetIds, weeklyResetIds);
 		}

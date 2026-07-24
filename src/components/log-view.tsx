@@ -39,15 +39,26 @@ export function LogView() {
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
+	// Children fire this un-awaited after a mutation commits, so it must never
+	// reject: a failed refetch has to surface here — otherwise the panels keep
+	// their pre-mutation state (a ruled card still "awaiting", a stale count)
+	// with nothing on screen saying why.
 	const refreshLog = useCallback(async () => {
-		const [{ events }, { counters }, { anchors }] = await Promise.all([
-			listEvents(),
-			listCounters(),
-			listAnchors(),
-		]);
-		setEvents(events);
-		setCounters(counters);
-		setAnchors(anchors);
+		try {
+			const [{ events }, { counters }, { anchors }] = await Promise.all([
+				listEvents(),
+				listCounters(),
+				listAnchors(),
+			]);
+			setEvents(events);
+			setCounters(counters);
+			setAnchors(anchors);
+			setError(null);
+		} catch (err) {
+			setError(
+				err instanceof Error ? err.message : "Couldn't refresh the log.",
+			);
+		}
 	}, []);
 
 	const loadAll = useCallback(async () => {

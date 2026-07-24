@@ -48,9 +48,13 @@ export function validateRule(
 		if (valueError) return fail(valueError);
 	}
 
-	// Effect targets must be known projections.
+	// Effect targets must be known projections, and every routed event key
+	// (`duration_from`, `tag_from`, `match_on`, `route_when`) must exist on the
+	// triggering type — at runtime an absent key routes `undefined`, which would
+	// silently degrade the effect (a countdown that never expires, a match that
+	// never pins) instead of failing anywhere visible.
 	for (const effect of rule.effects) {
-		const error = checkEffectTarget(effect, ctx);
+		const error = checkEffectTarget(effect, ctx, type);
 		if (error) return fail(error);
 	}
 	return { ok: true };
@@ -76,6 +80,7 @@ export function validateRuleVersion(
 function checkEffectTarget(
 	effect: Rule["effects"][number],
 	ctx: RuleValidationContext,
+	type: EventType,
 ): string | null {
 	switch (effect.verb) {
 		case "increment_counter":
@@ -89,9 +94,14 @@ function checkEffectTarget(
 				? null
 				: `effect targets unknown anchor '${effect.anchor}'`;
 		case "open_timer":
-			return ctx.timers.has(effect.timer)
-				? null
-				: `effect targets unknown timer '${effect.timer}'`;
+			if (!ctx.timers.has(effect.timer)) {
+				return `effect targets unknown timer '${effect.timer}'`;
+			}
+			return (
+				checkMatchOn(effect.match_on, type) ??
+				checkRoutedKey("tag_from", effect.tag_from, type, ["enum", "ref"]) ??
+				checkRoutedKey("duration_from", effect.duration_from, type, ["number"])
+			);
 		case "close_timer":
 			if (!ctx.timers.has(effect.timer)) {
 				return `effect targets unknown timer '${effect.timer}'`;
@@ -102,10 +112,65 @@ function checkEffectTarget(
 			) {
 				return `effect routes duration to unknown counter '${effect.route_duration_to}'`;
 			}
-			return null;
+			return (
+				checkMatchOn(effect.match_on, type) ??
+				checkRouteWhen(effect.route_when, type)
+			);
 		case "notify":
 			return null; // target is constrained by the schema enum.
 	}
+}
+
+/**
+ * Ensures a routed event key (`tag_from`, `duration_from`) exists on the
+ * triggering type and is a field kind the routing can actually use.
+ */
+function checkRoutedKey(
+	label: string,
+	key: string | undefined,
+	type: EventType,
+	kinds: MetadataField["kind"][],
+): string | null {
+	if (key === undefined) return null;
+	const field = type.metadata[key];
+	if (!field) {
+		return `effect ${label} references unknown key '${key}' on ${type.id}`;
+	}
+	if (!kinds.includes(field.kind)) {
+		return `effect ${label} key '${key}' on ${type.id} must be a ${kinds.join(" or ")} field`;
+	}
+	return null;
+}
+
+/** Ensures every `match_on` ref points at a real key on the triggering type. */
+function checkMatchOn(
+	matchOn: Record<string, string> | undefined,
+	type: EventType,
+): string | null {
+	if (!matchOn) return null;
+	for (const [timerKey, eventKey] of Object.entries(matchOn)) {
+		if (!type.metadata[eventKey]) {
+			return `effect match_on '${timerKey}' references unknown key '${eventKey}' on ${type.id}`;
+		}
+	}
+	return null;
+}
+
+/** Ensures a `route_when` gate reads real keys with fitting values. */
+function checkRouteWhen(
+	when: Record<string, MetadataValue> | undefined,
+	type: EventType,
+): string | null {
+	if (!when) return null;
+	for (const [key, value] of Object.entries(when)) {
+		const field = type.metadata[key];
+		if (!field) {
+			return `effect route_when references unknown key '${key}' on ${type.id}`;
+		}
+		const valueError = checkConditionValue(key, field, value);
+		if (valueError) return valueError;
+	}
+	return null;
 }
 
 /** Ensures a condition's equality value fits the field's kind (catches typos). */

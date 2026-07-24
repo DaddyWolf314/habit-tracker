@@ -454,7 +454,10 @@ function RuleEditor({
 		for (const c of conditions) {
 			if (!c.key) continue;
 			const field = type.metadata[c.key];
-			if (!field) continue;
+			// A row with no value picked is incomplete, not a clause — the same
+			// filter the live preview applies, so what gets saved is exactly what
+			// the author read (coercing "" would invent `false`/`0`/'' equality).
+			if (!field || c.value === "") continue;
 			metadata[c.key] = coerceValue(field.kind, c.value);
 		}
 		const built: Effect[] = [];

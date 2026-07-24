@@ -141,6 +141,22 @@ describe("effect verb resolution (handoff §4.3)", () => {
 		});
 	});
 
+	it("voids the whole match when a referenced key is unset (orphan, never widen)", () => {
+		const eff: Effect = {
+			verb: "close_timer",
+			timer: "session_stopwatch",
+			match_on: { session_id: "session_id", activity: "activity" },
+			status: "completed",
+		};
+		// The close carries `activity` but lost its `session_id`. Resolving to
+		// just { activity } would let it close a *stranger's* open session on the
+		// one remaining key; it must resolve to {} — the orphan marker the timer
+		// matcher treats as "no matching timer" (handoff §4.5).
+		expect(
+			resolveEffect(eff, ctx("session_ended", { activity: "kneeling" })),
+		).toMatchObject({ match_on: {} });
+	});
+
 	it("notify targets the partner", () => {
 		const eff: Effect = { verb: "notify", target: "partner" };
 		expect(

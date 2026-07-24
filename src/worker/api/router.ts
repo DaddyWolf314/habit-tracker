@@ -431,18 +431,38 @@ async function createIdentity(request: Request, env: Env): Promise<Response> {
 
 	const identityHash = await deriveIdentityHash(secret);
 	const id = env.COUPLE_DO.newUniqueId();
-	const stub = env.COUPLE_DO.get(id);
-	const { member_id } = await stub.createCouple(identityHash);
 
-	await db.insert(credentials).values({
-		credentialHash,
-		identityHash,
-		coupleDoId: id.toString(),
-		kind: "root",
-		label: "recovery phrase",
-	});
+	// Claim the credential row *before* founding the DO: the primary-key insert
+	// is the atomic arbiter of who owns this secret, so a double-submit racing
+	// past the check above loses here with a clean 409 — and never instantiates
+	// an orphaned DO (a bare `newUniqueId` allocates nothing).
+	try {
+		await db.insert(credentials).values({
+			credentialHash,
+			identityHash,
+			coupleDoId: id.toString(),
+			kind: "root",
+			label: "recovery phrase",
+		});
+	} catch (error) {
+		if (String(error).includes("UNIQUE")) {
+			return errorResponse("identity already exists", 409);
+		}
+		throw error;
+	}
 
-	return json({ couple_do_id: id.toString(), member_id }, 201);
+	try {
+		const stub = env.COUPLE_DO.get(id);
+		const { member_id } = await stub.createCouple(identityHash);
+		return json({ couple_do_id: id.toString(), member_id }, 201);
+	} catch (error) {
+		// Founding failed — release the claim so a retry can mint a fresh DO
+		// instead of routing to one that was never founded.
+		await db
+			.delete(credentials)
+			.where(eq(credentials.credentialHash, credentialHash));
+		throw error;
+	}
 }
 
 /** Authenticates a request and runs `handler` with the resolved DO stub. */
@@ -624,15 +644,20 @@ async function deleteCouple(
 	{ auth, stub }: AuthedRequest,
 ): Promise<Response> {
 	await stub.purge(auth.identityHash);
+	// The whole sequence must be retryable: `purge` is idempotent on an already-
+	// wiped DO, and the caller's own credential row is deleted *last* so a
+	// partial failure anywhere above leaves the bearer able to call DELETE again
+	// and finish the job — otherwise residual identifying rows could never be
+	// purged.
 	const db = getRoutingDb(env.DB);
-	await db
-		.delete(credentials)
-		.where(eq(credentials.coupleDoId, auth.coupleDoId));
 	await db.delete(invites).where(eq(invites.coupleDoId, auth.coupleDoId));
 	// A recovery in flight at dissolve time leaves a routing row keyed to this
 	// couple (member id + dead DO id) — residual, identifying data. Purge it too,
 	// or "the database ceases to exist" would be a lie for a couple mid-recovery.
 	await db.delete(recoveries).where(eq(recoveries.coupleDoId, auth.coupleDoId));
+	await db
+		.delete(credentials)
+		.where(eq(credentials.coupleDoId, auth.coupleDoId));
 	return json({ ok: true });
 }
 
