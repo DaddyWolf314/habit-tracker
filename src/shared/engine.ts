@@ -286,6 +286,13 @@ export type EffectOp =
 			op: "open" | "close";
 			match_on?: Record<string, MetadataValue>;
 			tag?: string;
+			/**
+			 * The routed countdown duration (ms from assignment) on an `open`, from the
+			 * effect's `duration_from`. Present ⇒ open a *countdown* with deadline
+			 * `occurred_at + duration_ms`; absent ⇒ a stopwatch. The rule routes this
+			 * value off the event; it never computes it.
+			 */
+			duration_ms?: number;
 			status?: "completed" | "failed";
 			/** Counter the timer's derived duration is routed into on close. */
 			route_duration_to?: string;
@@ -347,6 +354,9 @@ export function resolveEffect(
 				tag: effect.tag_from
 					? asString(ctx.metadata[effect.tag_from])
 					: effect.tag,
+				duration_ms: effect.duration_from
+					? asNumber(ctx.metadata[effect.duration_from])
+					: undefined,
 			};
 		case "close_timer":
 			return {
@@ -423,4 +433,17 @@ function routeGateMet(
 
 function asString(value: MetadataValue | undefined): string | undefined {
 	return value === undefined ? undefined : format(value);
+}
+
+/**
+ * Routes a metadata value as a number (a countdown's `duration_ms`). Unlike
+ * {@link asString} this never *coerces* — a non-numeric value (a string, a
+ * boolean, a NaN/Infinity) yields undefined so the opened timer falls back to a
+ * stopwatch rather than a garbage deadline. The rule routes the value; it never
+ * parses or computes one.
+ */
+function asNumber(value: MetadataValue | undefined): number | undefined {
+	return typeof value === "number" && Number.isFinite(value)
+		? value
+		: undefined;
 }

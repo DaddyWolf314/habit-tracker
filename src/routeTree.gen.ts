@@ -9,11 +9,17 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TodayRouteImport } from './routes/today'
 import { Route as RulesRouteImport } from './routes/rules'
 import { Route as LogRouteImport } from './routes/log'
 import { Route as DevicesRouteImport } from './routes/devices'
 import { Route as IndexRouteImport } from './routes/index'
 
+const TodayRoute = TodayRouteImport.update({
+  id: '/today',
+  path: '/today',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RulesRoute = RulesRouteImport.update({
   id: '/rules',
   path: '/rules',
@@ -40,12 +46,14 @@ export interface FileRoutesByFullPath {
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
   '/rules': typeof RulesRoute
+  '/today': typeof TodayRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
   '/rules': typeof RulesRoute
+  '/today': typeof TodayRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -53,13 +61,14 @@ export interface FileRoutesById {
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
   '/rules': typeof RulesRoute
+  '/today': typeof TodayRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/devices' | '/log' | '/rules'
+  fullPaths: '/' | '/devices' | '/log' | '/rules' | '/today'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/devices' | '/log' | '/rules'
-  id: '__root__' | '/' | '/devices' | '/log' | '/rules'
+  to: '/' | '/devices' | '/log' | '/rules' | '/today'
+  id: '__root__' | '/' | '/devices' | '/log' | '/rules' | '/today'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -67,10 +76,18 @@ export interface RootRouteChildren {
   DevicesRoute: typeof DevicesRoute
   LogRoute: typeof LogRoute
   RulesRoute: typeof RulesRoute
+  TodayRoute: typeof TodayRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/today': {
+      id: '/today'
+      path: '/today'
+      fullPath: '/today'
+      preLoaderRoute: typeof TodayRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/rules': {
       id: '/rules'
       path: '/rules'
@@ -107,6 +124,7 @@ const rootRouteChildren: RootRouteChildren = {
   DevicesRoute: DevicesRoute,
   LogRoute: LogRoute,
   RulesRoute: RulesRoute,
+  TodayRoute: TodayRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

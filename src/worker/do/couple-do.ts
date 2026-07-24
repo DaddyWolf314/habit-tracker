@@ -105,7 +105,6 @@ import {
 	WEEK_MS,
 } from "#/shared/streaks.ts";
 import {
-	assignCountdownInputSchema,
 	type Countdown,
 	closeStopwatch,
 	countdownExpiryAt,
@@ -2230,16 +2229,22 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private openTimer(event: Event, ruleId: string, op: TimerOp): void {
 		const id = ulid(event.logged_at);
-		// The journal-prompt deadline is the one rule-opened *countdown* (ADR 0001):
-		// R19 fires on a `journal_prompt`, and unlike a stopwatch it carries a real
-		// deadline (a policy default; the dom can pause/extend it later) and its floor
-		// as the tag, so a later close can gate on it. Everything else opens as a
+		// A rule-opened *countdown* is one whose open routes a duration: `task_assigned`
+		// and `denial_started` carry `duration_from: duration_ms` (ADR 0004), so the
+		// deadline is `occurred_at + duration_ms`. The journal-prompt deadline (ADR 0001,
+		// R19) is the one countdown with no routed duration — it keeps a policy default
+		// until journal prompts adopt `duration_from`. Everything else opens as a
 		// stopwatch (R15's `session_stopwatch`).
-		if (op.timer === JOURNAL_COUNTDOWN_TIMER) {
+		const countdownMs =
+			op.duration_ms ??
+			(op.timer === JOURNAL_COUNTDOWN_TIMER
+				? DEFAULT_JOURNAL_DEADLINE_MS
+				: undefined);
+		if (countdownMs !== undefined) {
 			const state: TimerState = {
 				match: op.match_on ?? {},
 				tag: op.tag,
-				deadline_at: event.occurred_at + DEFAULT_JOURNAL_DEADLINE_MS,
+				deadline_at: event.occurred_at + countdownMs,
 			};
 			this.sql.exec(
 				`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
@@ -2453,58 +2458,38 @@ export class CoupleDO extends DurableObject<Env> {
 		return closed;
 	}
 
-	// ── Countdowns (dom-assigned deadline timers) — handoff §4.5, #30 ─────────
+	// ── Countdowns (rule-opened deadline timers; dom live-control) — §4.5, ADR 0004 ─
 
 	/**
-	 * Assigns a countdown (handoff §4.5 — "dom-started countdown = assignment").
-	 * Unlike a stopwatch (opened by a `session_started` event via R15), a countdown
-	 * is a direct dom command: it has no opening event, so it is durable state that
-	 * a `rebuildCounters` replay preserves rather than re-derives. Its close *is*
-	 * event-driven (R4 `task_completed`, R14 `orgasm permitted=false`), and its
-	 * `expired` disposition comes from the alarm sweep. `session_stopwatch` is
-	 * reserved for the stopwatch flavor and cannot be assigned as a countdown —
-	 * R16 would otherwise try to close it by `session_id` and route a duration.
+	 * Calls a running countdown off early (ADR 0004): a dom-only live-control command
+	 * that closes it with the terminal `canceled` disposition. Assignment is no longer
+	 * a command — a countdown is *opened* by a rule firing on a `task_assigned` /
+	 * `denial_started` event (R22/R23), routing its `duration_ms` — so the only dom
+	 * commands left are the live manipulations of a running countdown: pause, resume,
+	 * extend, and this. Cancel never overwrites a disposition the deadline already
+	 * earned: the expiry sweep runs first, so an overdue countdown is `expired` and
+	 * `requireOpenCountdown` then rejects it as already closed.
 	 */
-	async assignCountdown(
-		identityHash: string,
-		input: unknown,
-	): Promise<TimerView> {
+	async cancelTimer(identityHash: string, timerId: string): Promise<TimerView> {
 		const me = this.requireMember(identityHash);
 		this.assertDom(me);
 		this.assertNotPaused();
-		const parsed = assignCountdownInputSchema.parse(input);
-		if (this.stopwatchDefinitionNames().has(parsed.timer)) {
-			throw coupleError(
-				"BAD_REQUEST",
-				`${parsed.timer} is reserved for stopwatches`,
-			);
-		}
 		const now = Date.now();
-		const id = ulid(now);
-		const state: TimerState = {
-			match: parsed.match,
-			tag: parsed.tag,
-			deadline_at: now + parsed.duration_ms,
-		};
+		if (this.sweepExpiredCountdowns(now) > 0) this.armAlarm();
+		const row = this.requireOpenCountdown(timerId);
 		this.sql.exec(
-			`INSERT INTO timers (id, kind, definition, state, status, opened_at, closed_at)
-				VALUES (?, 'countdown', ?, ?, NULL, ?, NULL)`,
-			id,
-			parsed.timer,
-			JSON.stringify(state),
+			`UPDATE timers SET status = 'canceled', closed_at = ? WHERE id = ?`,
 			now,
+			row.id,
 		);
 		this.writeTrace(
-			traceTimerCommand(me.id, now, parsed.timer, {
-				command: "assign",
-				timer_id: id,
-				match: parsed.match,
-				tag: parsed.tag,
-				deadline_at: state.deadline_at,
+			traceTimerCommand(me.id, now, row.definition, {
+				command: "cancel",
+				timer_id: row.id,
 			}),
 		);
 		this.armAlarm();
-		return this.rowToTimerView(this.requireTimerRow(id));
+		return this.rowToTimerView(this.requireTimerRow(row.id));
 	}
 
 	/**
@@ -2626,24 +2611,6 @@ export class CoupleDO extends DurableObject<Env> {
 			expired++;
 		}
 		return expired;
-	}
-
-	/**
-	 * The timer names any installed rule opens as a stopwatch. A countdown may not be
-	 * assigned under one of these: stopwatches and countdowns share the close matcher
-	 * (openTimerRows keys on definition + `status IS NULL`, not kind), so a countdown
-	 * sharing a stopwatch's name could be matched and closed by that stopwatch's rule
-	 * and route a bogus duration. Generalizes the former `session_stopwatch` reservation
-	 * to whatever the rules actually open.
-	 */
-	private stopwatchDefinitionNames(): Set<string> {
-		const names = new Set<string>();
-		for (const rule of this.currentRules()) {
-			for (const effect of rule.effects) {
-				if (effect.verb === "open_timer") names.add(effect.timer);
-			}
-		}
-		return names;
 	}
 
 	private openTimerRows(definition: string): TimerRow[] {
@@ -2877,9 +2844,9 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Gates a dom-only command (countdown assign/pause/resume/extend — handoff §4.5,
-	 * §5: "dom-started countdown = assignment"). Requires a confirmed, active dynamic
-	 * and the actor in the `dom` role; a sub self-reporting cannot assign consequences.
+	 * Gates a dom-only command (a countdown's live control — pause/resume/extend/
+	 * cancel — handoff §4.5, ADR 0004). Requires a confirmed, active dynamic and the
+	 * actor in the `dom` role; a sub self-reporting cannot assign consequences.
 	 */
 	private assertDom(member: MemberRow): void {
 		this.assertLive();

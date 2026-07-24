@@ -165,11 +165,14 @@ export const DEFAULT_TIMERS: readonly string[] = [
 ];
 
 /**
- * The journal-prompt deadline countdown (ADR 0001). Unlike the other countdowns
- * (dom-assigned via `assignCountdown`), this one is *rule-opened*: R19 opens it on
- * a `journal_prompt` and R20's answering `journal_entry` closes it by `prompt_id`
- * match. The DO opens it as a `countdown` (not a stopwatch) so it carries a real
- * deadline and inherits pause/extend/expire for free.
+ * The journal-prompt deadline countdown (ADR 0001). Rule-opened like every
+ * countdown (ADR 0004): R19 opens it on a `journal_prompt` and R20's answering
+ * `journal_entry` closes it by `prompt_id` match. It is the one countdown whose
+ * open routes *no* `duration_from` — it keeps a policy-default deadline
+ * ({@link DEFAULT_JOURNAL_DEADLINE_MS}) until journal prompts adopt a per-prompt
+ * duration, whereas `task_countdown`/`denial_period` route theirs off the event.
+ * The DO opens it as a `countdown` (not a stopwatch) so it carries a real deadline
+ * and inherits pause/extend/expire for free.
  */
 export const JOURNAL_COUNTDOWN_TIMER = "journal_countdown";
 

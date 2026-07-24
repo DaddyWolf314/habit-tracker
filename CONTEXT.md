@@ -43,9 +43,14 @@ in and should not.
   anchor). _Avoid_: "aggregate" (DDD-loaded), "view model".
 - **Stopwatch / Countdown** — the two timer flavors. A stopwatch *accumulates*
   (paired `session_started`/`session_ended` sharing a `session_id`, duration
-  derived on close); a countdown is a *deadline* (created at assignment, terminal
-  `completed`/`failed`/`expired`, dom may pause and extend). _Avoid_: "session" for
-  the stopwatch itself — a session is the pair of events that opens and closes one.
+  derived on close); a countdown is a *deadline* (opened by a rule firing on an
+  event — `task_assigned`→`task_countdown`, `denial_started`→`denial_period`,
+  `journal_prompt`→`journal_countdown` — routing its `duration_ms`, ADR 0004;
+  terminal `completed`/`failed`/`expired`/`canceled`, dom may pause, extend, and
+  cancel). _Avoid_: "session" for the stopwatch itself — a session is the pair of
+  events that opens and closes one; "assign" as a *command* — a countdown is opened
+  by an event, and the dom's live control (pause/resume/extend/cancel) is what
+  remains a command (ADR 0004).
 - **Target counter** — a counter carrying a daily/weekly target. A **streak** is a
   property of one: a consecutive-target-met count the DO alarm evaluates at
   rollover — never a rule. _Avoid_: modeling a streak as a rule.

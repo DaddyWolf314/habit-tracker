@@ -6,6 +6,7 @@ import {
 	countdownRemainingMs,
 	durationMinutes,
 	extendCountdown,
+	formatRemaining,
 	isCountdownExpired,
 	matchStopwatch,
 	type OpenStopwatch,
@@ -206,5 +207,33 @@ describe("reprojectAcrossPause (#40 pause-everything — the freeze steals no ti
 	it("is a no-op shift when no time elapsed under pause", () => {
 		const running: Countdown = { opened_at: 0, deadline_at: 1000 };
 		expect(reprojectAcrossPause(running, 0)).toEqual({ deadline_at: 1000 });
+	});
+});
+
+describe("formatRemaining (today view display)", () => {
+	it("clamps zero and negative to 0s", () => {
+		expect(formatRemaining(0)).toBe("0s");
+		expect(formatRemaining(-5_000)).toBe("0s");
+	});
+
+	it("shows sub-minute spans in seconds (sub-second floors to whole seconds)", () => {
+		expect(formatRemaining(45_000)).toBe("45s");
+		expect(formatRemaining(500)).toBe("0s");
+	});
+
+	it("shows minutes with trailing seconds", () => {
+		expect(formatRemaining(90_000)).toBe("1m 30s");
+	});
+
+	it("shows hours with trailing minutes (dropping seconds)", () => {
+		expect(formatRemaining(3_600_000)).toBe("1h 0m");
+		expect(formatRemaining(3_720_000)).toBe("1h 2m");
+	});
+
+	it("shows days with trailing hours for long deadlines", () => {
+		// 25h == 1d 1h
+		expect(formatRemaining(90_000_000)).toBe("1d 1h");
+		// exactly one day
+		expect(formatRemaining(86_400_000)).toBe("1d 0h");
 	});
 });

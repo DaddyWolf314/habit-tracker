@@ -37,20 +37,6 @@ export const DEFAULT_STOPWATCH_MAX_MS: number = 12 * HOUR_MS;
 export const timerKindSchema = z.enum(["stopwatch", "countdown"]);
 export type TimerKind = z.infer<typeof timerKindSchema>;
 
-/**
- * What the dom sends to assign a countdown (handoff §4.5 — "dom-started countdown
- * = assignment"). `timer` is the countdown definition (e.g. `task_countdown`),
- * `match` the ref keys a later close matches on (e.g. `{ task_id }`), and
- * `duration_ms` the time allowed from assignment.
- */
-export const assignCountdownInputSchema = z.object({
-	timer: z.string(),
-	duration_ms: z.number().int().positive(),
-	match: z.record(z.string(), metadataValueSchema).default({}),
-	tag: z.string().optional(),
-});
-export type AssignCountdownInput = z.infer<typeof assignCountdownInputSchema>;
-
 /** What the dom sends to extend a countdown — the extra time to grant. */
 export const extendTimerInputSchema = z.object({
 	by_ms: z.number().int().positive(),
@@ -120,6 +106,25 @@ export function stopwatchDurationMs(
 /** Whole floored minutes of a millisecond span — the unit `service_minutes_week` counts. */
 export function durationMinutes(durationMs: number): number {
 	return Math.floor(durationMs / MINUTE_MS);
+}
+
+/**
+ * A remaining-time span rendered for the today view: the two largest non-zero
+ * units, coarsening as the span grows (`1d 1h`, `1h 2m`, `1m 30s`, `45s`).
+ * Isomorphic and pure so the client can tick it every second off
+ * {@link countdownRemainingMs}. Negative/zero clamps to `0s` — an overdue
+ * countdown reads as done, never as negative time.
+ */
+export function formatRemaining(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	const days = Math.floor(totalSeconds / 86_400);
+	const hours = Math.floor((totalSeconds % 86_400) / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (days > 0) return `${days}d ${hours}h`;
+	if (hours > 0) return `${hours}h ${minutes}m`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
+	return `${seconds}s`;
 }
 
 /**
@@ -195,11 +200,14 @@ function stopwatchMax(
 // ── Countdowns (deadline) — handoff §4.5 ───────────────────────────────────────
 
 /**
- * An in-flight countdown (handoff §4.5). Created at assignment with a `deadline_at`;
- * the dom may pause it — freezing `remaining_ms` and stamping `paused_at` — and
- * extend it. Life intrudes, and rigid timers punish people for having jobs, so
- * pause/extend are day-one. Terminal `completed`/`failed` come from a rule close;
- * `expired` from the alarm when a running countdown passes its deadline unresolved.
+ * An in-flight countdown (handoff §4.5). Opened by a rule firing on an event
+ * (ADR 0004 — `task_assigned`→`task_countdown`, `denial_started`→`denial_period`,
+ * `journal_prompt`→`journal_countdown`) with a `deadline_at`; the dom may pause it
+ * — freezing `remaining_ms` and stamping `paused_at` — and extend or cancel it.
+ * Life intrudes, and rigid timers punish people for having jobs, so pause/extend
+ * are day-one. Terminal `completed`/`failed`/`canceled` come from a rule close or
+ * the dom; `expired` from the alarm when a running countdown passes its deadline
+ * unresolved.
  */
 export interface Countdown {
 	opened_at: number;

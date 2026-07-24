@@ -82,10 +82,15 @@ const ALL_DETAILS: TraceDetail[] = [
 	{ kind: "scheduled_reset", period: "weekly", from: 12, to: 0 },
 	{
 		kind: "timer_command",
-		command: "assign",
+		command: "extend",
 		timer_id: "t4",
 		deadline_at: 5_000,
-		match: { task_id: "x" },
+		by_ms: 60_000,
+	},
+	{
+		kind: "timer_command",
+		command: "cancel",
+		timer_id: "t5",
 	},
 ];
 
