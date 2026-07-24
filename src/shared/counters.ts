@@ -61,6 +61,19 @@ export type CreateCounterInput = z.infer<typeof createCounterInputSchema>;
 /** Wire shape (defaults optional) — what a client may send. */
 export type CreateCounterBody = z.input<typeof createCounterInputSchema>;
 
+/**
+ * What a client sends to edit a counter. The `id` is the stable key that events
+ * reference, so it is fixed by the path and never taken from the body — only the
+ * policy fields change. The value is untouched (it is a cache the log rebuilds).
+ */
+export const updateCounterInputSchema = counterDefinitionSchema.omit({
+	id: true,
+});
+/** Parsed shape (defaults applied) — what the DO receives. */
+export type UpdateCounterInput = z.infer<typeof updateCounterInputSchema>;
+/** Wire shape (defaults optional) — what a client may send. */
+export type UpdateCounterBody = z.input<typeof updateCounterInputSchema>;
+
 /** A counter as returned to clients: its definition plus the cached value. */
 export const counterSchema = counterDefinitionSchema.extend({
 	value: z.number().int(),

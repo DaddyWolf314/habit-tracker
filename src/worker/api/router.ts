@@ -7,6 +7,7 @@ import {
 	adjustCounterInputSchema,
 	createCounterInputSchema,
 	resetCounterInputSchema,
+	updateCounterInputSchema,
 } from "#/shared/counters.ts";
 import { logEventInputSchema } from "#/shared/events.ts";
 import {
@@ -283,6 +284,30 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.getCounterTrace(auth.identityHash, counterId)
 					.then((trace) => json(trace)),
 			);
+		}
+		// Edit / delete a counter's definition. Placed after the literal counter
+		// sub-paths above (adjust/reset/rebuild/trace), which match and return first,
+		// so this generic id match only ever catches a bare counter id.
+		const counterMatch = path.match(/^\/api\/counters\/([^/]+)$/);
+		if (counterMatch) {
+			const id = decodeURIComponent(counterMatch[1]);
+			if (method === "PUT") {
+				return await withAuth(request, env, async ({ auth, stub }) => {
+					const parsed = await readJson(request, updateCounterInputSchema);
+					if ("response" in parsed) return parsed.response;
+					const counter = await stub.updateCounter(
+						auth.identityHash,
+						id,
+						parsed.data,
+					);
+					return json(counter);
+				});
+			}
+			if (method === "DELETE") {
+				return await withAuth(request, env, ({ auth, stub }) =>
+					stub.deleteCounter(auth.identityHash, id).then((r) => json(r)),
+				);
+			}
 		}
 
 		// ── Phase 4: countdowns (assignment is an event; these are live control) ─
