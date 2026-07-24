@@ -2,14 +2,36 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "#/components/ui/select.tsx";
+import {
 	adjustCounter,
 	createCounter,
 	getCounterTrace,
 	resetCounter,
 } from "#/lib/api.ts";
-import type { Counter } from "#/shared/counters.ts";
+import type { Counter, CounterReset } from "#/shared/counters.ts";
+import type { Valence } from "#/shared/roles.ts";
 import type { CounterTrace } from "#/shared/trace.ts";
 import { describeTraceRow, formatTime } from "./formatting.ts";
+
+const RESET_OPTIONS: { value: CounterReset; label: string }[] = [
+	{ value: "never", label: "Never (lifetime)" },
+	{ value: "daily", label: "Daily" },
+	{ value: "weekly", label: "Weekly" },
+	{ value: "on_acknowledgment", label: "On acknowledgment" },
+	{ value: "manual", label: "Manual" },
+];
+
+const VALENCE_OPTIONS: { value: Valence; label: string }[] = [
+	{ value: "neutral", label: "Neutral" },
+	{ value: "positive", label: "Positive" },
+	{ value: "negative", label: "Negative" },
+];
 
 /**
  * Counters panel (handoff §4.4, §9 surface 2/6). Each counter shows its cached
@@ -28,6 +50,8 @@ export function CountersPanel({
 	const [openTrace, setOpenTrace] = useState<CounterTrace | null>(null);
 	const [creating, setCreating] = useState(false);
 	const [name, setName] = useState("");
+	const [reset, setReset] = useState<CounterReset>("never");
+	const [valence, setValence] = useState<Valence>("neutral");
 
 	async function run(id: string, fn: () => Promise<unknown>) {
 		setBusy(id);
@@ -45,8 +69,10 @@ export function CountersPanel({
 	async function handleCreate() {
 		if (!name.trim()) return;
 		await run("__new__", async () => {
-			await createCounter({ name: name.trim() });
+			await createCounter({ name: name.trim(), reset, valence });
 			setName("");
+			setReset("never");
+			setValence("neutral");
 			setCreating(false);
 		});
 	}
@@ -71,12 +97,50 @@ export function CountersPanel({
 			</div>
 
 			{creating && (
-				<div className="mt-3 flex gap-2">
+				<div className="mt-3 space-y-2">
 					<Input
 						placeholder="Counter name"
 						value={name}
 						onChange={(e) => setName(e.target.value)}
 					/>
+					<div className="flex flex-wrap gap-2">
+						<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+							<span>Resets</span>
+							<Select
+								value={reset}
+								onValueChange={(v) => setReset(v as CounterReset)}
+							>
+								<SelectTrigger size="sm" className="w-44">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{RESET_OPTIONS.map((o) => (
+										<SelectItem key={o.value} value={o.value}>
+											{o.label}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+							<span>Valence</span>
+							<Select
+								value={valence}
+								onValueChange={(v) => setValence(v as Valence)}
+							>
+								<SelectTrigger size="sm" className="w-44">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{VALENCE_OPTIONS.map((o) => (
+										<SelectItem key={o.value} value={o.value}>
+											{o.label}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+					</div>
 					<Button onClick={handleCreate} disabled={busy === "__new__"}>
 						Create
 					</Button>
