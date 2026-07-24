@@ -115,6 +115,7 @@ export function TodayView() {
 			<CountdownsPanel
 				timers={timers}
 				selfRole={selfRole}
+				selfId={self?.member_id ?? null}
 				partnerId={partner?.member_id ?? null}
 				onChange={refreshAfterMutation}
 			/>
