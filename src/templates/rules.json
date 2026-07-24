@@ -1,5 +1,5 @@
 {
-	"version": 5,
+	"version": 6,
 	"rules": [
 		{
 			"id": "R1",
@@ -217,6 +217,16 @@
 					"duration_from": "duration_ms"
 				}
 			]
+		},
+		{
+			"id": "R24",
+			"condition": { "type": "edge", "subject_role": "sub", "metadata": {} },
+			"effects": [{ "verb": "increment_counter", "counter": "edges_sub" }]
+		},
+		{
+			"id": "R25",
+			"condition": { "type": "edge", "subject_role": "dom", "metadata": {} },
+			"effects": [{ "verb": "increment_counter", "counter": "edges_dom" }]
 		}
 	]
 }

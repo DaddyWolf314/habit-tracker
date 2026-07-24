@@ -1,5 +1,5 @@
 {
-	"version": 4,
+	"version": 5,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -133,9 +133,34 @@
 					"label": "Outcome",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]
+				},
+				"finish_type": {
+					"kind": "enum",
+					"options": [
+						"vaginal_creampie",
+						"oral_creampie",
+						"anal_creampie",
+						"facial",
+						"on_body",
+						"solo"
+					],
+					"label": "Finish type",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
 				}
 			},
 			"awaiting": [{ "key": "permitted", "subject_role": "sub" }],
+			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "edge",
+			"label": "Edge",
+			"icon": "flame",
+			"valence": "neutral",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {},
+			"awaiting": [],
 			"note_prompt": "Anything you want to say about this?"
 		},
 		{
