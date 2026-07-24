@@ -1,9 +1,11 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
-import { getRoles, listTimers } from "#/lib/api.ts";
+import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
+import { getRoles, listOpenPrompts, listTimers } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { TimerView } from "#/shared/timers.ts";
 
 /**
@@ -20,11 +22,16 @@ export function TodayView() {
 	const [ready, setReady] = useState(false);
 	const [timers, setTimers] = useState<TimerView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
+	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const refresh = useCallback(async () => {
-		const { timers } = await listTimers();
+		const [{ timers }, { prompts }] = await Promise.all([
+			listTimers(),
+			listOpenPrompts(),
+		]);
 		setTimers(timers);
+		setOpenPrompts(prompts);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -43,9 +50,14 @@ export function TodayView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [timerRes, roleRes] = await Promise.all([listTimers(), getRoles()]);
+			const [timerRes, roleRes, promptRes] = await Promise.all([
+				listTimers(),
+				getRoles(),
+				listOpenPrompts(),
+			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
+			setOpenPrompts(promptRes.prompts);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -104,6 +116,11 @@ export function TodayView() {
 				timers={timers}
 				selfRole={selfRole}
 				partnerId={partner?.member_id ?? null}
+				onChange={refreshAfterMutation}
+			/>
+
+			<JournalPromptsPanel
+				openPrompts={openPrompts}
 				onChange={refreshAfterMutation}
 			/>
 		</div>
