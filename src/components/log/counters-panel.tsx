@@ -2,14 +2,76 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "#/components/ui/select.tsx";
+import {
 	adjustCounter,
 	createCounter,
 	getCounterTrace,
 	resetCounter,
 } from "#/lib/api.ts";
-import type { Counter } from "#/shared/counters.ts";
+import type {
+	Counter,
+	CounterReset,
+	CreateCounterBody,
+} from "#/shared/counters.ts";
+import type { Valence } from "#/shared/roles.ts";
 import type { CounterTrace } from "#/shared/trace.ts";
 import { describeTraceRow, formatTime } from "./formatting.ts";
+
+const RESET_OPTIONS: { value: CounterReset; label: string }[] = [
+	{ value: "never", label: "Never (lifetime)" },
+	{ value: "daily", label: "Daily" },
+	{ value: "weekly", label: "Weekly" },
+	{ value: "on_acknowledgment", label: "On acknowledgment" },
+	{ value: "manual", label: "Manual" },
+];
+
+const VALENCE_OPTIONS: { value: Valence; label: string }[] = [
+	{ value: "neutral", label: "Neutral" },
+	{ value: "positive", label: "Positive" },
+	{ value: "negative", label: "Negative" },
+];
+
+/** A streak reads its target-counter's per-period value, so its period picks
+ * which target (daily vs weekly) the rollover fold checks (see `streaks.ts`). */
+const STREAK_PERIOD_OPTIONS: { value: "daily" | "weekly"; label: string }[] = [
+	{ value: "daily", label: "Daily" },
+	{ value: "weekly", label: "Weekly" },
+];
+
+type CounterKind = "tally" | "streak";
+
+/** Parses a target field: a positive integer, or undefined when blank/invalid. */
+function parseTarget(raw: string): number | undefined {
+	const n = Number(raw);
+	return raw.trim() !== "" && Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/** The one-line policy summary under a counter's name — its cadence, any targets,
+ * or, for a streak, what it tracks. */
+function describeCounter(
+	counter: Counter,
+	nameById: Map<string, string>,
+): string {
+	if (counter.streak) {
+		const target =
+			nameById.get(counter.streak.counter) ?? counter.streak.counter;
+		return `${counter.streak.period} streak of ${target}`;
+	}
+	const parts = [
+		counter.reset === "never" ? "lifetime" : `resets ${counter.reset}`,
+	];
+	if (counter.daily_target != null)
+		parts.push(`daily target ${counter.daily_target}`);
+	if (counter.weekly_target != null)
+		parts.push(`weekly target ${counter.weekly_target}`);
+	return parts.join(" · ");
+}
 
 /**
  * Counters panel (handoff §4.4, §9 surface 2/6). Each counter shows its cached
@@ -27,7 +89,14 @@ export function CountersPanel({
 	const [error, setError] = useState<string | null>(null);
 	const [openTrace, setOpenTrace] = useState<CounterTrace | null>(null);
 	const [creating, setCreating] = useState(false);
+	const [kind, setKind] = useState<CounterKind>("tally");
 	const [name, setName] = useState("");
+	const [reset, setReset] = useState<CounterReset>("never");
+	const [valence, setValence] = useState<Valence>("neutral");
+	const [dailyTarget, setDailyTarget] = useState("");
+	const [weeklyTarget, setWeeklyTarget] = useState("");
+	const [streakCounter, setStreakCounter] = useState("");
+	const [streakPeriod, setStreakPeriod] = useState<"daily" | "weekly">("daily");
 
 	async function run(id: string, fn: () => Promise<unknown>) {
 		setBusy(id);
@@ -42,14 +111,48 @@ export function CountersPanel({
 		}
 	}
 
+	function resetForm() {
+		setName("");
+		setKind("tally");
+		setReset("never");
+		setValence("neutral");
+		setDailyTarget("");
+		setWeeklyTarget("");
+		setStreakCounter("");
+		setStreakPeriod("daily");
+		setCreating(false);
+	}
+
 	async function handleCreate() {
 		if (!name.trim()) return;
+		const body: CreateCounterBody = { name: name.trim(), valence };
+		if (kind === "streak") {
+			if (!streakCounter) {
+				setError("Pick a counter for the streak to track.");
+				return;
+			}
+			// A streak's value is folded at rollover, not cleared on a cadence.
+			body.reset = "never";
+			body.streak = { counter: streakCounter, period: streakPeriod };
+		} else {
+			body.reset = reset;
+			body.daily_target = parseTarget(dailyTarget);
+			body.weekly_target = parseTarget(weeklyTarget);
+		}
 		await run("__new__", async () => {
-			await createCounter({ name: name.trim() });
-			setName("");
-			setCreating(false);
+			await createCounter(body);
+			resetForm();
 		});
 	}
+
+	// A streak reads its target-counter's per-period value, so only counters that
+	// carry a target for the chosen period can be tracked. Streak counters have no
+	// target of their own, so they fall out here naturally.
+	const targetableCounters = counters.filter((c) =>
+		streakPeriod === "daily" ? c.daily_target != null : c.weekly_target != null,
+	);
+
+	const nameById = new Map(counters.map((c) => [c.id, c.name]));
 
 	const valenceTint: Record<string, string> = {
 		positive: "text-emerald-600",
@@ -71,12 +174,146 @@ export function CountersPanel({
 			</div>
 
 			{creating && (
-				<div className="mt-3 flex gap-2">
+				<div className="mt-3 space-y-2">
 					<Input
 						placeholder="Counter name"
 						value={name}
 						onChange={(e) => setName(e.target.value)}
 					/>
+					<div className="flex flex-wrap gap-2">
+						<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+							<span>Type</span>
+							<Select
+								value={kind}
+								onValueChange={(v) => setKind(v as CounterKind)}
+							>
+								<SelectTrigger size="sm" className="w-44">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="tally">Tally</SelectItem>
+									<SelectItem value="streak">Streak</SelectItem>
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+							<span>Valence</span>
+							<Select
+								value={valence}
+								onValueChange={(v) => setValence(v as Valence)}
+							>
+								<SelectTrigger size="sm" className="w-44">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									{VALENCE_OPTIONS.map((o) => (
+										<SelectItem key={o.value} value={o.value}>
+											{o.label}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+					</div>
+
+					{kind === "tally" ? (
+						<div className="flex flex-wrap gap-2">
+							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+								<span>Resets</span>
+								<Select
+									value={reset}
+									onValueChange={(v) => setReset(v as CounterReset)}
+								>
+									<SelectTrigger size="sm" className="w-44">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{RESET_OPTIONS.map((o) => (
+											<SelectItem key={o.value} value={o.value}>
+												{o.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
+							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+								<span>Daily target</span>
+								<Input
+									type="number"
+									min="1"
+									placeholder="none"
+									className="w-24"
+									value={dailyTarget}
+									onChange={(e) => setDailyTarget(e.target.value)}
+								/>
+							</div>
+							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+								<span>Weekly target</span>
+								<Input
+									type="number"
+									min="1"
+									placeholder="none"
+									className="w-24"
+									value={weeklyTarget}
+									onChange={(e) => setWeeklyTarget(e.target.value)}
+								/>
+							</div>
+						</div>
+					) : (
+						<div className="flex flex-wrap gap-2">
+							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+								<span>Tracks</span>
+								<Select value={streakCounter} onValueChange={setStreakCounter}>
+									<SelectTrigger size="sm" className="w-56">
+										<SelectValue placeholder="Choose a counter…" />
+									</SelectTrigger>
+									<SelectContent>
+										{targetableCounters.length === 0 && (
+											<div className="px-2 py-1.5 text-xs text-muted-foreground">
+												No eligible counters — create one with a target first.
+											</div>
+										)}
+										{targetableCounters.map((c) => (
+											<SelectItem key={c.id} value={c.id}>
+												{c.name}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
+							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+								<span>Period</span>
+								<Select
+									value={streakPeriod}
+									onValueChange={(v) => {
+										setStreakPeriod(v as "daily" | "weekly");
+										// The eligible set is period-scoped; drop a now-invalid pick.
+										setStreakCounter("");
+									}}
+								>
+									<SelectTrigger size="sm" className="w-32">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{STREAK_PERIOD_OPTIONS.map((o) => (
+											<SelectItem key={o.value} value={o.value}>
+												{o.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+							</div>
+						</div>
+					)}
+
+					{kind === "streak" && (
+						<p className="text-xs text-muted-foreground">
+							Each {streakPeriod === "daily" ? "day" : "week"} the streak grows
+							by 1 if the tracked counter hit its {streakPeriod} target, or
+							resets to 0 if it didn't.
+						</p>
+					)}
+
 					<Button onClick={handleCreate} disabled={busy === "__new__"}>
 						Create
 					</Button>
@@ -106,9 +343,7 @@ export function CountersPanel({
 								{counter.name}
 							</button>
 							<div className="text-xs text-muted-foreground">
-								{counter.reset === "never"
-									? "lifetime"
-									: `resets ${counter.reset}`}
+								{describeCounter(counter, nameById)}
 							</div>
 						</div>
 						<span

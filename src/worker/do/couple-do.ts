@@ -1757,6 +1757,14 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<Counter> {
 		this.requireMember(identityHash);
 		this.assertLive();
+		// A streak folds another counter at rollover (handoff §4.4), so its target
+		// must already exist — otherwise the fold silently no-ops forever.
+		if (input.streak && !this.counterById(input.streak.counter)) {
+			throw coupleError(
+				"BAD_REQUEST",
+				`streak target counter "${input.streak.counter}" does not exist`,
+			);
+		}
 		const id = this.uniqueCounterId(input.id ?? slugify(input.name));
 		const definition: CounterDefinition = {
 			id,
@@ -1765,6 +1773,7 @@ export class CoupleDO extends DurableObject<Env> {
 			daily_target: input.daily_target,
 			weekly_target: input.weekly_target,
 			reset: input.reset,
+			streak: input.streak,
 			modify_permission: input.modify_permission,
 		};
 		this.sql.exec(
