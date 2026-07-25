@@ -5,6 +5,7 @@ import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
 import { QueuePanel } from "#/components/log/queue-panel.tsx";
+import { ABOVE_TAB_BAR } from "#/components/tab-bar.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Sheet, SheetContent, SheetTrigger } from "#/components/ui/sheet.tsx";
 import {
@@ -148,14 +149,10 @@ export function LogView() {
 
 	return (
 		// Bottom padding leaves room for the floating compose button so it never
-		// covers the last events in the stream.
-		<div className="mx-auto max-w-2xl space-y-4 p-6 pb-28">
-			<div className="flex items-center justify-between">
-				<h1 className="text-2xl font-bold">Log</h1>
-				<Link to="/" className="text-sm underline">
-					Back
-				</Link>
-			</div>
+		// covers the last events in the stream — on top of the tab bar's own
+		// spacer, which already clears the bar itself.
+		<div className="mx-auto max-w-2xl space-y-4 p-6 pb-20">
+			<h1 className="text-2xl font-bold">Log</h1>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -184,10 +181,13 @@ export function LogView() {
 			/>
 
 			{/* The primary write action floats over the stream and opens the composer
-			    as a sheet (handoff §9.4), instead of sitting buried mid-scroll. */}
+			    as a sheet (handoff §9.4), instead of sitting buried mid-scroll. It
+			    clears the tab bar (#85), which owns the very bottom of the screen. */}
 			<Sheet open={composerOpen} onOpenChange={setComposerOpen}>
 				<SheetTrigger asChild>
-					<Button className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 shadow-lg">
+					<Button
+						className={`fixed ${ABOVE_TAB_BAR} left-1/2 z-40 -translate-x-1/2 shadow-lg`}
+					>
 						Log an event
 					</Button>
 				</SheetTrigger>

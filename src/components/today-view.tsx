@@ -101,12 +101,7 @@ export function TodayView() {
 
 	return (
 		<div className="mx-auto max-w-2xl space-y-4 p-6">
-			<div className="flex items-center justify-between">
-				<h1 className="text-2xl font-bold">Today</h1>
-				<Link to="/" className="text-sm underline">
-					Back
-				</Link>
-			</div>
+			<h1 className="text-2xl font-bold">Today</h1>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TodayRouteImport } from './routes/today'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RulesRouteImport } from './routes/rules'
 import { Route as LogRouteImport } from './routes/log'
 import { Route as DevicesRouteImport } from './routes/devices'
@@ -18,6 +19,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const TodayRoute = TodayRouteImport.update({
   id: '/today',
   path: '/today',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RulesRoute = RulesRouteImport.update({
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
   '/rules': typeof RulesRoute
+  '/settings': typeof SettingsRoute
   '/today': typeof TodayRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
   '/rules': typeof RulesRoute
+  '/settings': typeof SettingsRoute
   '/today': typeof TodayRoute
 }
 export interface FileRoutesById {
@@ -61,14 +69,15 @@ export interface FileRoutesById {
   '/devices': typeof DevicesRoute
   '/log': typeof LogRoute
   '/rules': typeof RulesRoute
+  '/settings': typeof SettingsRoute
   '/today': typeof TodayRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/devices' | '/log' | '/rules' | '/today'
+  fullPaths: '/' | '/devices' | '/log' | '/rules' | '/settings' | '/today'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/devices' | '/log' | '/rules' | '/today'
-  id: '__root__' | '/' | '/devices' | '/log' | '/rules' | '/today'
+  to: '/' | '/devices' | '/log' | '/rules' | '/settings' | '/today'
+  id: '__root__' | '/' | '/devices' | '/log' | '/rules' | '/settings' | '/today'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,6 +85,7 @@ export interface RootRouteChildren {
   DevicesRoute: typeof DevicesRoute
   LogRoute: typeof LogRoute
   RulesRoute: typeof RulesRoute
+  SettingsRoute: typeof SettingsRoute
   TodayRoute: typeof TodayRoute
 }
 
@@ -86,6 +96,13 @@ declare module '@tanstack/react-router' {
       path: '/today'
       fullPath: '/today'
       preLoaderRoute: typeof TodayRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/rules': {
@@ -124,6 +141,7 @@ const rootRouteChildren: RootRouteChildren = {
   DevicesRoute: DevicesRoute,
   LogRoute: LogRoute,
   RulesRoute: RulesRoute,
+  SettingsRoute: SettingsRoute,
   TodayRoute: TodayRoute,
 }
 export const routeTree = rootRouteImport

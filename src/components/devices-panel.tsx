@@ -96,8 +96,10 @@ export function DevicesPanel() {
 		<div className="mx-auto max-w-2xl p-8">
 			<div className="flex items-center justify-between">
 				<h1 className="text-2xl font-bold">Your devices</h1>
-				<Link to="/" className="text-sm underline">
-					Back
+				{/* Devices hangs off Settings rather than earning a tab of its own
+				    (#85), so back goes there, not to the old hub. */}
+				<Link to="/settings" className="text-sm underline">
+					Settings
 				</Link>
 			</div>
 			<p className="mt-2 text-sm text-muted-foreground">
