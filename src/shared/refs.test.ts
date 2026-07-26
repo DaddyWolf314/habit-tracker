@@ -114,10 +114,11 @@ describe("minting at log time", () => {
 		}
 	});
 
-	it("does not mutate the caller's metadata (a replay reads the stored id)", () => {
-		// Minting precedes persistence, so a rebuild replays what was stored rather
-		// than minting again; the input object staying clean is the small version of
-		// that same discipline.
+	it("does not mutate the caller's metadata", () => {
+		// Not a replay test. A rebuild replays stored events without ever reaching
+		// this function (`rebuildCounters` in the DO), so byte-identical replay is a
+		// structural property no unit test here can observe — there is no DO harness.
+		// This covers only the adjacent discipline: minting hands back a new object.
 		const input = { task_name: "dishes", duration_ms: 60_000 };
 		mintOriginatingRefs(typeOf("task_assigned"), input, counterMint());
 		expect(input).toEqual({ task_name: "dishes", duration_ms: 60_000 });
