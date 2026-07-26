@@ -25,11 +25,14 @@ vi.mock("#/lib/identity.ts", () => ({
 	hasIdentity: () => true,
 }));
 
-vi.mock("#/lib/pin.ts", () => ({ clearPin: vi.fn() }));
+vi.mock("#/lib/pin.ts", () => ({
+	clearPin: vi.fn(),
+	isPinSet: vi.fn(() => false),
+}));
 
 import { listDevices, revokeDevice } from "#/lib/api.ts";
 import { clearCredentials } from "#/lib/identity.ts";
-import { clearPin } from "#/lib/pin.ts";
+import { clearPin, isPinSet } from "#/lib/pin.ts";
 import type { Device } from "#/shared/identity.ts";
 import { DevicesPanel } from "./devices-panel.tsx";
 
@@ -125,6 +128,7 @@ describe("the device you're holding", () => {
 		vi.mocked(revokeDevice).mockClear();
 		vi.mocked(clearCredentials).mockClear();
 		vi.mocked(clearPin).mockClear();
+		vi.mocked(isPinSet).mockReturnValue(false);
 	});
 	afterEach(cleanup);
 
@@ -159,6 +163,22 @@ describe("the device you're holding", () => {
 		expect(vi.mocked(revokeDevice)).toHaveBeenCalledWith("d-phone");
 		expect(vi.mocked(clearCredentials)).toHaveBeenCalled();
 		expect(vi.mocked(clearPin)).toHaveBeenCalled();
+	});
+
+	// The PIN gates the whole app, not just this space, so it goes with the
+	// credential — otherwise the handoff this control exists for hands over a
+	// device nobody can open. It is a real loss, so the tap has to warn of it.
+	it("warns that the PIN goes too, when one is set", async () => {
+		vi.mocked(isPinSet).mockReturnValue(true);
+		await renderPanel();
+		click("Sign this device out");
+		expect(screen.getByText(/PIN lock/i)).not.toBeNull();
+	});
+
+	it("stays quiet about the PIN when none is set", async () => {
+		await renderPanel();
+		click("Sign this device out");
+		expect(screen.queryByText(/PIN/i)).toBeNull();
 	});
 
 	it("says where the way back is once signed out", async () => {

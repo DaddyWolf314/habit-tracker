@@ -4,7 +4,7 @@ import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { listDevices, mintDevice, revokeDevice } from "#/lib/api.ts";
 import { clearCredentials, hasIdentity } from "#/lib/identity.ts";
-import { clearPin } from "#/lib/pin.ts";
+import { clearPin, isPinSet } from "#/lib/pin.ts";
 import type { Device } from "#/shared/identity.ts";
 
 /**
@@ -45,23 +45,32 @@ export function DevicesPanel() {
 		if (hasIdentity()) refresh();
 	}, [refresh]);
 
-	async function handleMint() {
+	/**
+	 * Runs one panel mutation behind the shared busy flag and error line, the way
+	 * `counters-panel.tsx` does — the guard is the same for every one of them, and
+	 * only the message to fall back on when the failure isn't an `Error` differs.
+	 */
+	async function run(fallback: string, fn: () => Promise<void>) {
 		setBusy(true);
 		setError(null);
-		setCopied(false);
 		try {
+			await fn();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : fallback);
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function handleMint() {
+		setCopied(false);
+		await run("Couldn't create a device token.", async () => {
 			const trimmed = label.trim();
 			const { token } = await mintDevice(trimmed === "" ? undefined : trimmed);
 			setFreshToken(token);
 			setLabel("");
 			await refresh();
-		} catch (err) {
-			setError(
-				err instanceof Error ? err.message : "Couldn't create a device token.",
-			);
-		} finally {
-			setBusy(false);
-		}
+		});
 	}
 
 	async function handleCopy(token: string) {
@@ -75,19 +84,11 @@ export function DevicesPanel() {
 	}
 
 	async function handleRevoke(deviceId: string) {
-		setBusy(true);
-		setError(null);
-		try {
+		await run("Couldn't revoke that device.", async () => {
 			await revokeDevice(deviceId);
 			setConfirming(null);
 			await refresh();
-		} catch (err) {
-			setError(
-				err instanceof Error ? err.message : "Couldn't revoke that device.",
-			);
-		} finally {
-			setBusy(false);
-		}
+		});
 	}
 
 	/**
@@ -95,25 +96,18 @@ export function DevicesPanel() {
 	 * afterwards — the credential is dead, so a refresh would only 401 and paint
 	 * an error over the explanation. The stored bearer goes too, rather than
 	 * lingering to fail the next load, and so does the PIN: it gates the whole
-	 * app, not just this space, so leaving it would lock out whoever picks the
-	 * device up next — which is the handoff this control exists for.
+	 * app, not just this space, so leaving it behind would lock out whoever picks
+	 * the device up next — the handoff this control exists for. Both losses are
+	 * named in the confirm copy; nothing is dropped that the tap didn't warn of.
 	 */
 	async function handleSignOut(deviceId: string) {
-		setBusy(true);
-		setError(null);
-		try {
+		await run("Couldn't sign this device out.", async () => {
 			await revokeDevice(deviceId);
 			clearCredentials();
 			clearPin();
 			setConfirming(null);
 			setSignedOut(true);
-		} catch (err) {
-			setError(
-				err instanceof Error ? err.message : "Couldn't sign this device out.",
-			);
-		} finally {
-			setBusy(false);
-		}
+		});
 	}
 
 	if (!ready) return null;
@@ -133,6 +127,9 @@ export function DevicesPanel() {
 			</div>
 		);
 	}
+	// Read after the `ready` gate, like `hasIdentity` below: both touch storage,
+	// which isn't there until this is running in the browser.
+	const pinSet = isPinSet();
 	if (!hasIdentity()) {
 		return (
 			<div className="mx-auto max-w-2xl p-8">
@@ -262,7 +259,7 @@ export function DevicesPanel() {
 						{confirming === device.device_id && (
 							<p className="mt-2 text-xs text-muted-foreground">
 								{device.current
-									? "You'll be logged out here and this device's token stops working. Getting back in needs a fresh token from a device that still works."
+									? `You'll be logged out here and this device's token stops working.${pinSet ? " The PIN lock on this device is removed too, so the next person to open the app isn't shut out of it." : ""} Getting back in needs a fresh token from a device that still works.`
 									: "That device is logged out for good. Using it again needs a fresh token generated here — the one it holds can't be shown again."}
 							</p>
 						)}
