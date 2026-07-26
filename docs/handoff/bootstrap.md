@@ -145,7 +145,7 @@ Event fields:
 | `actor` | who logged it |
 | `subject` | who it's about (dom can log about sub); required per type schema |
 | `occurred_at` / `logged_at` | **separate fields** — backfill ("forgot to log this morning") is common; time-anchored effects use `occurred_at` |
-| `metadata` | typed key/values per schema (boolean, enum, number, ref only — no freeform strings; prose goes in `note`) |
+| `metadata` | typed key/values per schema (boolean, enum, number, text, ref only — no freeform prose; a `text` value is a short label, prose goes in `note`) |
 | `note` | freeform text |
 
 **Direct manipulation is sugar over events**: a "+1" tap on a counter emits `type: counter_adjusted`. Everything is an event; users only meet the rules machinery when they want it.
@@ -232,7 +232,7 @@ Schema semantics:
 
 - **`awaiting`** — list of metadata keys. An event with any `awaiting` key unset in its composite state is **pending** (derived status, never stored). This single property *is* the adjudication-queue mechanism.
 - **Two permissions per metadata key**: `set_permission` (at logging time) and `adjudicated_by` (via amendment afterward). Example: sub may set `permitted` when logging ("you told me I could this morning"); only the dom may rule after the fact.
-- **Metadata kinds**: `boolean | enum | number | ref` only.
+- **Metadata kinds**: `boolean | enum | number | text | ref` only. (`text` arrived with ADR 0005 — a short label the author types, such as `task_assigned`'s `task_name`; prose still belongs in `note`.)
 - **Valence on the type**, overridable per rule effect.
 
 ---
