@@ -12,7 +12,6 @@ import {
 import { FLOOR_KEY, type Floor } from "#/shared/journaling.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
-	type Countdown,
 	countdownRemainingMs,
 	DURATION_UNITS,
 	type DurationUnit,
@@ -21,6 +20,7 @@ import {
 	formatRemaining,
 	isCountdownExpired,
 	type TimerView,
+	toCountdown,
 } from "#/shared/timers.ts";
 
 /** Shared field styling, matching the sibling panels (journal-prompts, log). */
@@ -35,16 +35,6 @@ const TIMER_LABELS: Record<string, string> = {
 };
 function timerLabel(name: string): string {
 	return TIMER_LABELS[name] ?? name.replace(/_/g, " ");
-}
-
-/** The Countdown shape the pure timer helpers read, projected from a view. */
-function toCountdown(t: TimerView): Countdown {
-	return {
-		opened_at: t.opened_at ?? 0,
-		deadline_at: t.deadline_at ?? 0,
-		paused_at: t.paused_at,
-		remaining_ms: t.remaining_ms,
-	};
 }
 
 /** The non-empty `task_id` a task countdown carries, or null (denial has none). */

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { logEvent } from "#/lib/api.ts";
@@ -10,15 +10,22 @@ import {
 import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
+import { type RefCandidate, refCandidates } from "#/shared/ref-candidates.ts";
 import {
 	type MetadataValue,
 	subjectRoleOf,
 	type Visibility,
 } from "#/shared/roles.ts";
-import { formatRemaining } from "#/shared/timers.ts";
+import type { Rule } from "#/shared/rules.ts";
+import { formatRemaining, type TimerView } from "#/shared/timers.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
+
+const labelClass = "text-xs text-muted-foreground";
+
+/** The ghost-button styling both of the ref picker's mode switches share. */
+const switchClass = "mt-1 h-auto p-0 text-xs";
 
 /**
  * A minted ref is server-assigned at log time (#102) — it is not user input, so
@@ -39,12 +46,18 @@ export function LogComposer({
 	types,
 	members,
 	openPrompts,
+	rules,
+	timers,
 	onLogged,
 }: {
 	types: EventType[];
 	members: RoleMember[];
 	/** The caller's outstanding prompts, feeding the answer picker (#102). */
 	openPrompts: OpenPromptView[];
+	/** The rules in force, which say which refs echo an existing id (#89). */
+	rules: Rule[];
+	/** The timers an echoing ref's candidates are drawn from (#89). */
+	timers: TimerView[];
 	onLogged: () => void;
 }) {
 	const pickable = useMemo(
@@ -97,6 +110,28 @@ export function LogComposer({
 		return new Set(awaitingKeysFor(type.awaiting, subjectRole));
 	}, [type, subject, members]);
 
+	/**
+	 * The candidates each of the selected type's ref fields can name (#89),
+	 * derived from the rules: a ref this event would *close* a timer on echoes an
+	 * id minted elsewhere, so it is a pick, not a transcription. Recomputed when
+	 * the timer list refreshes, so the remaining/elapsed time in each option's
+	 * label re-times on the log's poll cadence — an option is a thing to
+	 * recognize, not a clock, so it doesn't tick per second like a Today row.
+	 */
+	const candidates = useMemo(() => {
+		const now = Date.now();
+		const byKey = new Map<string, RefCandidate[]>();
+		if (!type) return byKey;
+		for (const [key, field] of Object.entries(type.metadata)) {
+			if (field.kind !== "ref") continue;
+			byKey.set(
+				key,
+				refCandidates({ rules, timers, typeId: type.id, key, now }),
+			);
+		}
+		return byKey;
+	}, [type, rules, timers]);
+
 	/** Required fields (non-`awaiting`) the user hasn't filled in yet. */
 	function missingRequired(t: EventType): string[] {
 		const missing: string[] = [];
@@ -142,9 +177,7 @@ export function LogComposer({
 
 	return (
 		<div className="space-y-3">
-			<div>
-				{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-				<label className="text-xs text-muted-foreground">Type</label>
+			<Field label="Type">
 				<select
 					className={`${fieldClass} mt-1`}
 					value={typeId}
@@ -157,14 +190,11 @@ export function LogComposer({
 						</option>
 					))}
 				</select>
-			</div>
+			</Field>
 
 			{type && (
 				<div className="space-y-3">
-					<div>
-						<span className="text-xs text-muted-foreground">
-							Subject{type.subject_required ? " (required)" : ""}
-						</span>
+					<Field label={`Subject${type.subject_required ? " (required)" : ""}`}>
 						<select
 							className={`${fieldClass} mt-1`}
 							value={subject}
@@ -177,38 +207,35 @@ export function LogComposer({
 								</option>
 							))}
 						</select>
-					</div>
+					</Field>
 
 					{Object.entries(type.metadata)
 						.filter(([, field]) => !isMinted(field))
 						.map(([key, field]) => (
+							// Keyed by type *and* key so switching types remounts the inputs:
+							// two types sharing a key (both sides of `session_id`) must not
+							// carry the ref picker's free-text escape across the switch.
 							<MetadataInput
-								key={key}
+								key={`${type.id}.${key}`}
 								field={field}
 								awaiting={awaitedKeys.has(key)}
 								openPrompts={openPrompts}
+								candidates={candidates.get(key) ?? []}
 								value={meta[key] ?? ""}
 								onChange={(v) => setMeta((m) => ({ ...m, [key]: v }))}
 							/>
 						))}
 
-					<div>
-						<span className="text-xs text-muted-foreground">
-							{type.note_prompt ?? "Note"}
-						</span>
+					<Field label={type.note_prompt ?? "Note"}>
 						<Textarea
 							className="mt-1"
 							value={note}
 							onChange={(e) => setNote(e.target.value)}
 						/>
-					</div>
+					</Field>
 
 					{type.journaling && (
-						<div>
-							{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-							<label className="text-xs text-muted-foreground">
-								Visibility
-							</label>
+						<Field label="Visibility">
 							<select
 								className={`${fieldClass} mt-1`}
 								value={visibility}
@@ -224,7 +251,7 @@ export function LogComposer({
 									Secret — fully private; they can't tell it exists
 								</option>
 							</select>
-						</div>
+						</Field>
 					)}
 
 					{error && <p className="text-sm text-destructive">{error}</p>}
@@ -238,22 +265,42 @@ export function LogComposer({
 	);
 }
 
+/**
+ * One labelled form row. The label element wraps its control, so the caption is
+ * the control's accessible name and tapping it focuses the field — the composer
+ * is a phone surface, and these are the smallest targets on it.
+ */
+function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
+	return (
+		<div>
+			{/** biome-ignore lint/a11y/noLabelWithoutControl: the control is `children` */}
+			<label className="block">
+				<span className={labelClass}>{label}</span>
+				{children}
+			</label>
+		</div>
+	);
+}
+
 /** One schema-driven metadata input, rendered by kind (handoff §5). */
 function MetadataInput({
 	field,
 	awaiting,
 	openPrompts,
+	candidates,
 	value,
 	onChange,
 }: {
 	field: MetadataField;
 	awaiting: boolean;
 	openPrompts: OpenPromptView[];
+	/** Live ids this ref field can name, empty for every other kind (#89). */
+	candidates: RefCandidate[];
 	value: string;
 	onChange: (value: string) => void;
 }) {
 	const label = (
-		<span className="text-xs text-muted-foreground">
+		<>
 			{field.label}
 			{field.required && !awaiting && (
 				<span className="ml-1 text-destructive">(required)</span>
@@ -263,7 +310,7 @@ function MetadataInput({
 					(awaiting — leave blank to defer)
 				</span>
 			)}
-		</span>
+		</>
 	);
 
 	// Answering a prompt is a pick, not a transcription (#102): the options are
@@ -272,8 +319,7 @@ function MetadataInput({
 	// legal: a `journal_entry` with no ref is self-directed journaling.
 	if (field.kind === "ref" && field.ref_kind === "prompt") {
 		return (
-			<div>
-				{label}
+			<Field label={label}>
 				<select
 					className={`${fieldClass} mt-1`}
 					value={value}
@@ -286,15 +332,29 @@ function MetadataInput({
 						</option>
 					))}
 				</select>
-			</div>
+			</Field>
+		);
+	}
+
+	// Every other echoing ref is a pick too (#89) — same reasoning, one rung more
+	// general: the candidates come from the rules. A ref with none (an
+	// originating ref, or one nothing outstanding answers to) falls through to
+	// the text input below.
+	if (field.kind === "ref" && candidates.length > 0) {
+		return (
+			<RefPicker
+				label={label}
+				candidates={candidates}
+				value={value}
+				onChange={onChange}
+			/>
 		);
 	}
 
 	if (field.kind === "boolean" || field.kind === "enum") {
 		const options = field.kind === "boolean" ? ["yes", "no"] : field.options;
 		return (
-			<div>
-				{label}
+			<Field label={label}>
 				<select
 					className={`${fieldClass} mt-1`}
 					value={value}
@@ -307,13 +367,12 @@ function MetadataInput({
 						</option>
 					))}
 				</select>
-			</div>
+			</Field>
 		);
 	}
 
 	return (
-		<div>
-			{label}
+		<Field label={label}>
 			<input
 				className={`${fieldClass} mt-1`}
 				type={field.kind === "number" ? "number" : "text"}
@@ -322,6 +381,97 @@ function MetadataInput({
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 			/>
+		</Field>
+	);
+}
+
+/**
+ * An echoing ref with candidates (#89): a select over the timers this event
+ * could close, plus an escape to free text. The escape is not a formality — a
+ * task whose countdown expired past the grace window, or one assigned before
+ * the couple had countdowns, has no candidate left, and refusing to log it
+ * would be worse than the typo the picker prevents. It is a button rather than
+ * an option in the list so the picker's value space stays pure ids: no sentinel
+ * a real task name could ever collide with.
+ */
+function RefPicker({
+	label,
+	candidates,
+	value,
+	onChange,
+}: {
+	label: ReactNode;
+	candidates: RefCandidate[];
+	value: string;
+	onChange: (value: string) => void;
+}) {
+	const [manual, setManual] = useState(false);
+
+	function swap(toManual: boolean) {
+		setManual(toManual);
+		// Clear on the way through: a value carried into the other mode would show
+		// as blank there (an off-list id has no option to select), and a ref you
+		// can't see is exactly what this picker exists to stop.
+		onChange("");
+	}
+
+	if (manual) {
+		return (
+			<div>
+				<Field label={label}>
+					<input
+						className={`${fieldClass} mt-1`}
+						type="text"
+						value={value}
+						onChange={(e) => onChange(e.target.value)}
+					/>
+				</Field>
+				<Button
+					variant="ghost"
+					size="sm"
+					className={switchClass}
+					onClick={() => swap(false)}
+				>
+					Pick from the list instead
+				</Button>
+			</div>
+		);
+	}
+
+	// A picked candidate can vanish under an open sheet — the log refreshes on a
+	// poll, and the partner may have closed that very timer. Keep the chosen id as
+	// an option of its own so the select never reads blank while the form still
+	// holds a value: the author sees what they are about to log, and that it is
+	// no longer offered.
+	const known = candidates.some((c) => c.value === value);
+
+	return (
+		<div>
+			<Field label={label}>
+				<select
+					className={`${fieldClass} mt-1`}
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+				>
+					<option value="">—</option>
+					{candidates.map((c) => (
+						<option key={c.value} value={c.value}>
+							{c.label}
+						</option>
+					))}
+					{value !== "" && !known && (
+						<option value={value}>{value} — no longer offered</option>
+					)}
+				</select>
+			</Field>
+			<Button
+				variant="ghost"
+				size="sm"
+				className={switchClass}
+				onClick={() => swap(true)}
+			>
+				Type an id in instead
+			</Button>
 		</div>
 	);
 }
