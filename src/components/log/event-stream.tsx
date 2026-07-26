@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent, getEventTrace } from "#/lib/api.ts";
@@ -342,22 +343,12 @@ function OwnEventActions({
 					<span className="text-muted-foreground">
 						Retract this event? It stays visible as withdrawn.
 					</span>
-					<Button
-						variant="destructive"
-						size="sm"
-						onClick={retract}
-						disabled={busy}
-					>
-						{busy ? "…" : "Yes, retract"}
-					</Button>
-					<Button
-						variant="ghost"
-						size="sm"
-						onClick={() => setMode("idle")}
-						disabled={busy}
-					>
-						Cancel
-					</Button>
+					<InlineConfirm
+						label="Yes, retract"
+						busy={busy}
+						onConfirm={retract}
+						onCancel={() => setMode("idle")}
+					/>
 				</div>
 			)}
 

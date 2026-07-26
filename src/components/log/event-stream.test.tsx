@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
@@ -7,6 +13,7 @@ vi.mock("#/lib/api.ts", () => ({
 	getEventTrace: vi.fn(() => Promise.resolve({ rows: [] })),
 }));
 
+import { amendEvent } from "#/lib/api.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -96,5 +103,49 @@ describe("minted refs on the event card", () => {
 			event({ type: "gone", composite_metadata: { prompt_id: "01JB6X" } }),
 		]);
 		expect(screen.getByText("prompt_id: 01JB6X")).not.toBeNull();
+	});
+});
+
+/**
+ * Retracting your own pending event takes the house two-tap inline confirm
+ * (#93) — a browser dialog would block the whole surface. These pin the
+ * behaviour the shared `InlineConfirm` has to preserve.
+ */
+describe("retracting your own pending event", () => {
+	afterEach(() => {
+		cleanup();
+		vi.mocked(amendEvent).mockClear();
+	});
+
+	const ownPending = () =>
+		renderStream([event({ type: "task_completed", pending: true })]);
+	const click = (name: string) =>
+		fireEvent.click(screen.getByRole("button", { name }));
+
+	it("does not retract on the first tap", () => {
+		ownPending();
+		click("Retract");
+		expect(vi.mocked(amendEvent)).not.toHaveBeenCalled();
+		expect(screen.getByRole("button", { name: "Yes, retract" })).not.toBeNull();
+	});
+
+	it("retracts on the second tap", async () => {
+		ownPending();
+		click("Retract");
+		click("Yes, retract");
+		await act(async () => {});
+		expect(vi.mocked(amendEvent)).toHaveBeenCalledWith({
+			kind: "retracted",
+			target_event_id: "evt-1",
+		});
+	});
+
+	it("cancelling drops the confirm without retracting", () => {
+		ownPending();
+		click("Retract");
+		click("Cancel");
+		expect(vi.mocked(amendEvent)).not.toHaveBeenCalled();
+		expect(screen.queryByRole("button", { name: "Yes, retract" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Retract" })).not.toBeNull();
 	});
 });
