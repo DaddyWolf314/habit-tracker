@@ -113,16 +113,22 @@ in and should not.
 - **Metadata** — an event's typed key/values (`boolean | enum | number | ref`
   only; freeform prose lives in `note`). _Avoid_: "fields", "attributes", "props".
 - **Ref** — a metadata value naming something outside the event: a task, a
-  session, a prompt, a Protocol. Rules match refs by strict equality and nothing
-  else, so a ref one character off names nothing and pairs with nothing — the
-  event logs fine and the consequence silently never arrives. _Avoid_: "pointer",
-  "foreign key", "link".
+  session, a prompt, a Protocol. Where a ref *pairs* two events, rules match it by
+  strict equality and nothing else, so a ref one character off names nothing and
+  pairs with nothing — the event logs fine and the consequence silently never
+  arrives. _Avoid_: "pointer", "foreign key", "link".
 - **Originating ref** — the ref on the event that *mints* the id: the server
   assigns it at log time and a client may never supply one (`minted: true`,
   ADR 0005). `task_assigned`, `session_started`, `journal_prompt`.
 - **Echoing ref** — a ref repeating an id minted elsewhere, in order to pair with
-  it: `task_completed`, `session_ended`, `journal_entry`. Every ref is one or the
-  other, and the schema flag says which. _Avoid_: "copy", "reference back".
+  it: `task_completed`, `session_ended`, `journal_entry`. Every ref that pairs
+  events is originating or echoing, and the schema flag says which. _Avoid_:
+  "copy", "reference back".
+- **Unstructured ref** — a ref naming something the app holds no row for: an
+  `infraction`'s `rule_ref` (a Protocol) or a `ritual_completed`'s `ritual_id`.
+  Never minted, never matched, and free text *by nature* rather than by omission
+  — there is no modelled thing to offer. If one ever gains a definition it
+  becomes an originating/echoing pair like the rest.
 - **Ref candidate** — an id an echoing ref may still name: an open timer, or one
   that expired recently enough to stay in grace. Echoing late still pairs the
   event for history even though it no longer closes anything; a resolved timer

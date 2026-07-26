@@ -1,5 +1,5 @@
 {
-	"version": 6,
+	"version": 7,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -13,7 +13,7 @@
 					"kind": "ref",
 					"ref_kind": "ritual",
 					"label": "Ritual",
-					"required": true,
+					"required": false,
 					"set_permission": ["dom", "sub", "switch"]
 				},
 				"late": {
