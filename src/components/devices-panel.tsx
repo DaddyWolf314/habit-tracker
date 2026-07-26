@@ -1,14 +1,22 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { listDevices, mintDevice, revokeDevice } from "#/lib/api.ts";
-import { hasIdentity } from "#/lib/identity.ts";
+import { clearCredentials, hasIdentity } from "#/lib/identity.ts";
+import { clearPin } from "#/lib/pin.ts";
 import type { Device } from "#/shared/identity.ts";
 
 /**
  * "Your devices" panel (handoff §2). Each device token is individually
  * revocable; the recovery phrase stays the rarely-used root credential. A newly
  * minted token is shown exactly once — there's no way to see it again.
+ *
+ * Revoking has no undo and no second chance at the token, so it arms through
+ * the house two-tap confirm (#117). The row flagged `current` gets its own
+ * control: `current` is only ever true on a device linked *by token*, which
+ * holds no root secret and so cannot re-mint for itself — revoking it there is
+ * signing yourself out, not tidying up a device you left somewhere.
  */
 export function DevicesPanel() {
 	const [devices, setDevices] = useState<Device[] | null>(null);
@@ -18,6 +26,10 @@ export function DevicesPanel() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [ready, setReady] = useState(false);
+	/** The row awaiting its second tap — one at a time, so two can't sit armed. */
+	const [confirming, setConfirming] = useState<string | null>(null);
+	/** Set once this device has revoked its own token and dropped it. */
+	const [signedOut, setSignedOut] = useState(false);
 
 	const refresh = useCallback(async () => {
 		try {
@@ -67,6 +79,7 @@ export function DevicesPanel() {
 		setError(null);
 		try {
 			await revokeDevice(deviceId);
+			setConfirming(null);
 			await refresh();
 		} catch (err) {
 			setError(
@@ -77,7 +90,49 @@ export function DevicesPanel() {
 		}
 	}
 
+	/**
+	 * Revokes the token this device is authenticating with. Nothing is re-listed
+	 * afterwards — the credential is dead, so a refresh would only 401 and paint
+	 * an error over the explanation. The stored bearer goes too, rather than
+	 * lingering to fail the next load, and so does the PIN: it gates the whole
+	 * app, not just this space, so leaving it would lock out whoever picks the
+	 * device up next — which is the handoff this control exists for.
+	 */
+	async function handleSignOut(deviceId: string) {
+		setBusy(true);
+		setError(null);
+		try {
+			await revokeDevice(deviceId);
+			clearCredentials();
+			clearPin();
+			setConfirming(null);
+			setSignedOut(true);
+		} catch (err) {
+			setError(
+				err instanceof Error ? err.message : "Couldn't sign this device out.",
+			);
+		} finally {
+			setBusy(false);
+		}
+	}
+
 	if (!ready) return null;
+	if (signedOut) {
+		return (
+			<div className="mx-auto max-w-2xl p-8">
+				<h1 className="text-2xl font-bold">Signed out</h1>
+				<p className="mt-2 text-sm text-muted-foreground">
+					This device's token has been revoked and its copy is gone from here.
+					To use your space on this device again, generate a fresh device token
+					from a device that still works and add it here — nothing on this
+					device can mint one for itself.
+				</p>
+				<Link to="/" className="mt-4 inline-block text-sm underline">
+					Back to the start
+				</Link>
+			</div>
+		);
+	}
 	if (!hasIdentity()) {
 		return (
 			<div className="mx-auto max-w-2xl p-8">
@@ -159,37 +214,57 @@ export function DevicesPanel() {
 					<li className="p-4 text-sm text-muted-foreground">No devices yet.</li>
 				)}
 				{devices?.map((device) => (
-					<li
-						key={device.device_id}
-						className="flex items-center justify-between p-4"
-					>
-						<div className="text-sm">
-							<div className="font-medium">
-								{device.label ?? "Device"}
-								{device.current && (
-									<span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
-										this device
-									</span>
-								)}
-								{device.revoked_at && (
-									<span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-										revoked
-									</span>
-								)}
+					<li key={device.device_id} className="p-4">
+						<div className="flex items-center justify-between gap-3">
+							<div className="text-sm">
+								<div className="font-medium">
+									{device.label ?? "Device"}
+									{device.current && (
+										<span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">
+											this device
+										</span>
+									)}
+									{device.revoked_at && (
+										<span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+											revoked
+										</span>
+									)}
+								</div>
+								<div className="text-xs text-muted-foreground">
+									Added {new Date(device.created_at).toLocaleString()}
+								</div>
 							</div>
-							<div className="text-xs text-muted-foreground">
-								Added {new Date(device.created_at).toLocaleString()}
-							</div>
+							{!device.revoked_at &&
+								(confirming === device.device_id ? (
+									<InlineConfirm
+										label={device.current ? "Yes, sign out" : "Yes, revoke"}
+										busy={busy}
+										onConfirm={() =>
+											device.current
+												? handleSignOut(device.device_id)
+												: handleRevoke(device.device_id)
+										}
+										onCancel={() => setConfirming(null)}
+									/>
+								) : (
+									<Button
+										variant="outline"
+										size="sm"
+										disabled={busy}
+										onClick={() => setConfirming(device.device_id)}
+									>
+										{device.current ? "Sign this device out" : "Revoke"}
+									</Button>
+								))}
 						</div>
-						{!device.revoked_at && (
-							<Button
-								variant="outline"
-								size="sm"
-								disabled={busy}
-								onClick={() => handleRevoke(device.device_id)}
-							>
-								Revoke
-							</Button>
+						{/* What the tap costs, named where the tap is: there is no
+						    un-revoke, and a token is shown exactly once (#117). */}
+						{confirming === device.device_id && (
+							<p className="mt-2 text-xs text-muted-foreground">
+								{device.current
+									? "You'll be logged out here and this device's token stops working. Getting back in needs a fresh token from a device that still works."
+									: "That device is logged out for good. Using it again needs a fresh token generated here — the one it holds can't be shown again."}
+							</p>
 						)}
 					</li>
 				))}
