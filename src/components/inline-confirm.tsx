@@ -7,11 +7,12 @@ import { Button } from "#/components/ui/button.tsx";
  * land in charged moments (see `pause-everything.tsx`).
  *
  * Every action in the app that can't be walked back arms through this — grep
- * the call sites for the current set. Two deliberate exceptions: pausing
- * (`pause-everything.tsx`) is one tap because reaching the safeword fast beats
- * confirming it, and device revocation (`devices-panel.tsx`) is still unguarded
- * pending #117, which has to decide what the row for *this* device should even
- * offer.
+ * the call sites for the current set. Three exceptions, each with a test
+ * pinning it: pausing (`pause-everything.tsx`) and stopping a session
+ * (`stopwatches-panel.tsx`) are one tap on purpose — reaching the safeword fast
+ * beats confirming it, and stopping is what a stopwatch is *for* — while device
+ * revocation (`devices-panel.tsx`) is still unguarded pending #117, which has
+ * to decide what the row for *this* device should even offer.
  *
  * Only the armed half is shared. The resting trigger stays at the call site,
  * because what it reads and how loud it looks are local decisions — Reset is a
