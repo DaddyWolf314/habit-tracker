@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { logEvent } from "#/lib/api.ts";
 import type { MetadataValue } from "#/shared/roles.ts";
@@ -49,6 +50,11 @@ export function StopwatchesPanel({
 	const [now, setNow] = useState(() => Date.now());
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	// The session awaiting a second tap to be stopped. A stopwatch can't reopen:
+	// restarting mints a fresh `session_id` and the elapsed time begins again at
+	// zero. The log keeps the record either way — what a mis-tap costs is the
+	// running clock, which is the whole point of the row.
+	const [confirmStop, setConfirmStop] = useState<string | null>(null);
 
 	// Tick once a second so a running stopwatch visibly counts up. Purely a display
 	// re-render — the authoritative `opened_at` lives on the timer row.
@@ -129,16 +135,33 @@ export function StopwatchesPanel({
 								{/* Only render Stop when it can actually close this row —
 								    otherwise the click would silently no-op. R15 always pins
 								    both, so in practice it always shows. */}
-								{selfId && sessionIdOf(t) !== null && t.tag !== null && (
-									<Button
-										variant="outline"
-										size="sm"
-										disabled={busy === t.id}
-										onClick={() => run(t.id, () => stop(t))}
-									>
-										Stop
-									</Button>
-								)}
+								{selfId &&
+									sessionIdOf(t) !== null &&
+									t.tag !== null &&
+									(confirmStop === t.id ? (
+										<InlineConfirm
+											label="Yes, stop"
+											cancelLabel="Keep going"
+											tone="neutral"
+											busy={busy === t.id}
+											onConfirm={() =>
+												run(t.id, async () => {
+													await stop(t);
+													setConfirmStop(null);
+												})
+											}
+											onCancel={() => setConfirmStop(null)}
+										/>
+									) : (
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={busy === t.id}
+											onClick={() => setConfirmStop(t.id)}
+										>
+											Stop
+										</Button>
+									))}
 							</div>
 						</li>
 					))}

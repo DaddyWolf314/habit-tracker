@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { StatusSummary } from "#/components/status-summary.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import {
@@ -482,7 +483,7 @@ const ROLE_OPTIONS: Role[] = ["dom", "sub", "switch"];
  * role; the dynamic only activates once both confirm the same assignment, and
  * that confirmation is the first entry in the consent history.
  */
-function RolesPanel({
+export function RolesPanel({
 	onActivated,
 }: {
 	onActivated: () => void | Promise<void>;
@@ -492,6 +493,11 @@ function RolesPanel({
 	const [partnerRole, setPartnerRole] = useState<Role>("sub");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Confirming is the tap that activates the couple, and it is one-way: after it
+	// `proposeRoles` throws "roles are already confirmed" and no endpoint reassigns
+	// roles, so a wrong assignment can only be undone by dissolving the space and
+	// losing its history. It takes the house guard, and says why.
+	const [confirming, setConfirming] = useState(false);
 
 	const load = useCallback(async () => {
 		try {
@@ -563,10 +569,33 @@ function RolesPanel({
 			{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
 
 			{hasProposal && !iProposed && !iConfirmed ? (
-				<div className="mt-3 flex gap-2">
-					<Button size="sm" disabled={busy} onClick={() => run(confirmRoles)}>
-						Confirm these roles
-					</Button>
+				<div className="mt-3">
+					{confirming && (
+						<p className="mb-2 text-sm text-muted-foreground">
+							This starts the dynamic, and roles can't be reassigned afterwards
+							— changing them later means dissolving the space.
+						</p>
+					)}
+					<div className="flex gap-2">
+						{confirming ? (
+							<InlineConfirm
+								label="Yes, these are our roles"
+								cancelLabel="Not yet"
+								tone="neutral"
+								busy={busy}
+								onConfirm={() => run(confirmRoles)}
+								onCancel={() => setConfirming(false)}
+							/>
+						) : (
+							<Button
+								size="sm"
+								disabled={busy}
+								onClick={() => setConfirming(true)}
+							>
+								Confirm these roles
+							</Button>
+						)}
+					</div>
 				</div>
 			) : (
 				<div className="mt-3 flex flex-wrap items-end gap-3">
@@ -620,16 +649,25 @@ function RolesPanel({
 	);
 }
 
-function InvitePanel({ onRefresh }: { onRefresh: () => void | Promise<void> }) {
+export function InvitePanel({
+	onRefresh,
+}: {
+	onRefresh: () => void | Promise<void>;
+}) {
 	const [invite, setInvite] = useState<InviteResult | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Minting a code drops every prior unused invite for the couple, so a second
+	// tap kills the code already sent — the partner hits "invalid invite code"
+	// mid-redeem. The first mint has nothing to lose, so only replacing is guarded.
+	const [confirmingReplace, setConfirmingReplace] = useState(false);
 
 	async function generate() {
 		setBusy(true);
 		setError(null);
 		try {
 			setInvite(await createInvite());
+			setConfirmingReplace(false);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't create an invite.",
@@ -656,10 +694,30 @@ function InvitePanel({ onRefresh }: { onRefresh: () => void | Promise<void> }) {
 				</div>
 			)}
 			{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+			{confirmingReplace && (
+				<p className="mt-3 text-sm text-muted-foreground">
+					A new code replaces this one — if you've already sent it, your partner
+					will get "invalid invite code".
+				</p>
+			)}
 			<div className="mt-3 flex gap-2">
-				<Button onClick={generate} disabled={busy} size="sm">
-					{invite ? "New code" : "Create invite"}
-				</Button>
+				{confirmingReplace ? (
+					<InlineConfirm
+						label="Yes, replace it"
+						cancelLabel="Keep the old code"
+						busy={busy}
+						onConfirm={generate}
+						onCancel={() => setConfirmingReplace(false)}
+					/>
+				) : (
+					<Button
+						onClick={() => (invite ? setConfirmingReplace(true) : generate())}
+						disabled={busy}
+						size="sm"
+					>
+						{invite ? "New code" : "Create invite"}
+					</Button>
+				)}
 				<Button variant="outline" size="sm" onClick={() => onRefresh()}>
 					I've paired — refresh
 				</Button>

@@ -6,10 +6,12 @@ import { Button } from "#/components/ui/button.tsx";
  * A browser dialog is never used: it blocks the whole surface, and these taps
  * land in charged moments (see `pause-everything.tsx`).
  *
- * Every guarded action in the app arms through this: dissolve
- * (`settings-view.tsx`), resume (`pause-everything.tsx`), retraction
- * (`event-stream.tsx`), rule removal (`rules-view.tsx`), and counter reset and
- * delete (`counters-panel.tsx`).
+ * Every action in the app that can't be walked back arms through this — grep
+ * the call sites for the current set. Two deliberate exceptions: pausing
+ * (`pause-everything.tsx`) is one tap because reaching the safeword fast beats
+ * confirming it, and device revocation (`devices-panel.tsx`) is still unguarded
+ * pending #117, which has to decide what the row for *this* device should even
+ * offer.
  *
  * Only the armed half is shared. The resting trigger stays at the call site,
  * because what it reads and how loud it looks are local decisions — Reset is a
