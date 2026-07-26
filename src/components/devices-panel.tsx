@@ -4,7 +4,6 @@ import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { listDevices, mintDevice, revokeDevice } from "#/lib/api.ts";
 import { clearCredentials, hasIdentity } from "#/lib/identity.ts";
-import { clearPin, isPinSet } from "#/lib/pin.ts";
 import type { Device } from "#/shared/identity.ts";
 
 /**
@@ -94,17 +93,14 @@ export function DevicesPanel() {
 	/**
 	 * Revokes the token this device is authenticating with. Nothing is re-listed
 	 * afterwards — the credential is dead, so a refresh would only 401 and paint
-	 * an error over the explanation. The stored bearer goes too, rather than
-	 * lingering to fail the next load, and so does the PIN: it gates the whole
-	 * app, not just this space, so leaving it behind would lock out whoever picks
-	 * the device up next — the handoff this control exists for. Both losses are
-	 * named in the confirm copy; nothing is dropped that the tap didn't warn of.
+	 * an error over the explanation. The stored bearer goes with it rather than
+	 * lingering to fail the next load; nothing else local is touched, so a PIN
+	 * lock set on this device outlives the space it was set in.
 	 */
 	async function handleSignOut(deviceId: string) {
 		await run("Couldn't sign this device out.", async () => {
 			await revokeDevice(deviceId);
 			clearCredentials();
-			clearPin();
 			setConfirming(null);
 			setSignedOut(true);
 		});
@@ -127,9 +123,6 @@ export function DevicesPanel() {
 			</div>
 		);
 	}
-	// Read after the `ready` gate, like `hasIdentity` below: both touch storage,
-	// which isn't there until this is running in the browser.
-	const pinSet = isPinSet();
 	if (!hasIdentity()) {
 		return (
 			<div className="mx-auto max-w-2xl p-8">
@@ -259,7 +252,7 @@ export function DevicesPanel() {
 						{confirming === device.device_id && (
 							<p className="mt-2 text-xs text-muted-foreground">
 								{device.current
-									? `You'll be logged out here and this device's token stops working.${pinSet ? " The PIN lock on this device is removed too, so the next person to open the app isn't shut out of it." : ""} Getting back in needs a fresh token from a device that still works.`
+									? "You'll be logged out here and this device's token stops working. Getting back in needs a fresh token from a device that still works."
 									: "That device is logged out for good. Using it again needs a fresh token generated here — the one it holds can't be shown again."}
 							</p>
 						)}

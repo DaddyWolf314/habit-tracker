@@ -25,14 +25,8 @@ vi.mock("#/lib/identity.ts", () => ({
 	hasIdentity: () => true,
 }));
 
-vi.mock("#/lib/pin.ts", () => ({
-	clearPin: vi.fn(),
-	isPinSet: vi.fn(() => false),
-}));
-
 import { listDevices, revokeDevice } from "#/lib/api.ts";
 import { clearCredentials } from "#/lib/identity.ts";
-import { clearPin, isPinSet } from "#/lib/pin.ts";
 import type { Device } from "#/shared/identity.ts";
 import { DevicesPanel } from "./devices-panel.tsx";
 
@@ -127,8 +121,6 @@ describe("the device you're holding", () => {
 	beforeEach(() => {
 		vi.mocked(revokeDevice).mockClear();
 		vi.mocked(clearCredentials).mockClear();
-		vi.mocked(clearPin).mockClear();
-		vi.mocked(isPinSet).mockReturnValue(false);
 	});
 	afterEach(cleanup);
 
@@ -152,9 +144,8 @@ describe("the device you're holding", () => {
 		).not.toBeNull();
 	});
 
-	// The token being revoked is this device's only credential: leaving it in
-	// storage just 401s on the next load, and the PIN gates the whole app for
-	// whoever picks the phone up next.
+	// The token being revoked is this device's only credential, so leaving it in
+	// storage would just 401 on the next load.
 	it("revokes and clears this device's credential on the second tap", async () => {
 		await renderPanel();
 		click("Sign this device out");
@@ -162,23 +153,6 @@ describe("the device you're holding", () => {
 		await act(async () => {});
 		expect(vi.mocked(revokeDevice)).toHaveBeenCalledWith("d-phone");
 		expect(vi.mocked(clearCredentials)).toHaveBeenCalled();
-		expect(vi.mocked(clearPin)).toHaveBeenCalled();
-	});
-
-	// The PIN gates the whole app, not just this space, so it goes with the
-	// credential — otherwise the handoff this control exists for hands over a
-	// device nobody can open. It is a real loss, so the tap has to warn of it.
-	it("warns that the PIN goes too, when one is set", async () => {
-		vi.mocked(isPinSet).mockReturnValue(true);
-		await renderPanel();
-		click("Sign this device out");
-		expect(screen.getByText(/PIN lock/i)).not.toBeNull();
-	});
-
-	it("stays quiet about the PIN when none is set", async () => {
-		await renderPanel();
-		click("Sign this device out");
-		expect(screen.queryByText(/PIN/i)).toBeNull();
 	});
 
 	it("says where the way back is once signed out", async () => {
