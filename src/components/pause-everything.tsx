@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { getSession, pause, resume } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
@@ -126,19 +127,14 @@ export function PauseEverythingBar() {
 				{error && <p className="mt-2 text-sm text-destructive">{error}</p>}
 				<div className="mt-3 flex items-center gap-2">
 					{confirmingResume ? (
-						<>
-							<Button size="sm" disabled={busy} onClick={handleResume}>
-								{busy ? "…" : "Yes, resume everything"}
-							</Button>
-							<Button
-								variant="ghost"
-								size="sm"
-								disabled={busy}
-								onClick={() => setConfirmingResume(false)}
-							>
-								Stay paused
-							</Button>
-						</>
+						<InlineConfirm
+							label="Yes, resume everything"
+							cancelLabel="Stay paused"
+							tone="neutral"
+							busy={busy}
+							onConfirm={handleResume}
+							onCancel={() => setConfirmingResume(false)}
+						/>
 					) : (
 						<Button
 							variant="outline"

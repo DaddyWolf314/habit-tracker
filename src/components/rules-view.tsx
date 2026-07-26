@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import {
 	ackRuleChanges,
@@ -207,6 +208,10 @@ function RuleCard({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [showHistory, setShowHistory] = useState(false);
+	// Removing a rule is irreversible and has no undo surface, so it takes the
+	// house two-tap inline confirm (dissolve, retraction, counter delete) rather
+	// than a browser dialog, which would block the whole surface.
+	const [confirmingRemove, setConfirmingRemove] = useState(false);
 	const flat = currentRule(rule);
 	const described = describeRule(flat, type);
 	const editable = isPickerEditable(flat);
@@ -277,14 +282,34 @@ function RuleCard({
 						>
 							{flat.enabled ? "Disable" : "Enable"}
 						</Button>
-						<Button
-							size="xs"
-							variant="destructive"
-							disabled={busy}
-							onClick={() => run(() => deleteRule(rule.id))}
-						>
-							Remove
-						</Button>
+						{confirmingRemove ? (
+							<InlineConfirm
+								label="Yes, remove"
+								size="xs"
+								busy={busy}
+								onConfirm={() =>
+									run(async () => {
+										await deleteRule(rule.id);
+										// A custom rule that never fired is purged, but a pack
+										// rule or one that has fired collapses to a disable and
+										// stays in the list (ADR 0002) — this card lives on, so
+										// it has to disarm itself.
+										setConfirmingRemove(false);
+									})
+								}
+								onCancel={() => setConfirmingRemove(false)}
+							/>
+						) : (
+							<Button
+								size="xs"
+								variant="outline"
+								className="text-destructive"
+								disabled={busy}
+								onClick={() => setConfirmingRemove(true)}
+							>
+								Remove
+							</Button>
+						)}
 					</>
 				)}
 			</div>

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import {
@@ -79,6 +80,8 @@ function describeCounter(
  * Counters panel (handoff §4.4, §9 surface 2/6). Each counter shows its cached
  * value with +1 / −1 taps — direct manipulation that is really sugar over
  * `counter_adjusted` events — plus reset and a drill-in to its causal chain.
+ * The two taps that can't be walked back, reset and delete, sit behind the
+ * house two-tap inline confirm (#93).
  */
 export function CountersPanel({
 	counters,
@@ -94,8 +97,16 @@ export function CountersPanel({
 	// The counter whose definition the form is editing, or null when creating a new
 	// one. The form is shared between both — edit seeds it from an existing counter.
 	const [editing, setEditing] = useState<string | null>(null);
-	// The counter awaiting a delete confirmation (delete is a two-tap inline guard).
-	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+	// The row control awaiting its second tap. Delete and reset are both
+	// irreversible — a reset wipes a long-running tally and the trace records it
+	// but nothing restores the value — so each takes the house two-tap inline
+	// guard. One at a time, so a row never shows two armed confirms at once.
+	const [confirming, setConfirming] = useState<{
+		id: string;
+		action: "delete" | "reset";
+	} | null>(null);
+	const isConfirming = (id: string, action: "delete" | "reset") =>
+		confirming?.id === id && confirming.action === action;
 	const [kind, setKind] = useState<CounterKind>("tally");
 	const [name, setName] = useState("");
 	const [reset, setReset] = useState<CounterReset>("never");
@@ -155,7 +166,7 @@ export function CountersPanel({
 			setStreakCounter("");
 			setStreakPeriod("daily");
 		}
-		setConfirmDelete(null);
+		setConfirming(null);
 		setError(null);
 		setCreating(true);
 	}
@@ -428,14 +439,30 @@ export function CountersPanel({
 							>
 								+1
 							</Button>
-							<Button
-								variant="ghost"
-								size="sm"
-								disabled={busy === counter.id}
-								onClick={() => run(counter.id, () => resetCounter(counter.id))}
-							>
-								Reset
-							</Button>
+							{isConfirming(counter.id, "reset") ? (
+								<InlineConfirm
+									label="Yes, reset"
+									busy={busy === counter.id}
+									onConfirm={() =>
+										run(counter.id, async () => {
+											await resetCounter(counter.id);
+											setConfirming(null);
+										})
+									}
+									onCancel={() => setConfirming(null)}
+								/>
+							) : (
+								<Button
+									variant="ghost"
+									size="sm"
+									disabled={busy === counter.id}
+									onClick={() =>
+										setConfirming({ id: counter.id, action: "reset" })
+									}
+								>
+									Reset
+								</Button>
+							)}
 							<Button
 								variant="ghost"
 								size="sm"
@@ -444,38 +471,28 @@ export function CountersPanel({
 							>
 								Edit
 							</Button>
-							{confirmDelete === counter.id ? (
-								<>
-									<Button
-										variant="ghost"
-										size="sm"
-										className="text-destructive"
-										disabled={busy === counter.id}
-										onClick={() =>
-											run(counter.id, async () => {
-												await deleteCounter(counter.id);
-												setConfirmDelete(null);
-												if (editing === counter.id) resetForm();
-											})
-										}
-									>
-										Confirm
-									</Button>
-									<Button
-										variant="ghost"
-										size="sm"
-										onClick={() => setConfirmDelete(null)}
-									>
-										No
-									</Button>
-								</>
+							{isConfirming(counter.id, "delete") ? (
+								<InlineConfirm
+									label="Yes, delete"
+									busy={busy === counter.id}
+									onConfirm={() =>
+										run(counter.id, async () => {
+											await deleteCounter(counter.id);
+											setConfirming(null);
+											if (editing === counter.id) resetForm();
+										})
+									}
+									onCancel={() => setConfirming(null)}
+								/>
 							) : (
 								<Button
 									variant="ghost"
 									size="sm"
 									className="text-destructive"
 									disabled={busy === counter.id}
-									onClick={() => setConfirmDelete(counter.id)}
+									onClick={() =>
+										setConfirming({ id: counter.id, action: "delete" })
+									}
 								>
 									Delete
 								</Button>

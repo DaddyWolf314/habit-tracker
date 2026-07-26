@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -115,6 +116,11 @@ export function CountdownsPanel({
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [markingDone, setMarkingDone] = useState<string | null>(null);
+	// The countdown awaiting a second tap to be called off. Cancelling writes the
+	// terminal `canceled` disposition and there is no reopen — a replacement is a
+	// fresh assignment that loses the elapsed time — and the control sits in the
+	// same row as the reversible Pause and +extend, so it takes the house guard.
+	const [confirmCancel, setConfirmCancel] = useState<string | null>(null);
 
 	// Tick once a second so a running countdown visibly counts down. Purely a
 	// display re-render — the authoritative deadline lives on the timer row; a
@@ -219,14 +225,30 @@ export function CountdownsPanel({
 													{choice.label}
 												</Button>
 											))}
-											<Button
-												variant="ghost"
-												size="sm"
-												disabled={busy === t.id}
-												onClick={() => run(t.id, () => cancelTimer(t.id))}
-											>
-												Cancel
-											</Button>
+											{confirmCancel === t.id ? (
+												<InlineConfirm
+													label="Yes, cancel it"
+													cancelLabel="Keep it running"
+													busy={busy === t.id}
+													onConfirm={() =>
+														run(t.id, async () => {
+															await cancelTimer(t.id);
+															setConfirmCancel(null);
+														})
+													}
+													onCancel={() => setConfirmCancel(null)}
+												/>
+											) : (
+												<Button
+													variant="ghost"
+													size="sm"
+													className="text-destructive"
+													disabled={busy === t.id}
+													onClick={() => setConfirmCancel(t.id)}
+												>
+													Cancel
+												</Button>
+											)}
 										</div>
 									) : (
 										canMarkDone &&

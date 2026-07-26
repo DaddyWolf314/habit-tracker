@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
+import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { PinSettings } from "#/components/pin-gate.tsx";
 import { StatusSummary } from "#/components/status-summary.tsx";
 import { Button } from "#/components/ui/button.tsx";
@@ -143,24 +144,12 @@ export function YourDataPanel({
 				</Button>
 				{!dissolved &&
 					(confirming ? (
-						<>
-							<Button
-								variant="destructive"
-								size="sm"
-								disabled={busy}
-								onClick={handleDissolve}
-							>
-								Yes, dissolve everything
-							</Button>
-							<Button
-								variant="ghost"
-								size="sm"
-								disabled={busy}
-								onClick={() => setConfirming(false)}
-							>
-								Cancel
-							</Button>
-						</>
+						<InlineConfirm
+							label="Yes, dissolve everything"
+							busy={busy}
+							onConfirm={handleDissolve}
+							onCancel={() => setConfirming(false)}
+						/>
 					) : (
 						<Button
 							variant="outline"
