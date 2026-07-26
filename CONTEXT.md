@@ -51,6 +51,11 @@ in and should not.
   events that opens and closes one; "assign" as a *command* — a countdown is opened
   by an event, and the dom's live control (pause/resume/extend/cancel) is what
   remains a command (ADR 0004).
+- **Overdue** — how a passed deadline reads to a person, on any surface.
+  `expired` is the *status* a swept countdown carries; whether the sweep has
+  landed yet turns on alarm timing and polling, not on anything the author did,
+  so the two never get different words in the UI. _Avoid_: "due" and "late" as
+  competing display words; "overdue" as a status name.
 - **Target counter** — a counter carrying a daily/weekly target. A **streak** is a
   property of one: a consecutive-target-met count the DO alarm evaluates at
   rollover — never a rule. _Avoid_: modeling a streak as a rule.
@@ -107,6 +112,24 @@ in and should not.
   explicit `dom_` marker (`since_dom_last_orgasm`).
 - **Metadata** — an event's typed key/values (`boolean | enum | number | ref`
   only; freeform prose lives in `note`). _Avoid_: "fields", "attributes", "props".
+- **Ref** — a metadata value naming something outside the event: a task, a
+  session, a prompt, a Protocol. Rules match refs by strict equality and nothing
+  else, so a ref one character off names nothing and pairs with nothing — the
+  event logs fine and the consequence silently never arrives. _Avoid_: "pointer",
+  "foreign key", "link".
+- **Originating ref** — the ref on the event that *mints* the id: the server
+  assigns it at log time and a client may never supply one (`minted: true`,
+  ADR 0005). `task_assigned`, `session_started`, `journal_prompt`.
+- **Echoing ref** — a ref repeating an id minted elsewhere, in order to pair with
+  it: `task_completed`, `session_ended`, `journal_entry`. Every ref is one or the
+  other, and the schema flag says which. _Avoid_: "copy", "reference back".
+- **Ref candidate** — an id an echoing ref may still name: an open timer, or one
+  that expired recently enough to stay in grace. Echoing late still pairs the
+  event for history even though it no longer closes anything; a resolved timer
+  (completed, canceled, auto-closed) is never a candidate. Which refs *have*
+  candidates is derived from the rules — a rule closing a timer on a metadata key
+  is what makes that key an echoing ref. _Avoid_: "live" (the repo's informal
+  word for polling and ticking), "suggestion", "autocomplete".
 - **Valence** — `positive | negative | neutral` on a type or counter; drives
   display and the deferred scoring layer. Overridable per rule effect.
 - **Composite state** — an event's current metadata: original overlaid by

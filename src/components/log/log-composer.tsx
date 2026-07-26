@@ -54,9 +54,9 @@ export function LogComposer({
 	members: RoleMember[];
 	/** The caller's outstanding prompts, feeding the answer picker (#102). */
 	openPrompts: OpenPromptView[];
-	/** The rules in force, which say which refs echo an open timer (#89). */
+	/** The rules in force, which say which refs echo an existing id (#89). */
 	rules: Rule[];
-	/** Live timers — the candidates those refs pick from (#89). */
+	/** The timers an echoing ref's candidates are drawn from (#89). */
 	timers: TimerView[];
 	onLogged: () => void;
 }) {
@@ -111,7 +111,7 @@ export function LogComposer({
 	}, [type, subject, members]);
 
 	/**
-	 * The live candidates each of the selected type's ref fields can name (#89),
+	 * The candidates each of the selected type's ref fields can name (#89),
 	 * derived from the rules: a ref this event would *close* a timer on echoes an
 	 * id minted elsewhere, so it is a pick, not a transcription. Recomputed when
 	 * the timer list refreshes, so the remaining/elapsed time in each option's
@@ -336,10 +336,10 @@ function MetadataInput({
 		);
 	}
 
-	// Every other ref that echoes a live id is a pick too (#89) — same reasoning,
-	// one rung more general: the candidates come from the rules. A ref with none
-	// (one this event mints, or one nothing open answers to) falls through to the
-	// text input below.
+	// Every other echoing ref is a pick too (#89) — same reasoning, one rung more
+	// general: the candidates come from the rules. A ref with none (an
+	// originating ref, or one nothing outstanding answers to) falls through to
+	// the text input below.
 	if (field.kind === "ref" && candidates.length > 0) {
 		return (
 			<RefPicker
@@ -386,9 +386,9 @@ function MetadataInput({
 }
 
 /**
- * A ref field with live candidates (#89): a select over the timers this event
+ * An echoing ref with candidates (#89): a select over the timers this event
  * could close, plus an escape to free text. The escape is not a formality — a
- * task whose countdown lapsed past the picker's grace, or one assigned before
+ * task whose countdown expired past the grace window, or one assigned before
  * the couple had countdowns, has no candidate left, and refusing to log it
  * would be worse than the typo the picker prevents. It is a button rather than
  * an option in the list so the picker's value space stays pure ids: no sentinel
@@ -432,7 +432,7 @@ function RefPicker({
 					className={switchClass}
 					onClick={() => swap(false)}
 				>
-					Pick a live one instead
+					Pick from the list instead
 				</Button>
 			</div>
 		);
@@ -442,7 +442,7 @@ function RefPicker({
 	// poll, and the partner may have closed that very timer. Keep the chosen id as
 	// an option of its own so the select never reads blank while the form still
 	// holds a value: the author sees what they are about to log, and that it is
-	// no longer live.
+	// no longer offered.
 	const known = candidates.some((c) => c.value === value);
 
 	return (
@@ -460,7 +460,7 @@ function RefPicker({
 						</option>
 					))}
 					{value !== "" && !known && (
-						<option value={value}>{value} — no longer live</option>
+						<option value={value}>{value} — no longer offered</option>
 					)}
 				</select>
 			</Field>

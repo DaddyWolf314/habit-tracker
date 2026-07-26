@@ -21,9 +21,9 @@ import { LogComposer } from "./log-composer.tsx";
  * Ref fields in the composer (#89). Rules match refs by strict equality, so a
  * hand-typed `session_id`/`task_id` that is one character off logs fine and then
  * closes nothing — the countdown runs to `expired` and the near-miss trace lands
- * on the matching event, i.e. never. These cover the states of the fix: a ref
- * that echoes a live timer becomes a picker, a ref the event mints stays free
- * text, and the escape keeps an off-list id loggable.
+ * on the matching event, i.e. never. These cover the states of the fix: an
+ * echoing ref becomes a picker, an originating ref stays free text, and the
+ * escape keeps an off-list id loggable.
  */
 
 const NOW = 1_700_000_000_000;
@@ -170,9 +170,9 @@ describe("LogComposer ref fields", () => {
 		);
 	});
 
-	it("keeps free text for the ref the event mints", () => {
-		// `session_started` opens the stopwatch — there is nothing live to point
-		// at, and offering a running one would double-open the same id.
+	it("keeps free text for an originating ref", () => {
+		// `session_started` opens the stopwatch — it originates the id, and
+		// offering a running one would double-open the same session.
 		renderComposer();
 		chooseType("session_started");
 
@@ -180,7 +180,7 @@ describe("LogComposer ref fields", () => {
 		expect(screen.queryByRole("combobox", { name: /session/i })).toBeNull();
 	});
 
-	it("keeps a picked id visible after its timer stops being live", () => {
+	it("keeps a picked id visible after its timer stops being offered", () => {
 		// The log polls under the open sheet, so the partner can close the very
 		// stopwatch someone already picked. The select must not silently read
 		// blank while the form still holds that id.
@@ -194,14 +194,14 @@ describe("LogComposer ref fields", () => {
 
 		expect(
 			screen.getByRole("option", {
-				name: "sess-1 — no longer live",
+				name: "sess-1 — no longer offered",
 				selected: true,
 			}),
 		).not.toBeNull();
 	});
 
 	it("falls back to free text through the escape", () => {
-		// A task completed long after its countdown lapsed has no candidate left;
+		// A task completed long after its countdown expired has no candidate left;
 		// the author must still be able to name it.
 		renderComposer();
 		chooseType("session_ended");

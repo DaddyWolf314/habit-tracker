@@ -4,13 +4,13 @@ import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
 
 /**
- * Ref pickers (#89). The unit under test is the derivation only: which open
- * timers a given event type's ref key can legitimately name, read off the
- * couple's own rules rather than a hardcoded key list. A rule that *closes* a
- * timer by matching a metadata key is exactly the statement "this key echoes an
- * id minted elsewhere" — so `session_ended.session_id` offers the running
- * stopwatches while `session_started.session_id` (which opens one) offers
- * nothing and stays free text.
+ * Ref candidates (#89, CONTEXT §Ref). The unit under test is the derivation
+ * only: which timers a given event type's ref key can legitimately name, read
+ * off the couple's own rules rather than a hardcoded key list. A rule that
+ * *closes* a timer by matching a metadata key is exactly the statement "this is
+ * an echoing ref" — so `session_ended.session_id` offers the running stopwatches
+ * while `session_started.session_id` (an originating ref) offers nothing and
+ * stays free text.
  */
 
 const NOW = 1_700_000_000_000;
@@ -48,7 +48,7 @@ const CLOSE_SESSION: Rule = {
 	],
 };
 
-/** R15's shape: `session_started` *opens* the stopwatch — it names no existing one. */
+/** R15's shape: `session_started` *opens* the stopwatch — an originating ref. */
 const OPEN_SESSION: Rule = {
 	id: "R15",
 	enabled: true,
@@ -95,7 +95,7 @@ describe("refCandidates", () => {
 		expect(candidates).toEqual([{ value: "s1", label: "kneeling — 1m 0s" }]);
 	});
 
-	it("offers nothing for the ref the event mints rather than echoes", () => {
+	it("offers nothing for an originating ref", () => {
 		// `session_started` opens the stopwatch; naming an already-running session
 		// would double-open the same id, so the field stays free text.
 		expect(
@@ -110,8 +110,8 @@ describe("refCandidates", () => {
 	});
 
 	it("offers nothing for a key no rule matches a timer on", () => {
-		// `ritual_id` and `rule_ref` point at things the engine holds no open row
-		// for — there is no live candidate list to draw, so free text stands.
+		// `ritual_id` and `rule_ref` point at things the engine holds no timer row
+		// for — there are no candidates to draw, so free text stands.
 		expect(
 			refCandidates({
 				rules: RULES,
@@ -144,7 +144,7 @@ describe("refCandidates", () => {
 		]);
 	});
 
-	it("labels an overdue countdown as due and a paused one as paused", () => {
+	it("labels a countdown past its deadline overdue, and a paused one paused", () => {
 		const overdue = timer({
 			id: "t1",
 			kind: "countdown",
@@ -171,7 +171,7 @@ describe("refCandidates", () => {
 				now: NOW,
 			}),
 		).toEqual([
-			{ value: "dishes", label: "dishes — due" },
+			{ value: "dishes", label: "dishes — overdue" },
 			{ value: "laundry", label: "laundry — 1m 0s left (paused)" },
 		]);
 	});
@@ -194,12 +194,14 @@ describe("refCandidates", () => {
 		).toEqual([]);
 	});
 
-	it("still offers a recently lapsed countdown, marked overdue", () => {
+	it("still offers a recently expired countdown, marked overdue", () => {
 		// The moment a deadline passes, `listTimers` sweeps the row to `expired` —
 		// so filtering on open alone would drop the task from the picker exactly
 		// when the sub is late and most likely to mistype it. A late completion
 		// still pairs for history (#102's reasoning for a late journal answer).
-		const lapsed = timer({
+		// Swept or not, it reads the same word: the sweep is not the author's
+		// doing and they cannot see it happen.
+		const expired = timer({
 			kind: "countdown",
 			timer: "task_countdown",
 			match: { task_id: "dishes" },
@@ -211,7 +213,7 @@ describe("refCandidates", () => {
 		expect(
 			refCandidates({
 				rules: RULES,
-				timers: [lapsed],
+				timers: [expired],
 				typeId: "task_completed",
 				key: "task_id",
 				now: NOW,
@@ -219,7 +221,7 @@ describe("refCandidates", () => {
 		).toEqual([{ value: "dishes", label: "dishes — overdue" }]);
 	});
 
-	it("drops a countdown that lapsed long ago", () => {
+	it("drops a countdown that expired long ago", () => {
 		// The grace runs out: a task from months back is history, not a candidate.
 		const stale = timer({
 			kind: "countdown",
@@ -294,6 +296,39 @@ describe("refCandidates", () => {
 				now: NOW,
 			}),
 		).toEqual([]);
+	});
+
+	it("labels a colliding ref from the row a close would discharge", () => {
+		// Two tasks named "dishes" open at once — possible while a `task_id` is a
+		// hand-typed name (ADR 0005 mints them instead). A close resolves
+		// oldest-open-wins, so the option must describe the *older* countdown, not
+		// whichever row the API happened to return first (it returns newest first).
+		const newer = timer({
+			id: "t1",
+			kind: "countdown",
+			timer: "task_countdown",
+			match: { task_id: "dishes" },
+			opened_at: NOW - 60_000,
+			deadline_at: NOW + 27 * 60 * 60_000,
+		});
+		const older = timer({
+			id: "t2",
+			kind: "countdown",
+			timer: "task_countdown",
+			match: { task_id: "dishes" },
+			opened_at: NOW - 9 * 60 * 60_000,
+			deadline_at: NOW + 3 * 60 * 60_000,
+		});
+
+		expect(
+			refCandidates({
+				rules: RULES,
+				timers: [newer, older],
+				typeId: "task_completed",
+				key: "task_id",
+				now: NOW,
+			}),
+		).toEqual([{ value: "dishes", label: "dishes — 3h 0m left" }]);
 	});
 
 	it("offers one option per distinct ref, disambiguating equal labels", () => {

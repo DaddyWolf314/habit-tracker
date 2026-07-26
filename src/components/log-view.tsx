@@ -51,7 +51,7 @@ export function LogView() {
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
-	// Live timers feed the composer's ref pickers (#89) — the open rows a
+	// The timers feed the composer's ref pickers (#89) — the candidates a
 	// `session_ended`/`task_completed` can name — so they refresh with the log.
 	const [timers, setTimers] = useState<TimerView[]>([]);
 	const [error, setError] = useState<string | null>(null);
