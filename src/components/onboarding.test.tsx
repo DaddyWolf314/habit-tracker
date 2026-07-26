@@ -72,6 +72,17 @@ async function renderRoles() {
 	await act(async () => {});
 }
 
+/**
+ * Gets an invite panel past the first, additive "Create invite" tap, and forgets
+ * that tap so a test can assert on what its own taps minted.
+ */
+async function renderWithLiveInvite(onRefresh: () => void = () => {}) {
+	render(<InvitePanel onRefresh={onRefresh} />);
+	click("Create invite");
+	await act(async () => {});
+	vi.mocked(createInvite).mockClear();
+}
+
 describe("confirming roles", () => {
 	beforeEach(() => {
 		vi.mocked(confirmRoles).mockClear();
@@ -121,14 +132,6 @@ describe("regenerating an invite code", () => {
 	});
 	afterEach(cleanup);
 
-	/** Gets the panel past the first, additive "Create invite" tap. */
-	async function renderWithLiveInvite() {
-		render(<InvitePanel onRefresh={() => {}} />);
-		click("Create invite");
-		await act(async () => {});
-		vi.mocked(createInvite).mockClear();
-	}
-
 	it("creates the first code on a single tap — nothing exists to lose yet", async () => {
 		render(<InvitePanel onRefresh={() => {}} />);
 		click("Create invite");
@@ -173,12 +176,6 @@ describe("handing off the invite", () => {
 		vi.useRealTimers();
 	});
 
-	async function renderWithLiveInvite(onRefresh: () => void = () => {}) {
-		render(<InvitePanel onRefresh={onRefresh} />);
-		click("Create invite");
-		await act(async () => {});
-	}
-
 	it("copies the code to the clipboard", async () => {
 		const writeText = vi.fn(() => Promise.resolve());
 		Object.defineProperty(navigator, "clipboard", {
@@ -192,7 +189,7 @@ describe("handing off the invite", () => {
 		expect(screen.getByRole("button", { name: "Copied" })).not.toBeNull();
 	});
 
-	it("survives a clipboard that refuses", async () => {
+	it("says so when the clipboard refuses, rather than looking dead", async () => {
 		Object.defineProperty(navigator, "clipboard", {
 			value: {
 				writeText: () => Promise.reject(new Error("denied")),
@@ -202,9 +199,9 @@ describe("handing off the invite", () => {
 		await renderWithLiveInvite();
 		click("Copy");
 		await act(async () => {});
-		// Still the code on screen to copy by hand, and no error painted over it.
+		expect(screen.getByText(/copy it by hand/i)).not.toBeNull();
+		// And the code is still there to copy that way.
 		expect(screen.getByText("abc-123")).not.toBeNull();
-		expect(screen.getByRole("button", { name: "Copy" })).not.toBeNull();
 	});
 
 	it("polls for the partner's join while it is open", async () => {
@@ -356,13 +353,36 @@ describe("confirming the recovery phrase", () => {
 		).toBe(true);
 	});
 
-	it("re-reading the phrase asks about the same words", () => {
+	it("lets you go back and re-read the phrase", () => {
+		renderCeremony();
+		reachCheck();
+		click("Show me the phrase again");
+		expect(screen.getByText("alpha")).not.toBeNull();
+	});
+
+	it("draws fresh words each time you come back, so the trip can't farm them", () => {
 		renderCeremony();
 		reachCheck();
 		const first = asked();
+		// A re-draw can repeat by chance (1 in 2024); several trips cannot.
+		const seen = [first];
+		for (let trip = 0; trip < 5; trip++) {
+			click("Show me the phrase again");
+			click("Continue");
+			seen.push(asked());
+		}
+		expect(seen.some((positions) => String(positions) !== String(first))).toBe(
+			true,
+		);
+	});
+
+	it("still finishes on the words it asks for after a trip back", () => {
+		const onDone = renderCeremony();
+		reachCheck();
 		click("Show me the phrase again");
-		expect(screen.getByText("alpha")).not.toBeNull();
 		click("Continue");
-		expect(asked()).toEqual(first);
+		fillIn((position) => WORDS[position - 1]);
+		click("Continue");
+		expect(onDone).toHaveBeenCalled();
 	});
 });

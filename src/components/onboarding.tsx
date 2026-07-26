@@ -23,6 +23,7 @@ import {
 	storeSecret,
 } from "#/lib/identity.ts";
 import { matchesWordAt, pickCheckPositions } from "#/lib/recovery-check.ts";
+import { useCopy } from "#/lib/use-copy.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type {
 	InviteResult,
@@ -376,6 +377,14 @@ function JoinForm({
 	);
 }
 
+/**
+ * The recovery-phrase ceremony (handoff §2, §9.1), in two steps: the phrase on
+ * screen to copy down, then a few of its words asked back (#96). The second step
+ * is why the first can be trusted — nobody, this app included, can reset a
+ * phrase that was never written down, and a checkbox is not evidence that it
+ * was. Held together here rather than split up the tree because the space is
+ * already created by this point: there is no "cancel", only "not yet".
+ */
 export function Ceremony({
 	mnemonic,
 	busy,
@@ -395,15 +404,11 @@ export function Ceremony({
 		position: i + 1,
 		word,
 	}));
-	// Drawn once per ceremony, and held out here so a trip back to re-read the
-	// phrase doesn't reshuffle the question that sent them there.
-	const [positions] = useState(() => pickCheckPositions(words.length));
 
 	if (step === "check")
 		return (
 			<PhraseCheck
 				mnemonic={mnemonic}
-				positions={positions}
 				busy={busy}
 				error={error}
 				onBack={() => setStep("show")}
@@ -437,6 +442,7 @@ export function Ceremony({
 				/>
 				I've written down my recovery phrase.
 			</label>
+			{error && <ErrorText>{error}</ErrorText>}
 			<Button onClick={() => setStep("check")} disabled={!saved || busy}>
 				Continue
 			</Button>
@@ -449,24 +455,27 @@ export function Ceremony({
  * so a checkbox alone lets a whole space rest on words nobody ever copied down.
  * Asking a few of them back catches that while the phrase is still on screen.
  *
- * The check is a transcription check, not a gate — going back to re-read the
- * phrase is one tap away, and it asks about the same words when you return.
+ * Nothing client-side can force someone to write the phrase down, and going back
+ * to re-read it is deliberately one tap away — but the words are drawn afresh on
+ * every arrival here, so that trip can't be used to farm this screen's answers.
+ * That costs nothing to the person it's for: anyone holding the written phrase
+ * can answer any three positions.
  */
 function PhraseCheck({
 	mnemonic,
-	positions,
 	busy,
 	error,
 	onBack,
 	onPassed,
 }: {
 	mnemonic: string;
-	positions: number[];
 	busy: boolean;
 	error: string | null;
 	onBack: () => void;
 	onPassed: () => void;
 }) {
+	const wordCount = mnemonic.split(" ").length;
+	const [positions] = useState(() => pickCheckPositions(wordCount));
 	const [answers, setAnswers] = useState<Record<number, string>>({});
 	const [missed, setMissed] = useState(false);
 
@@ -767,7 +776,7 @@ export function InvitePanel({
 }) {
 	const [invite, setInvite] = useState<InviteResult | null>(null);
 	const [busy, setBusy] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const clipboard = useCopy();
 	const [error, setError] = useState<string | null>(null);
 	// Minting a code drops every prior unused invite for the couple, so a second
 	// tap kills the code already sent — the partner hits "invalid invite code"
@@ -779,20 +788,10 @@ export function InvitePanel({
 	}, [onRefresh]);
 	useLiveRefresh(refresh, { intervalMs: LIVE_REFRESH_MS });
 
-	async function handleCopy(code: string) {
-		try {
-			await navigator.clipboard.writeText(code);
-			setCopied(true);
-		} catch {
-			// The clipboard can be unavailable (insecure context, denied permission);
-			// the code is on screen to select by hand, so this is a convenience only.
-		}
-	}
-
 	async function generate() {
 		setBusy(true);
 		setError(null);
-		setCopied(false);
+		clipboard.reset();
 		try {
 			setInvite(await createInvite());
 			setConfirmingReplace(false);
@@ -820,14 +819,20 @@ export function InvitePanel({
 						<Button
 							variant="outline"
 							size="sm"
-							onClick={() => handleCopy(invite.code)}
+							onClick={() => clipboard.copy(invite.code)}
 						>
-							{copied ? "Copied" : "Copy"}
+							{clipboard.copied ? "Copied" : "Copy"}
 						</Button>
 						<p className="text-xs text-muted-foreground">
 							Expires {new Date(invite.expires_at).toLocaleTimeString()}
 						</p>
 					</div>
+					{clipboard.failed && (
+						<p className="mt-2 text-xs text-muted-foreground">
+							This browser wouldn't let us reach the clipboard — select the code
+							above and copy it by hand.
+						</p>
+					)}
 					<p className="mt-2 text-xs text-muted-foreground">
 						Waiting for them to join — this page moves on by itself once they
 						do.

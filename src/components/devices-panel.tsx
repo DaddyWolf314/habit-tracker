@@ -4,6 +4,7 @@ import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { listDevices, mintDevice, revokeDevice } from "#/lib/api.ts";
 import { clearCredentials, hasIdentity } from "#/lib/identity.ts";
+import { useCopy } from "#/lib/use-copy.ts";
 import type { Device } from "#/shared/identity.ts";
 
 /**
@@ -20,7 +21,7 @@ import type { Device } from "#/shared/identity.ts";
 export function DevicesPanel() {
 	const [devices, setDevices] = useState<Device[] | null>(null);
 	const [freshToken, setFreshToken] = useState<string | null>(null);
-	const [copied, setCopied] = useState(false);
+	const clipboard = useCopy();
 	const [label, setLabel] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -62,7 +63,7 @@ export function DevicesPanel() {
 	}
 
 	async function handleMint() {
-		setCopied(false);
+		clipboard.reset();
 		await run("Couldn't create a device token.", async () => {
 			const trimmed = label.trim();
 			const { token } = await mintDevice(trimmed === "" ? undefined : trimmed);
@@ -70,16 +71,6 @@ export function DevicesPanel() {
 			setLabel("");
 			await refresh();
 		});
-	}
-
-	async function handleCopy(token: string) {
-		try {
-			await navigator.clipboard.writeText(token);
-			setCopied(true);
-		} catch {
-			// Clipboard may be unavailable (insecure context); the token is still
-			// visible for manual copy, so this is a best-effort convenience.
-		}
 	}
 
 	async function handleRevoke(deviceId: string) {
@@ -166,21 +157,27 @@ export function DevicesPanel() {
 						<Button
 							variant="outline"
 							size="sm"
-							onClick={() => handleCopy(freshToken)}
+							onClick={() => clipboard.copy(freshToken)}
 						>
-							{copied ? "Copied" : "Copy"}
+							{clipboard.copied ? "Copied" : "Copy"}
 						</Button>
 						<Button
 							variant="ghost"
 							size="sm"
 							onClick={() => {
 								setFreshToken(null);
-								setCopied(false);
+								clipboard.reset();
 							}}
 						>
 							Done
 						</Button>
 					</div>
+					{clipboard.failed && (
+						<p className="mt-2 text-xs text-muted-foreground">
+							This browser wouldn't let us reach the clipboard — select the
+							token above and copy it by hand.
+						</p>
+					)}
 				</div>
 			)}
 
