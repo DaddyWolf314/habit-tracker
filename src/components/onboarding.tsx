@@ -22,6 +22,8 @@ import {
 	storeDeviceToken,
 	storeSecret,
 } from "#/lib/identity.ts";
+import { matchesWordAt, pickCheckPositions } from "#/lib/recovery-check.ts";
+import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type {
 	InviteResult,
 	RoleConfirmationState,
@@ -150,10 +152,12 @@ export function Onboarding() {
 		}
 	}
 
-	async function refreshSession() {
+	// Stable across renders: the invite panel polls with it (#96), and a fresh
+	// identity each render would restart that poll's interval on every keystroke.
+	const refreshSession = useCallback(async () => {
 		const session = await getSession();
 		setStage({ name: "home", session });
-	}
+	}, []);
 
 	switch (stage.name) {
 		case "loading":
@@ -372,7 +376,7 @@ function JoinForm({
 	);
 }
 
-function Ceremony({
+export function Ceremony({
 	mnemonic,
 	busy,
 	error,
@@ -383,6 +387,7 @@ function Ceremony({
 	error: string | null;
 	onDone: () => void;
 }) {
+	const [step, setStep] = useState<"show" | "check">("show");
 	const [saved, setSaved] = useState(false);
 	// Precompute stable keys: words can repeat, so position is part of identity.
 	const words = mnemonic.split(" ").map((word, i) => ({
@@ -390,12 +395,29 @@ function Ceremony({
 		position: i + 1,
 		word,
 	}));
+	// Drawn once per ceremony, and held out here so a trip back to re-read the
+	// phrase doesn't reshuffle the question that sent them there.
+	const [positions] = useState(() => pickCheckPositions(words.length));
+
+	if (step === "check")
+		return (
+			<PhraseCheck
+				mnemonic={mnemonic}
+				positions={positions}
+				busy={busy}
+				error={error}
+				onBack={() => setStep("show")}
+				onPassed={onDone}
+			/>
+		);
+
 	return (
 		<Centered>
 			<h2 className="text-2xl font-bold">This is your only key</h2>
 			<p className="max-w-md text-muted-foreground">
 				Write these 24 words down and keep them somewhere safe. We can't reset
-				them because we don't know who you are — that's the point.
+				them because we don't know who you are — that's the point. We'll ask you
+				for a few of them next.
 			</p>
 			<ol className="grid max-w-md grid-cols-3 gap-x-4 gap-y-1 rounded-md border bg-muted/40 p-4 text-sm">
 				{words.map((item) => (
@@ -415,10 +437,92 @@ function Ceremony({
 				/>
 				I've written down my recovery phrase.
 			</label>
-			{error && <ErrorText>{error}</ErrorText>}
-			<Button onClick={onDone} disabled={!saved || busy}>
-				{busy ? "…" : "Continue"}
+			<Button onClick={() => setStep("check")} disabled={!saved || busy}>
+				Continue
 			</Button>
+		</Centered>
+	);
+}
+
+/**
+ * The ceremony's confirmation step (#96): the phrase can't be reset by anyone,
+ * so a checkbox alone lets a whole space rest on words nobody ever copied down.
+ * Asking a few of them back catches that while the phrase is still on screen.
+ *
+ * The check is a transcription check, not a gate — going back to re-read the
+ * phrase is one tap away, and it asks about the same words when you return.
+ */
+function PhraseCheck({
+	mnemonic,
+	positions,
+	busy,
+	error,
+	onBack,
+	onPassed,
+}: {
+	mnemonic: string;
+	positions: number[];
+	busy: boolean;
+	error: string | null;
+	onBack: () => void;
+	onPassed: () => void;
+}) {
+	const [answers, setAnswers] = useState<Record<number, string>>({});
+	const [missed, setMissed] = useState(false);
+
+	const complete = positions.every((p) => (answers[p] ?? "").trim() !== "");
+
+	function submit() {
+		if (positions.every((p) => matchesWordAt(mnemonic, p, answers[p] ?? "")))
+			onPassed();
+		else setMissed(true);
+	}
+
+	return (
+		<Centered>
+			<h2 className="text-2xl font-bold">Check your copy</h2>
+			<p className="max-w-md text-muted-foreground">
+				Read these back from what you wrote down — not from the screen. It's the
+				only way either of us finds out now rather than later.
+			</p>
+			<div className="flex max-w-md flex-col gap-3">
+				{positions.map((position) => (
+					<label key={position} className="flex items-center gap-3 text-sm">
+						<span className="w-20 text-right text-muted-foreground tabular-nums">
+							Word {position}
+						</span>
+						<input
+							className="w-48 rounded-md border bg-background p-2 text-sm"
+							autoComplete="off"
+							autoCapitalize="none"
+							spellCheck={false}
+							value={answers[position] ?? ""}
+							onChange={(e) => {
+								setMissed(false);
+								setAnswers((prev) => ({
+									...prev,
+									[position]: e.target.value,
+								}));
+							}}
+						/>
+					</label>
+				))}
+			</div>
+			{missed && (
+				<ErrorText>
+					That doesn't match the phrase we showed you. Check what you wrote
+					down.
+				</ErrorText>
+			)}
+			{error && <ErrorText>{error}</ErrorText>}
+			<div className="flex gap-2">
+				<Button variant="outline" onClick={onBack} disabled={busy}>
+					Show me the phrase again
+				</Button>
+				<Button onClick={submit} disabled={!complete || busy}>
+					{busy ? "…" : "Continue"}
+				</Button>
+			</div>
 		</Centered>
 	);
 }
@@ -649,6 +753,13 @@ export function RolesPanel({
 	);
 }
 
+/**
+ * Minting the invite and waiting on the partner (#96). The panel is on screen
+ * precisely while the couple is one member short, so it polls the session on the
+ * shared cadence: the join lands on the *other* device, and the person staring
+ * at this one has no way to know it happened. Once the second member appears the
+ * session says so, and the home swaps this panel for role confirmation.
+ */
 export function InvitePanel({
 	onRefresh,
 }: {
@@ -656,15 +767,32 @@ export function InvitePanel({
 }) {
 	const [invite, setInvite] = useState<InviteResult | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [copied, setCopied] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	// Minting a code drops every prior unused invite for the couple, so a second
 	// tap kills the code already sent — the partner hits "invalid invite code"
 	// mid-redeem. The first mint has nothing to lose, so only replacing is guarded.
 	const [confirmingReplace, setConfirmingReplace] = useState(false);
 
+	const refresh = useCallback(async () => {
+		await onRefresh();
+	}, [onRefresh]);
+	useLiveRefresh(refresh, { intervalMs: LIVE_REFRESH_MS });
+
+	async function handleCopy(code: string) {
+		try {
+			await navigator.clipboard.writeText(code);
+			setCopied(true);
+		} catch {
+			// The clipboard can be unavailable (insecure context, denied permission);
+			// the code is on screen to select by hand, so this is a convenience only.
+		}
+	}
+
 	async function generate() {
 		setBusy(true);
 		setError(null);
+		setCopied(false);
 		try {
 			setInvite(await createInvite());
 			setConfirmingReplace(false);
@@ -688,8 +816,21 @@ export function InvitePanel({
 					<code className="block overflow-x-auto rounded bg-muted p-2 text-xs">
 						{invite.code}
 					</code>
-					<p className="mt-1 text-xs text-muted-foreground">
-						Expires {new Date(invite.expires_at).toLocaleTimeString()}
+					<div className="mt-2 flex items-center gap-3">
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => handleCopy(invite.code)}
+						>
+							{copied ? "Copied" : "Copy"}
+						</Button>
+						<p className="text-xs text-muted-foreground">
+							Expires {new Date(invite.expires_at).toLocaleTimeString()}
+						</p>
+					</div>
+					<p className="mt-2 text-xs text-muted-foreground">
+						Waiting for them to join — this page moves on by itself once they
+						do.
 					</p>
 				</div>
 			)}
@@ -718,8 +859,10 @@ export function InvitePanel({
 						{invite ? "New code" : "Create invite"}
 					</Button>
 				)}
-				<Button variant="outline" size="sm" onClick={() => onRefresh()}>
-					I've paired — refresh
+				{/* The poll covers this; it stays for the tab that was asleep through
+				    the last tick, and for anyone who doesn't want to wait one out. */}
+				<Button variant="ghost" size="sm" onClick={() => onRefresh()}>
+					Check now
 				</Button>
 			</div>
 		</div>
