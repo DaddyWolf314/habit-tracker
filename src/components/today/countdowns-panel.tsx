@@ -44,6 +44,23 @@ function taskIdOf(t: TimerView): string | null {
 }
 
 /**
+ * What a task countdown is *called*, or null if the row can't say. The id is a
+ * minted ULID now (ADR 0005), so the readable name rides the row's `tag`, routed
+ * by R22 from the assigning event's `task_name` — exactly as a stopwatch's tag
+ * carries its activity.
+ *
+ * Null has two causes, and neither may fall back to the id. A couple who once
+ * edited R22 keeps their own definition through a pack bump (adopt-on-edit,
+ * ADR 0002), so their rows are opened without a `tag`; and rows assigned before
+ * the change carry a hand-typed name *as* the id. Printing the raw value would
+ * show one couple a bare ULID; the row still reads as its timer label and
+ * remaining time, which is what the countdown is for.
+ */
+function taskNameOf(t: TimerView): string | null {
+	return t.tag !== null && t.tag !== "" ? t.tag : null;
+}
+
+/**
  * The `quality` grades a `task_completed` can carry (pack `event-types.json`).
  * The sub may leave it blank: `quality` is an `awaiting` key adjudicated by the
  * dom (ADR 0003), so an un-graded completion lands pending for the dom to rule on
@@ -143,6 +160,7 @@ export function CountdownsPanel({
 						const paused = t.paused_at != null;
 						const overdue = isCountdownExpired(c, now);
 						const taskId = taskIdOf(t);
+						const taskName = taskNameOf(t);
 						// Extend options scaled to what's left (#95): a fixed +10m is
 						// useless against a multi-day denial, so the choices track the
 						// countdown's magnitude.
@@ -154,9 +172,9 @@ export function CountdownsPanel({
 								<div className="flex items-center gap-3">
 									<div className="min-w-0 flex-1">
 										<div className="font-medium">{timerLabel(t.timer)}</div>
-										{taskId && (
+										{taskName && (
 											<div className="truncate text-xs text-muted-foreground">
-												{taskId}
+												{taskName}
 											</div>
 										)}
 									</div>
@@ -240,7 +258,7 @@ export function CountdownsPanel({
 			{closed.length > 0 && (
 				<ul className="mt-4 space-y-1 border-t pt-3">
 					{closed.map((t) => {
-						const taskId = taskIdOf(t);
+						const taskName = taskNameOf(t);
 						return (
 							<li
 								key={t.id}
@@ -248,7 +266,7 @@ export function CountdownsPanel({
 							>
 								<span className="truncate">
 									{timerLabel(t.timer)}
-									{taskId ? ` · ${taskId}` : ""}
+									{taskName ? ` · ${taskName}` : ""}
 								</span>
 								<span className="tabular-nums">{t.status}</span>
 							</li>
@@ -292,12 +310,13 @@ const ASSIGN_KINDS: Record<
 /**
  * The dom's assign form. Logs a `task_assigned`, `denial_started`, or
  * `journal_prompt` event (ADR 0004, R19) via the ordinary event path — a rule
- * opens the countdown — so there is no timer-assign endpoint. The `task_id` field
- * is a free-text name (a catalog is a future concern; issue #95). A task/denial
- * deadline is entered as a value plus a unit and routed as `duration_ms`; a
- * journal prompt has no duration (its countdown uses a policy default) and instead
- * carries an optional visibility `floor` (issue #59) — its `prompt_id` is minted
- * server-side, so it is never sent from here.
+ * opens the countdown — so there is no timer-assign endpoint. The task's name is
+ * ordinary display data (`task_name`, ADR 0005) — a catalog is a future concern
+ * (issue #95). A task/denial deadline is entered as a value plus a unit and routed
+ * as `duration_ms`; a journal prompt has no duration (its countdown uses a policy
+ * default) and instead carries an optional visibility `floor` (issue #59). Neither
+ * the `task_id` nor the `prompt_id` is sent from here: both are originating refs
+ * the server mints, and it rejects a supplied value outright.
  */
 function AssignForm({
 	partnerId,
@@ -307,7 +326,7 @@ function AssignForm({
 	onAssigned: () => void;
 }) {
 	const [kind, setKind] = useState<AssignKind>("task");
-	const [taskId, setTaskId] = useState("");
+	const [taskName, setTaskName] = useState("");
 	const [amount, setAmount] = useState("");
 	const [unit, setUnit] = useState<DurationUnit>("minutes");
 	const [floor, setFloor] = useState<Floor | "">("");
@@ -333,7 +352,7 @@ function AssignForm({
 				setError("Enter a positive duration.");
 				return;
 			}
-			if (kind === "task" && !taskId.trim()) {
+			if (kind === "task" && !taskName.trim()) {
 				setError("A task needs a name.");
 				return;
 			}
@@ -343,8 +362,9 @@ function AssignForm({
 		try {
 			// Each kind is a dom-authored event about the sub (subject) — a rule opens
 			// the countdown (ADR 0004), so this goes through logEvent, not a timer
-			// command. journal_prompt's prompt_id is minted server-side (#102), so the
-			// metadata carries only the optional floor.
+			// command. The originating refs (`prompt_id`, `task_id`) are minted
+			// server-side (ADR 0005), so neither is sent: a prompt carries only its
+			// optional floor, a task only its name and deadline.
 			let type: "task_assigned" | "denial_started" | "journal_prompt";
 			const metadata: Record<string, string | number> = {};
 			if (kind === "journal") {
@@ -354,7 +374,7 @@ function AssignForm({
 				metadata.duration_ms = durationToMs(durationValue, unit);
 				if (kind === "task") {
 					type = "task_assigned";
-					metadata.task_id = taskId.trim();
+					metadata.task_name = taskName.trim();
 				} else {
 					type = "denial_started";
 				}
@@ -365,7 +385,7 @@ function AssignForm({
 				subject: partnerId,
 				note: note.trim() || undefined,
 			});
-			setTaskId("");
+			setTaskName("");
 			setAmount("");
 			setFloor("");
 			setNote("");
@@ -395,8 +415,8 @@ function AssignForm({
 			{kind === "task" && (
 				<Input
 					placeholder="Task (e.g. dishes)"
-					value={taskId}
-					onChange={(e) => setTaskId(e.target.value)}
+					value={taskName}
+					onChange={(e) => setTaskName(e.target.value)}
 				/>
 			)}
 			{kind !== "journal" && (

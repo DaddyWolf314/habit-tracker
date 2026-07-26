@@ -51,6 +51,25 @@ describe("eventToExportRow", () => {
 		});
 	});
 
+	it("keeps a minted ref the event card hides (ADR 0005)", () => {
+		// The card stops showing `prompt_id` because a ULID tells a reader nothing.
+		// The export is not a reader in that sense — it is the abuse-edge escape
+		// hatch, so hiding must never become dropping: the pairing between a prompt
+		// and its answer has to survive a takeout.
+		const prompt: Event = {
+			id: "evt-3",
+			type: "journal_prompt",
+			actor: "member-a",
+			occurred_at: 1,
+			logged_at: 1,
+			metadata: { prompt_id: "01JB6X", floor: "sealed" },
+			visibility: "shared",
+		};
+		expect(eventToExportRow(prompt).metadata).toBe(
+			JSON.stringify({ prompt_id: "01JB6X", floor: "sealed" }),
+		);
+	});
+
 	it("maps absent optionals to null", () => {
 		const bare: Event = {
 			id: "evt-2",

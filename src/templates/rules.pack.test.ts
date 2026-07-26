@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateRules, rulesEffectiveAt } from "#/shared/engine.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
+import { matchStopwatch, type OpenStopwatch } from "#/shared/timers.ts";
 import {
 	DEFAULT_ANCHORS,
 	DEFAULT_COUNTERS,
@@ -86,9 +87,16 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 	});
 
 	it("R22 opens the task countdown from a task_assigned, routing its duration (ADR 0004)", () => {
+		// The id is minted and opaque (ADR 0005), so the row's readable label rides
+		// `tag_from` off the dom's typed `task_name` — exactly as a stopwatch's tag
+		// rides `activity`.
 		const { fired } = evaluateRules(DEFAULT_RULES, {
 			type: "task_assigned",
-			metadata: { task_id: "t7", duration_ms: 3_600_000 },
+			metadata: {
+				task_id: "01JB6X000000000000000000T7",
+				task_name: "dishes",
+				duration_ms: 3_600_000,
+			},
 			occurred_at: 1000,
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R22"]);
@@ -97,8 +105,8 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 				kind: "timer",
 				timer: "task_countdown",
 				op: "open",
-				match_on: { task_id: "t7" },
-				tag: undefined,
+				match_on: { task_id: "01JB6X000000000000000000T7" },
+				tag: "dishes",
 				duration_ms: 3_600_000,
 			},
 		]);
@@ -129,6 +137,53 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			status: "completed",
 		});
 		expect(openMatch).toMatchObject({ match_on: { task_id: "t7" } });
+	});
+
+	it("two tasks sharing a name open distinguishable countdowns, each closed by its own completion (ADR 0005)", () => {
+		// The collision minting exists to remove: assign "dishes" Monday, assign it
+		// again Tuesday while Monday's countdown still runs. With a hand-typed
+		// `task_id` both rows carried `{task_id: "dishes"}` and a close resolved
+		// oldest-open-wins, so Tuesday's completion discharged Monday's countdown.
+		const assign = (taskId: string, at: number): OpenStopwatch => {
+			const { fired } = evaluateRules(DEFAULT_RULES, {
+				type: "task_assigned",
+				metadata: { task_id: taskId, task_name: "dishes", duration_ms: 60_000 },
+				occurred_at: at,
+			});
+			const op = fired
+				.flatMap((f) => f.ops)
+				.find((o) => o.kind === "timer" && o.op === "open");
+			if (op?.kind !== "timer") throw new Error("R22 did not open a countdown");
+			return {
+				id: `row-${taskId}`,
+				timer: "task_countdown",
+				match: op.match_on ?? {},
+				opened_at: at,
+				tag: op.tag,
+			};
+		};
+		const monday = assign("01JB6X00000000000000000MON", 1);
+		const tuesday = assign("01JB6X00000000000000000TUE", 2);
+		const open = [monday, tuesday];
+
+		// Same human name on both rows — the label is display data now, so the two
+		// read alike and still resolve apart.
+		expect(monday.tag).toBe("dishes");
+		expect(tuesday.tag).toBe("dishes");
+		expect(monday.match).not.toEqual(tuesday.match);
+
+		for (const row of open) {
+			const { fired } = evaluateRules(DEFAULT_RULES, {
+				type: "task_completed",
+				metadata: { task_id: row.match.task_id },
+				occurred_at: 3,
+			});
+			const closeOp = fired
+				.flatMap((f) => f.ops)
+				.find((o) => o.kind === "timer" && o.op === "close");
+			if (closeOp?.kind !== "timer") throw new Error("R4 did not close");
+			expect(matchStopwatch(open, closeOp.match_on)?.id).toBe(row.id);
+		}
 	});
 
 	it("R23 opens the denial period from a denial_started, routing its duration (ADR 0004)", () => {

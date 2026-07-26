@@ -33,7 +33,12 @@ const MEMBERS: RoleMember[] = [
 	{ member_id: "m2", role: "dom", is_self: false },
 ];
 
-function refType(id: string, key: string, label: string): EventType {
+function refType(
+	id: string,
+	key: string,
+	label: string,
+	opts: { minted?: boolean; extra?: EventType["metadata"] } = {},
+): EventType {
 	return {
 		id,
 		label: id,
@@ -46,8 +51,10 @@ function refType(id: string, key: string, label: string): EventType {
 				ref_kind: key.replace(/_id$/, ""),
 				label,
 				required: true,
+				...(opts.minted ? { minted: true } : {}),
 				set_permission: ["dom", "sub", "switch"],
 			},
+			...opts.extra,
 		},
 		awaiting: [],
 		journaling: false,
@@ -55,8 +62,20 @@ function refType(id: string, key: string, label: string): EventType {
 }
 
 const TYPES: EventType[] = [
-	refType("session_started", "session_id", "Session"),
+	refType("session_started", "session_id", "Session", { minted: true }),
 	refType("session_ended", "session_id", "Session"),
+	refType("task_assigned", "task_id", "Task", {
+		minted: true,
+		extra: {
+			task_name: {
+				kind: "text",
+				max_length: 80,
+				label: "Task name",
+				required: true,
+				set_permission: ["dom", "sub", "switch"],
+			},
+		},
+	}),
 ];
 
 const RULES: Rule[] = [
@@ -170,14 +189,39 @@ describe("LogComposer ref fields", () => {
 		);
 	});
 
-	it("keeps free text for an originating ref", () => {
-		// `session_started` opens the stopwatch — it originates the id, and
-		// offering a running one would double-open the same session.
-		renderComposer();
+	it("hides an originating ref on both types that mint one (ADR 0005)", () => {
+		// An originating ref can have no candidates by construction — the event *is*
+		// where the id comes from — so before minting it was a required free-text
+		// field the author had to invent a value for. Now it is not user input at
+		// all; the human label beside it is.
+		for (const [type, name] of [
+			["session_started", /session/i],
+			["task_assigned", /^task$/i],
+		] as const) {
+			cleanup();
+			renderComposer();
+			chooseType(type);
+			expect(screen.queryByRole("textbox", { name })).toBeNull();
+			expect(screen.queryByRole("combobox", { name })).toBeNull();
+		}
+		expect(screen.getByRole("textbox", { name: /task name/i })).not.toBeNull();
+	});
+
+	it("logs a session_started with no hand-typed id", async () => {
+		// The case #89 could not fix from the UI: the field was required, had no
+		// candidates, and the id was invented by hand. The server mints it now, so
+		// the event carries nothing at all here.
+		const onLogged = vi.fn();
+		renderComposer(onLogged);
 		chooseType("session_started");
 
-		expect(screen.getByRole("textbox", { name: /session/i })).not.toBeNull();
-		expect(screen.queryByRole("combobox", { name: /session/i })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		expect(onLogged).toHaveBeenCalled();
+		expect(logEvent).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "session_started", metadata: {} }),
+		);
 	});
 
 	it("keeps a picked id visible after its timer stops being offered", () => {

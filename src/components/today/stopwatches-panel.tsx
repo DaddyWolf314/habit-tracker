@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { logEvent } from "#/lib/api.ts";
-import { ulid } from "#/lib/ulid.ts";
 import type { MetadataValue } from "#/shared/roles.ts";
 import { formatElapsed, type TimerView } from "#/shared/timers.ts";
 
@@ -31,11 +30,12 @@ function sessionIdOf(t: TimerView): MetadataValue | null {
 /**
  * Stopwatches panel (handoff §9 today view, §4.5; issue #90). Turns the paired
  * `session_started`/`session_ended` event model into a one-tap stopwatch: starting
- * mints the `session_id` so no one hand-pairs it, running sessions tick their
- * elapsed time live, and Stop logs the matching `session_ended` echoing the row's
- * own `session_id` and `activity` — so a typo can never leave a session open. This
- * is pure UI over the event model (rules R15/R16 open and close the stopwatch); the
- * over-max auto-close (§4.5) surfaces here as a closed row, not new model surface.
+ * needs no `session_id` at all (the server mints it, ADR 0005), running sessions
+ * tick their elapsed time live, and Stop logs the matching `session_ended`
+ * echoing the row's own `session_id` and `activity` — so a typo can never leave a
+ * session open. This is pure UI over the event model (rules R15/R16 open and
+ * close the stopwatch); the over-max auto-close (§4.5) surfaces here as a closed
+ * row, not new model surface.
  */
 export function StopwatchesPanel({
 	timers,
@@ -173,10 +173,10 @@ export function StopwatchesPanel({
 }
 
 /**
- * The start-a-session control (#90): pick an activity and start. The `session_id`
- * is minted client-side with a {@link ulid} — a fresh id per session, monotonic so
- * two sessions started in the same instant never collide — and carried on the
- * `session_started` event; rule R15 opens the stopwatch keyed by it. The event is
+ * The start-a-session control (#90): pick an activity and start. The event
+ * carries only the activity — `session_id` is an originating ref the server mints
+ * at log time (ADR 0005) and rejects if supplied, so there is no client id to
+ * make; rule R15 opens the stopwatch keyed by whatever was minted. The event is
  * about the member running the session, so `subject` is their own id.
  */
 function StartForm({
@@ -197,7 +197,7 @@ function StartForm({
 			await logEvent({
 				type: "session_started",
 				subject: subjectId,
-				metadata: { activity, session_id: ulid() },
+				metadata: { activity },
 			});
 			onStarted();
 		} catch (err) {

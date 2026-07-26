@@ -35,8 +35,9 @@ export type PermissionList = z.infer<typeof permissionListSchema>;
 
 /**
  * Values a piece of event metadata may hold. Kinds are boolean | enum | number
- * | ref only — no freeform strings (prose lives in `note`). At rest an enum or
- * ref is a string, a number is a number, a boolean is a boolean.
+ * | text | ref only — freeform prose lives in `note`, and a `text` value is a
+ * short label rather than an exception to that (ADR 0005). At rest an enum, ref,
+ * or text is a string, a number is a number, a boolean is a boolean.
  */
 export const metadataValueSchema = z.union([
 	z.boolean(),

@@ -1,8 +1,8 @@
 import type { Amendment, AmendmentInput } from "./amendments.ts";
-import type { EventType, MetadataField } from "./event-types.ts";
+import { checkMetadataValue, type EventType } from "./event-types.ts";
 import type { Event } from "./events.ts";
 import { compositeMetadata, isPending, isRetracted } from "./projections.ts";
-import type { MetadataValue, Role } from "./roles.ts";
+import type { Role } from "./roles.ts";
 
 /**
  * Authoring-time amendment validation (handoff §4.2). An amendment is checked
@@ -137,7 +137,7 @@ function validateAdjudication(
 		if (!field.adjudicated_by?.includes(ctx.actorRole as Role)) {
 			return fail(`your role may not adjudicate: ${key}`, true);
 		}
-		const valueError = checkValue(key, field, value);
+		const valueError = checkMetadataValue(key, field, value);
 		if (valueError) return fail(valueError);
 		// One active ruling per key: touching an already-ruled key is only allowed
 		// as an explicit correction of that ruling.
@@ -169,31 +169,6 @@ function activeRulingByKey(
 		for (const key of Object.keys(a.patch)) byKey.set(key, a.id);
 	}
 	return byKey;
-}
-
-/** Ensures a patch value fits the field's kind (mirrors the log-time check). */
-function checkValue(
-	key: string,
-	field: MetadataField,
-	value: MetadataValue,
-): string | null {
-	switch (field.kind) {
-		case "boolean":
-			return typeof value === "boolean" ? null : `${key} must be a boolean`;
-		case "number":
-			if (typeof value !== "number") return `${key} must be a number`;
-			if (field.min !== undefined && value < field.min)
-				return `${key} below minimum`;
-			if (field.max !== undefined && value > field.max)
-				return `${key} above maximum`;
-			return null;
-		case "enum":
-			return typeof value === "string" && field.options.includes(value)
-				? null
-				: `${key} is not an allowed option`;
-		case "ref":
-			return typeof value === "string" ? null : `${key} must be a reference`;
-	}
 }
 
 function fail(error: string, forbidden = false): AmendmentValidation {

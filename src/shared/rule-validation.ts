@@ -99,7 +99,14 @@ function checkEffectTarget(
 			}
 			return (
 				checkMatchOn(effect.match_on, type) ??
-				checkRoutedKey("tag_from", effect.tag_from, type, ["enum", "ref"]) ??
+				// A tag is display text on the timer row, so any field that reads as a
+				// short label can supply it — including `text`, which is what a minted
+				// ref's human name now lives in (`task_name`, ADR 0005).
+				checkRoutedKey("tag_from", effect.tag_from, type, [
+					"enum",
+					"ref",
+					"text",
+				]) ??
 				checkRoutedKey("duration_from", effect.duration_from, type, ["number"])
 			);
 		case "close_timer":
@@ -192,6 +199,10 @@ function checkConditionValue(
 			return typeof value === "string" && field.options.includes(value)
 				? null
 				: `condition on '${key}' is not an allowed option`;
+		case "text":
+			return typeof value === "string"
+				? null
+				: `condition on '${key}' must be text`;
 		case "ref":
 			return typeof value === "string"
 				? null

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+	type MetadataValue,
 	permissionListSchema,
 	type Role,
 	roleSchema,
@@ -32,6 +33,17 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("number"),
 		min: z.number().optional(),
 		max: z.number().optional(),
+		...metadataFieldBase,
+	}),
+	/**
+	 * A short human label the author types (`task_assigned`'s `task_name`,
+	 * ADR 0005) — display data a rule may route as a timer's `tag`, never an
+	 * identity to match on. Freeform prose stays in `note`, which is why this
+	 * carries a `max_length`: a text field is a name, not a paragraph.
+	 */
+	z.object({
+		kind: z.literal("text"),
+		max_length: z.number().int().positive().optional(),
 		...metadataFieldBase,
 	}),
 	z.object({
@@ -112,3 +124,42 @@ export const eventTypeSchema = z.object({
 	journaling: z.boolean().default(false),
 });
 export type EventType = z.infer<typeof eventTypeSchema>;
+
+/**
+ * Ensures a metadata value fits its field's kind. Returns null when it does, or
+ * the reason it doesn't, keyed by the field name.
+ *
+ * The one check both write paths run: the DO's log-time validation and the
+ * amendment path's patch validation. They were the same switch written twice,
+ * which is exactly how a kind ends up accepted at logging and rejected by a
+ * ruling (or worse, the reverse) — a value that could never be logged must not
+ * be able to arrive by amendment either.
+ */
+export function checkMetadataValue(
+	key: string,
+	field: MetadataField,
+	value: MetadataValue,
+): string | null {
+	switch (field.kind) {
+		case "boolean":
+			return typeof value === "boolean" ? null : `${key} must be a boolean`;
+		case "number":
+			if (typeof value !== "number") return `${key} must be a number`;
+			if (field.min !== undefined && value < field.min)
+				return `${key} below minimum`;
+			if (field.max !== undefined && value > field.max)
+				return `${key} above maximum`;
+			return null;
+		case "enum":
+			return typeof value === "string" && field.options.includes(value)
+				? null
+				: `${key} is not an allowed option`;
+		case "text":
+			if (typeof value !== "string") return `${key} must be text`;
+			if (field.max_length !== undefined && value.length > field.max_length)
+				return `${key} is too long`;
+			return null;
+		case "ref":
+			return typeof value === "string" ? null : `${key} must be a reference`;
+	}
+}

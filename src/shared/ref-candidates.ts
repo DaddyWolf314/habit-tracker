@@ -139,8 +139,8 @@ export function refCandidates({
 	// One row per distinct id, and specifically the *oldest* — a close resolves
 	// oldest-open-wins (`matchStopwatch` reads rows ordered by `opened_at`), so a
 	// label taken from any other row would describe a countdown the event is not
-	// about to discharge. Two rows can share an id only while refs are still
-	// hand-named; ADR 0005 removes that by minting them.
+	// about to discharge. Minting (ADR 0005) means new rows can no longer share an
+	// id at all; rows opened before it still can, so the tie-break stays.
 	const byValue = new Map<string, TimerView>();
 	for (const t of timers) {
 		if (!isCandidate(t, now)) continue;

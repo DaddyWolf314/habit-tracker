@@ -12,6 +12,7 @@ import {
 } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import { readableMetadata } from "#/shared/refs.ts";
 import {
 	type MetadataValue,
 	type Role,
@@ -188,7 +189,10 @@ function QueueItem({
 		}
 	}
 
-	const context = Object.entries(event.composite_metadata);
+	// Same rule as the event card (ADR 0005): a minted ref is machine identity, so
+	// it is not context for a ruling — the dom judges the name, the note, and the
+	// awaited key, none of which is a ULID.
+	const context = readableMetadata(type, event.composite_metadata);
 	const effects = stage === "confirm" ? previewEffects() : [];
 
 	// Adjudication evidence (#78, ADR 0003): the anchors this event type's rules

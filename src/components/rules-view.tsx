@@ -21,6 +21,7 @@ import {
 	type RuleChangeNotice,
 	ruleChangeNotice,
 } from "#/shared/notifications.ts";
+import { isOriginatingRef } from "#/shared/refs.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
 	describeCondition,
@@ -416,7 +417,17 @@ function RuleEditor({
 	} | null>(null);
 
 	const type = types.find((t) => t.id === typeId);
-	const metaKeys = type ? Object.keys(type.metadata) : [];
+	// Conditions are authored against values a person can know in advance, so an
+	// originating ref is not offerable: it is a ULID the server mints at log time
+	// (ADR 0005), and an equality condition on one could only ever match the single
+	// event that minted it. Offering it would also list two "Task" keys on
+	// `task_assigned` — the minted id and the name beside it — where only the name
+	// is a real choice.
+	const metaKeys = type
+		? Object.entries(type.metadata)
+				.filter(([, field]) => !isOriginatingRef(field))
+				.map(([key]) => key)
+		: [];
 
 	// Live preview through the one shared phrasing path (rule-describe), so what
 	// the author reads here is exactly what the rules screen and the trace chain

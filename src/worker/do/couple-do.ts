@@ -28,6 +28,7 @@ import {
 import {
 	type AwaitingEntry,
 	awaitingKeysFor,
+	checkMetadataValue,
 	type EventType,
 	eventTypeSchema,
 } from "#/shared/event-types.ts";
@@ -79,6 +80,7 @@ import {
 	RECOVERY_WAIT_MS,
 	recoveryView,
 } from "#/shared/recovery.ts";
+import { mintOriginatingRefs } from "#/shared/refs.ts";
 import {
 	type MetadataValue,
 	type Role,
@@ -1486,18 +1488,15 @@ export class CoupleDO extends DurableObject<Env> {
 			throw coupleError("BAD_REQUEST", "this event type requires a subject");
 		}
 		const loggedAt = Date.now();
-		// Minted refs (#102) are assigned here, never accepted from the client —
-		// generation is the uniqueness guarantee (a reused `prompt_id` would let one
-		// answer close the wrong prompt's countdown). Minting precedes the insert, so
-		// the stored event carries the id and a rebuild replays it verbatim.
-		const metadata = { ...input.metadata };
-		for (const [key, field] of Object.entries(type.metadata)) {
-			if (field.kind !== "ref" || !field.minted) continue;
-			if (metadata[key] !== undefined) {
-				throw coupleError("BAD_REQUEST", `${key} is assigned by the server`);
-			}
-			metadata[key] = ulid(loggedAt);
-		}
+		// Every originating ref is assigned here, never accepted from the client
+		// (ADR 0005) — generation is the uniqueness guarantee, and a hand-typed id
+		// is a name two events can share. Minting precedes the insert, so the stored
+		// event carries the id and a rebuild replays it verbatim.
+		const minted = mintOriginatingRefs(type, input.metadata, () =>
+			ulid(loggedAt),
+		);
+		if (!minted.ok) throw coupleError("BAD_REQUEST", minted.error);
+		const metadata = minted.metadata;
 		this.validateMetadata(
 			type,
 			metadata,
@@ -3012,37 +3011,23 @@ export class CoupleDO extends DurableObject<Env> {
 			if (!this.roleAllowed(role, field.set_permission)) {
 				throw coupleError("FORBIDDEN", `your role may not set: ${key}`);
 			}
-			this.checkMetadataValue(key, field, value);
+			this.assertMetadataValue(key, field, value);
 		}
 	}
 
-	private checkMetadataValue(
+	/**
+	 * The log-time value check, delegated to the shared one the amendment path
+	 * also runs (`checkMetadataValue`) so the two can never drift — a value that
+	 * cannot be logged must not be reachable by ruling either. This wrapper only
+	 * turns the reason into the DO's error shape.
+	 */
+	private assertMetadataValue(
 		key: string,
 		field: EventType["metadata"][string],
 		value: MetadataValue,
 	): void {
-		switch (field.kind) {
-			case "boolean":
-				if (typeof value !== "boolean")
-					throw coupleError("BAD_REQUEST", `${key} must be a boolean`);
-				break;
-			case "number":
-				if (typeof value !== "number")
-					throw coupleError("BAD_REQUEST", `${key} must be a number`);
-				if (field.min !== undefined && value < field.min)
-					throw coupleError("BAD_REQUEST", `${key} below minimum`);
-				if (field.max !== undefined && value > field.max)
-					throw coupleError("BAD_REQUEST", `${key} above maximum`);
-				break;
-			case "enum":
-				if (typeof value !== "string" || !field.options.includes(value))
-					throw coupleError("BAD_REQUEST", `${key} is not an allowed option`);
-				break;
-			case "ref":
-				if (typeof value !== "string")
-					throw coupleError("BAD_REQUEST", `${key} must be a reference`);
-				break;
-		}
+		const error = checkMetadataValue(key, field, value);
+		if (error) throw coupleError("BAD_REQUEST", error);
 	}
 
 	private roleAllowed(role: Role | null, permitted: Role[]): boolean {

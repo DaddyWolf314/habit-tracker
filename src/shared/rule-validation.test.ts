@@ -174,6 +174,25 @@ describe("rule creation-time validation (handoff §4.3)", () => {
 		expect(result.error).toContain("task_id");
 	});
 
+	it("accepts an open_timer tagging from a text field (ADR 0005)", () => {
+		// R22's shape after minting: the id matched on is opaque, so the timer's
+		// human label rides `tag_from` off the dom's typed `task_name`.
+		const r = rule({
+			id: "X",
+			condition: { type: "task_assigned", metadata: {} },
+			effects: [
+				{
+					verb: "open_timer",
+					timer: "task_countdown",
+					match_on: { task_id: "task_id" },
+					tag_from: "task_name",
+					duration_from: "duration_ms",
+				},
+			],
+		});
+		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+
 	it("rejects a match_on ref pointing at a key the type does not define", () => {
 		// A typo'd event key makes every close resolve an incomplete match and
 		// orphan — no session would ever close, with no error anywhere.

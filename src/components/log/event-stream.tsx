@@ -10,6 +10,7 @@ import {
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import { readableMetadata } from "#/shared/refs.ts";
 import type { TraceRow } from "#/shared/trace.ts";
 import {
 	describeTraceRow,
@@ -64,7 +65,7 @@ export function EventStream({
 					<EventRow
 						key={event.id}
 						event={event}
-						label={typeMap.get(event.type)?.label ?? event.type}
+						type={typeMap.get(event.type)}
 						members={members}
 						selfId={selfId}
 						onAmended={onAmended}
@@ -77,13 +78,14 @@ export function EventStream({
 
 function EventRow({
 	event,
-	label,
+	type,
 	members,
 	selfId,
 	onAmended,
 }: {
 	event: EventView;
-	label: string;
+	/** The event's type schema, or undefined for a type the couple has since dropped. */
+	type: EventType | undefined;
 	members: RoleMember[];
 	selfId: string | null;
 	onAmended?: () => void;
@@ -108,7 +110,12 @@ function EventRow({
 		}
 	}
 
-	const meta = Object.entries(event.composite_metadata);
+	const label = type?.label ?? event.type;
+	// A minted ref is machine identity, not content — nobody learns anything from
+	// `01JB6X…`, and nobody can act on it. The composer already hides these on the
+	// way in (ADR 0005); this is the same rule on the way out. The export still
+	// serializes every key, so the consent record stays whole.
+	const meta = readableMetadata(type, event.composite_metadata);
 	// The in-force ruling on the viewer's own event, if any (amendments arrive in
 	// created_at order, so the last adjudication is the current one). Drives the
 	// sub-side reveal below.
