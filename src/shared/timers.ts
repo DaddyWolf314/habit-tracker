@@ -293,6 +293,21 @@ export interface Countdown {
 	remaining_ms?: number | null;
 }
 
+/**
+ * Projects a timer row onto the {@link Countdown} shape the pure helpers read.
+ * One place, so every surface that reads a live deadline off a view — the Today
+ * panel's ticking row, the composer's ref picker — agrees on which fields carry
+ * it. A row with no deadline (a stopwatch) projects to zeros and reads as due.
+ */
+export function toCountdown(t: TimerView): Countdown {
+	return {
+		opened_at: t.opened_at ?? 0,
+		deadline_at: t.deadline_at ?? 0,
+		paused_at: t.paused_at,
+		remaining_ms: t.remaining_ms,
+	};
+}
+
 /** Whether a countdown is currently paused (clock frozen). */
 function isPaused(c: Countdown): boolean {
 	return c.paused_at !== undefined && c.paused_at !== null;

@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnchorsPanel } from "#/components/log/anchors-panel.tsx";
 import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
@@ -16,6 +16,7 @@ import {
 	listEventTypes,
 	listOpenPrompts,
 	listRuleHistory,
+	listTimers,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
@@ -25,7 +26,8 @@ import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
-import type { VersionedRule } from "#/shared/rules.ts";
+import { currentRule, type VersionedRule } from "#/shared/rules.ts";
+import type { TimerView } from "#/shared/timers.ts";
 
 /**
  * The Log surface (handoff §9 surface 3, plus the counters/composer it needs to
@@ -49,6 +51,9 @@ export function LogView() {
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
+	// Live timers feed the composer's ref pickers (#89) — the open rows a
+	// `session_ended`/`task_completed` can name — so they refresh with the log.
+	const [timers, setTimers] = useState<TimerView[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [composerOpen, setComposerOpen] = useState(false);
 
@@ -56,17 +61,19 @@ export function LogView() {
 	// the viewer, so loadAll owns those). Throws on failure — the two callers
 	// below decide whether a failure is loud or quiet.
 	const refresh = useCallback(async () => {
-		const [{ events }, { counters }, { anchors }, { prompts }] =
+		const [{ events }, { counters }, { anchors }, { prompts }, { timers }] =
 			await Promise.all([
 				listEvents(),
 				listCounters(),
 				listAnchors(),
 				listOpenPrompts(),
+				listTimers(),
 			]);
 		setEvents(events);
 		setCounters(counters);
 		setAnchors(anchors);
 		setOpenPrompts(prompts);
+		setTimers(timers);
 	}, []);
 
 	// Children fire this un-awaited after a mutation commits, so it must never
@@ -103,6 +110,7 @@ export function LogView() {
 				eventRes,
 				roleRes,
 				promptRes,
+				timerRes,
 			] = await Promise.all([
 				listEventTypes(),
 				listRuleHistory(),
@@ -111,6 +119,7 @@ export function LogView() {
 				listEvents(),
 				getRoles(),
 				listOpenPrompts(),
+				listTimers(),
 			]);
 			setTypes(typeRes.types);
 			setRules(ruleRes.rules);
@@ -119,6 +128,7 @@ export function LogView() {
 			setEvents(eventRes.events);
 			setMembers(roleRes.members);
 			setOpenPrompts(promptRes.prompts);
+			setTimers(timerRes.timers);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the log.");
 		}
@@ -128,6 +138,11 @@ export function LogView() {
 		setReady(true);
 		if (hasIdentity()) loadAll();
 	}, [loadAll]);
+
+	// The composer reads the definitions in force *now* (a rule's ref match is
+	// what makes a field a picker); the queue keeps the versioned history because
+	// it replays each event under the version in force at its log-time.
+	const liveRules = useMemo(() => rules.map(currentRule), [rules]);
 
 	const self = members.find((m) => m.is_self);
 	const selfRole = self?.role ?? null;
@@ -196,6 +211,8 @@ export function LogView() {
 						types={types}
 						members={members}
 						openPrompts={openPrompts}
+						rules={liveRules}
+						timers={timers}
 						onLogged={() => {
 							refreshLog();
 							setComposerOpen(false);
