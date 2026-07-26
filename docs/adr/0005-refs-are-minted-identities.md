@@ -1,11 +1,11 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # Every originating ref is a server-minted identity
 
-_Decided while building the ref pickers (#89), which ships an interim mitigation.
-Implemented by #113 — merging that flips this to `accepted`._
+_Decided while building the ref pickers (#89), which shipped an interim
+mitigation. Implemented by #113._
 
 Building the ref pickers (#89) forced the question of which refs a picker can
 offer, and the answer split the `ref` metadata kind cleanly in two: an

@@ -1,5 +1,5 @@
 {
-	"version": 6,
+	"version": 7,
 	"rules": [
 		{
 			"id": "R1",
@@ -203,6 +203,7 @@
 					"verb": "open_timer",
 					"timer": "task_countdown",
 					"match_on": { "task_id": "task_id" },
+					"tag_from": "task_name",
 					"duration_from": "duration_ms"
 				}
 			]

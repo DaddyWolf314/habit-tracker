@@ -1,5 +1,5 @@
 {
-	"version": 7,
+	"version": 8,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -64,6 +64,14 @@
 				"task_id": {
 					"kind": "ref",
 					"ref_kind": "task",
+					"label": "Task",
+					"required": true,
+					"minted": true,
+					"set_permission": ["dom", "switch"]
+				},
+				"task_name": {
+					"kind": "text",
+					"max_length": 80,
 					"label": "Task",
 					"required": true,
 					"set_permission": ["dom", "switch"]
@@ -202,6 +210,7 @@
 					"ref_kind": "session",
 					"label": "Session",
 					"required": true,
+					"minted": true,
 					"set_permission": ["dom", "sub", "switch"]
 				}
 			},

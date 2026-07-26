@@ -11,6 +11,7 @@ import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import { type RefCandidate, refCandidates } from "#/shared/ref-candidates.ts";
+import { isOriginatingRef } from "#/shared/refs.ts";
 import {
 	type MetadataValue,
 	subjectRoleOf,
@@ -26,14 +27,6 @@ const labelClass = "text-xs text-muted-foreground";
 
 /** The ghost-button styling both of the ref picker's mode switches share. */
 const switchClass = "mt-1 h-auto p-0 text-xs";
-
-/**
- * A minted ref is server-assigned at log time (#102) — it is not user input, so
- * the form neither renders it nor counts it against the required check.
- */
-function isMinted(field: MetadataField): boolean {
-	return field.kind === "ref" && field.minted === true;
-}
 
 /**
  * Log-an-event sheet (handoff §9 surface 4). The type picker offers the couple's
@@ -137,7 +130,7 @@ export function LogComposer({
 		const missing: string[] = [];
 		if (t.subject_required && !subject) missing.push("Subject");
 		for (const [key, field] of Object.entries(t.metadata)) {
-			if (isMinted(field)) continue;
+			if (isOriginatingRef(field)) continue;
 			if (field.required && !awaitedKeys.has(key) && !(meta[key] ?? "")) {
 				missing.push(field.label);
 			}
@@ -209,8 +202,11 @@ export function LogComposer({
 						</select>
 					</Field>
 
+					{/* An originating ref is server-minted (ADR 0005), so it is not user
+					    input: the form neither renders it nor counts it against the
+					    required check, and the event card hides it on the way back out. */}
 					{Object.entries(type.metadata)
-						.filter(([, field]) => !isMinted(field))
+						.filter(([, field]) => !isOriginatingRef(field))
 						.map(([key, field]) => (
 							// Keyed by type *and* key so switching types remounts the inputs:
 							// two types sharing a key (both sides of `session_id`) must not

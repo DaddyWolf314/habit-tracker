@@ -110,8 +110,11 @@ in and should not.
   convention: an *unqualified* projection name (`orgasms_lifetime`,
   `since_last_orgasm`) means the **sub's**; dom-side projections carry an
   explicit `dom_` marker (`since_dom_last_orgasm`).
-- **Metadata** — an event's typed key/values (`boolean | enum | number | ref`
-  only; freeform prose lives in `note`). _Avoid_: "fields", "attributes", "props".
+- **Metadata** — an event's typed key/values (`boolean | enum | number | text |
+  ref` only; freeform prose lives in `note`). A `text` value is a short label the
+  author types (`task_assigned`'s `task_name`) — display data a rule may route as
+  a timer's tag, never an identity to match on; the boundary against `note` is
+  length and intent, not type. _Avoid_: "fields", "attributes", "props".
 - **Ref** — a metadata value naming something outside the event: a task, a
   session, a prompt, a Protocol. Where a ref *pairs* two events, rules match it by
   strict equality and nothing else, so a ref one character off names nothing and
