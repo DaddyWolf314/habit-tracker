@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateRules, rulesEffectiveAt } from "#/shared/engine.ts";
+import { awaitingKeysFor } from "#/shared/event-types.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
 import { matchStopwatch, type OpenStopwatch } from "#/shared/timers.ts";
 import {
@@ -58,6 +59,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "infraction",
 			metadata: { severity: "minor", self_reported: true },
 			occurred_at: 1,
+			subject_role: "sub",
 		});
 		const demeritEffects = fired.flatMap((f) =>
 			f.ops.filter((op) => op.kind === "counter" && op.counter === "demerits"),
@@ -72,6 +74,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "infraction",
 			metadata: { severity: "major", self_reported: true },
 			occurred_at: 1,
+			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id)).toContain("R8");
 	});
@@ -269,9 +272,58 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		expect(fired).toEqual([]);
 	});
 
+	it("a dom-subject infraction feeds no sub projection (#122, ADR 0003)", () => {
+		// The infraction family never got ADR 0003's treatment, so every one of
+		// R6–R9 fired on a dom-subject event and landed on the *sub's* unqualified
+		// projections: their lifetime tally, their demerits, and — most visibly —
+		// their good-behaviour clock. A limit binds the dom, so citing one in an
+		// infraction about them is a normal thing to do; it must record, not score.
+		const { fired, nearMisses } = evaluateRules(DEFAULT_RULES, {
+			type: "infraction",
+			// Ruled major and not self-reported: were the sub rules in play, this is
+			// the maximum-fan-out shape. None of it may fire.
+			metadata: { severity: "major", self_reported: false },
+			occurred_at: 1,
+			subject_role: "dom",
+		});
+		expect(fired).toEqual([]);
+
+		// Dormant *legibly*: the trace says the subject is why, for each rule whose
+		// metadata would otherwise have matched.
+		const reasons = new Map(nearMisses.map((n) => [n.rule_id, n.reason]));
+		for (const id of ["R6", "R7", "R8"]) {
+			expect(reasons.get(id)).toContain("subject is not the sub");
+		}
+	});
+
+	it("a sub-subject infraction is untouched by the qualifier", () => {
+		const { fired } = evaluateRules(DEFAULT_RULES, {
+			type: "infraction",
+			metadata: { severity: "major", self_reported: false },
+			occurred_at: 1,
+			subject_role: "sub",
+		});
+		expect(fired.map((f) => f.rule_id).sort()).toEqual(["R6", "R7", "R8"]);
+	});
+
+	it("keeps a dom-subject infraction out of the queue (#122, ADR 0003)", () => {
+		// The other half: with `severity` awaited unqualified, a sub logging their
+		// dom's breach put it in the *dom's* own queue, awaiting their ruling on
+		// themselves — the exact shape ADR 0003 removed for orgasms.
+		const infraction = STARTER_EVENT_TYPES.find((t) => t.id === "infraction");
+		expect(infraction).toBeDefined();
+		if (!infraction) return;
+
+		expect(awaitingKeysFor(infraction.awaiting, "sub")).toEqual(["severity"]);
+		expect(awaitingKeysFor(infraction.awaiting, "dom")).toEqual([]);
+	});
+
 	it("replay determinism across the bump: old events keep the unqualified versions (ADR 0002 + 0003)", () => {
 		// A couple seeded on the pre-qualifier pack: drop R21 (which didn't exist)
 		// and strip subject_role to reconstruct the v3 definitions, installed at 0.
+		// Only the orgasm family is un-qualified here — the infraction rules gained
+		// their qualifier in a later bump (#122), so un-qualifying them too would
+		// put them in `upserted` and misdescribe what the ADR 0003 bump changed.
 		const BUMP_AT = 1_000;
 		// This bump predates the edge rules (R24/R25); scope the reconstruction to
 		// the qualifier-era pack so they don't pollute the added/upserted sets.
@@ -280,10 +332,17 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		);
 		const oldPack = qualifierPack
 			.filter((r) => r.id !== "R21")
-			.map((r) => ({
-				...r,
-				condition: { type: r.condition.type, metadata: r.condition.metadata },
-			}));
+			.map((r) =>
+				r.condition.type === "orgasm"
+					? {
+							...r,
+							condition: {
+								type: r.condition.type,
+								metadata: r.condition.metadata,
+							},
+						}
+					: r,
+			);
 		const installed = reconcilePack(oldPack, [], 0).added;
 		const bump = reconcilePack(qualifierPack, installed, BUMP_AT);
 		// R21 is brand-new; the qualified R10–R14 are forward-only upserts.
@@ -324,6 +383,63 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		// Logged at/after the bump: the qualified versions govern — only R21 fires.
 		const after = evaluateRules(rulesEffectiveAt(history, BUMP_AT), domOrgasm);
 		expect(after.fired.map((f) => f.rule_id)).toEqual(["R21"]);
+	});
+
+	it("replay determinism across the #122 bump: a mis-scored past stays scored (ADR 0002)", () => {
+		// Forward-only cuts both ways. Qualifying R6–R9 stops *new* dom-subject
+		// infractions touching the sub's projections, but a rebuild must still
+		// reproduce the demerits they already received — the log records what the
+		// couple actually lived with, and ADR 0002 forbids re-deriving history under
+		// today's rules. Correcting the record is an amendment's job, not a bump's.
+		const BUMP_AT = 2_000;
+		const oldPack = DEFAULT_RULES.map((r) =>
+			r.condition.type === "infraction"
+				? {
+						...r,
+						condition: {
+							type: r.condition.type,
+							metadata: r.condition.metadata,
+						},
+					}
+				: r,
+		);
+		const installed = reconcilePack(oldPack, [], 0).added;
+		const bump = reconcilePack(DEFAULT_RULES, installed, BUMP_AT);
+		expect(bump.added).toEqual([]);
+		expect(bump.upserted.map((u) => u.id).sort()).toEqual([
+			"R6",
+			"R7",
+			"R8",
+			"R9",
+		]);
+
+		const history = installed.map((rule) => ({
+			...rule,
+			versions: [
+				...rule.versions,
+				...bump.upserted.filter((u) => u.id === rule.id).map((u) => u.version),
+			],
+		}));
+		const domInfraction = {
+			type: "infraction",
+			metadata: { severity: "major", self_reported: false },
+			occurred_at: 1,
+			subject_role: "dom" as const,
+		};
+		const before = evaluateRules(
+			rulesEffectiveAt(history, BUMP_AT - 1),
+			domInfraction,
+		);
+		expect(before.fired.map((f) => f.rule_id).sort()).toEqual([
+			"R6",
+			"R7",
+			"R8",
+		]);
+		const after = evaluateRules(
+			rulesEffectiveAt(history, BUMP_AT),
+			domInfraction,
+		);
+		expect(after.fired).toEqual([]);
 	});
 
 	it("R19 opens a journal_countdown on a journal_prompt, tagged with the floor", () => {

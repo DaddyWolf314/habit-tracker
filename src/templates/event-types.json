@@ -1,5 +1,5 @@
 {
-	"version": 8,
+	"version": 9,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -117,7 +117,7 @@
 					"set_permission": ["dom", "sub", "switch"]
 				}
 			},
-			"awaiting": ["severity"],
+			"awaiting": [{ "key": "severity", "subject_role": "sub" }],
 			"note_prompt": "What happened?"
 		},
 		{
