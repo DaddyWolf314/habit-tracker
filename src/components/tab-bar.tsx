@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { CalendarDays, Scale, ScrollText, Settings } from "lucide-react";
+import { CalendarDays, ScrollText, Settings } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { getNotifications } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
@@ -9,7 +9,6 @@ import { useSession } from "#/lib/use-session.ts";
 const TABS = [
 	{ to: "/today", label: "Today", Icon: CalendarDays },
 	{ to: "/log", label: "Log", Icon: ScrollText },
-	{ to: "/rules", label: "Rules", Icon: Scale },
 	{ to: "/settings", label: "Settings", Icon: Settings },
 ] as const;
 
@@ -26,9 +25,10 @@ export const ABOVE_TAB_BAR = "bottom-24";
 /**
  * The app's navigation (#85, handoff §9). Every surface used to be a spoke off
  * `/` reachable only by a text "Back" link, so the dom's daily loop — check the
- * queue, check the countdowns, rule — crossed the hub on every hop. These four
- * are the whole app once the dynamic is live; anything rarer (devices, the
- * recovery phrase) hangs off Settings.
+ * queue, check the countdowns, rule — crossed the hub on every hop. These are
+ * the surfaces of a normal day once the dynamic is live; anything rarer (the
+ * rule editor, devices, the recovery phrase) hangs off Settings. Rules held a
+ * tab until #123 and lost it to that same test: nobody edits R12 on a Tuesday.
  *
  * Mounted from the root layout beside the pause-everything bar, and gated on
  * `roles_active`: before both partners confirm, `/` *is* the app and there is

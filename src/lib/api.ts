@@ -323,9 +323,10 @@ export function listRuleHistory(): Promise<{ rules: VersionedRule[] }> {
 
 /**
  * The rule changes the caller hasn't acknowledged yet (#64): the partner's
- * authoring actions plus any upstream default changes to adopted rules. The
- * rules screen renders each via `ruleChangeNotice` and acks with
- * {@link ackRuleChanges} once shown.
+ * authoring actions plus any upstream default changes to adopted rules.
+ * `RuleChangeNotice` on Today renders each via `ruleChangeNotice` and acks with
+ * {@link ackRuleChanges} once shown (#123 — the notice is ADR 0002's consent
+ * substitute, so it does not live with the editor in Settings).
  */
 export function listRuleChanges(): Promise<{ changes: RuleChangeNotice[] }> {
 	return apiFetch<{ changes: RuleChangeNotice[] }>("/api/rules/changes");

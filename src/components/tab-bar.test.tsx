@@ -70,19 +70,21 @@ function session(overrides: Partial<Session> = {}): Session {
 describe("TabBarNav", () => {
 	afterEach(cleanup);
 
-	it("offers the four surfaces as one persistent nav", async () => {
+	it("offers the daily surfaces as one persistent nav", async () => {
 		renderAt("/today", <TabBarNav />);
 		const nav = await screen.findByRole("navigation", { name: "Main" });
 		expect(
 			[...nav.querySelectorAll("a")].map((a) => a.textContent?.trim()),
-		).toEqual(["Today", "Log", "Rules", "Settings"]);
+			// Rules left the bar in #123: authoring automation is a rare act, and the
+			// bar's own rule is that anything rarer than daily hangs off Settings.
+		).toEqual(["Today", "Log", "Settings"]);
 	});
 
 	it("marks the surface you are on", async () => {
-		renderAt("/rules", <TabBarNav />);
+		renderAt("/log", <TabBarNav />);
 		await screen.findByRole("navigation", { name: "Main" });
 		expect(
-			screen.getByRole("link", { name: "Rules" }).getAttribute("aria-current"),
+			screen.getByRole("link", { name: "Log" }).getAttribute("aria-current"),
 		).toBe("page");
 		expect(
 			screen.getByRole("link", { name: "Today" }).getAttribute("aria-current"),

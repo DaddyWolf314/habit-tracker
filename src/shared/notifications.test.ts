@@ -98,7 +98,7 @@ describe("ruleChangeAction (#64) — one vocabulary for audit + count", () => {
 });
 
 describe("ruleChangeNotice (#64, user stories 33 + 35) — in-app content, per kind", () => {
-	// Content lives only inside the authed rules screen; the badge stays a
+	// Content lives only inside the authed app (Today, #123); the badge stays a
 	// content-free count. Each change kind composes its own sentence, so the
 	// member bound by the rules always learns what changed, not just that
 	// something did.

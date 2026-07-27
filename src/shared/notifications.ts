@@ -15,12 +15,12 @@ export interface NotificationSignals {
 	recovery_pending: boolean;
 	/**
 	 * Rule changes the partner has made since the viewer last acknowledged them
-	 * on the rules screen (#64, ADR 0002). Authoring is dom/switch-gated, so the
+	 * (#64, ADR 0002; on Today since #123). Authoring is dom/switch-gated, so the
 	 * sub who is bound by the rules is notified when they change — transparency
 	 * standing in for a consent handshake. A count only: the badge says "N new
 	 * items", never which rule changed or how. (What changed is spelled out by
-	 * {@link ruleChangeNotice} — but only inside the authed rules screen, never
-	 * on the badge.)
+	 * {@link ruleChangeNotice} — but only inside the authed app, never on the
+	 * badge.)
 	 */
 	rule_changes: number;
 }
@@ -92,7 +92,7 @@ export function ruleChangeKindFromAction(
 		: null;
 }
 
-/** One unseen rule change, as the rules screen receives it (#64, user story 35). */
+/** One unseen rule change, as the viewer's Today surface receives it (#64). */
 export interface RuleChangeNotice {
 	kind: RuleChangeKind;
 	rule_id: string;
@@ -102,8 +102,10 @@ export interface RuleChangeNotice {
 
 /**
  * The partner-facing sentence for one rule change (#64, user stories 33 + 35).
- * Rendered only inside the authed rules screen — the notification *badge* stays
- * a content-free count (see {@link unreadCount}); this is the content a member
+ * Rendered only inside the authed app — on Today since #123, where the member
+ * bound by a rule they cannot author will actually see it — while the
+ * notification *badge* stays a content-free count (see {@link unreadCount});
+ * this is the content a member
  * sees once they're looking at the rules themselves. Viewer-relative: authoring
  * kinds are always changes the *other* member made (a member's own changes need
  * no notice), and `upstream_changed` is the app's pack, not a partner.
