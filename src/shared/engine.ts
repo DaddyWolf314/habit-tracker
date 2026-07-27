@@ -1,8 +1,8 @@
+import { versionInForceAt } from "./effective-dating.ts";
 import type { MetadataValue, Role } from "./roles.ts";
 import {
 	type Rule,
 	type RuleCondition,
-	type RuleVersion,
 	ruleFromVersion,
 	type VersionedRule,
 } from "./rules.ts";
@@ -52,25 +52,6 @@ export function rulesEffectiveAt(
 		resolved.push(ruleFromVersion(rule.id, version));
 	}
 	return resolved;
-}
-
-/**
- * The version in force at `logTime`: the one with the greatest `effective_from`
- * at or before it. Returns `undefined` when every version begins after `logTime`
- * (the rule did not yet exist). Order-independent — versions need not be sorted.
- */
-function versionInForceAt(
-	versions: RuleVersion[],
-	logTime: number,
-): RuleVersion | undefined {
-	let chosen: RuleVersion | undefined;
-	for (const version of versions) {
-		if (version.effective_from > logTime) continue;
-		if (!chosen || version.effective_from >= chosen.effective_from) {
-			chosen = version;
-		}
-	}
-	return chosen;
 }
 
 /** The slice of an event the engine reasons over: its type and composite state. */

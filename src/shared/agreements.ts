@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { versionInForceAt } from "./effective-dating.ts";
 import { permissionListSchema, type Role } from "./roles.ts";
 
 /**
@@ -78,14 +79,7 @@ export function agreementEffectiveAt(
 	agreement: VersionedAgreement,
 	atMs: number,
 ): AgreementVersion | null {
-	let winner: AgreementVersion | null = null;
-	for (const version of agreement.versions) {
-		if (version.effective_from > atMs) continue;
-		if (winner === null || version.effective_from >= winner.effective_from) {
-			winner = version;
-		}
-	}
-	return winner;
+	return versionInForceAt(agreement.versions, atMs) ?? null;
 }
 
 /**
@@ -120,7 +114,7 @@ export function authorsKind(
 export type AgreementWrite =
 	| { op: "create"; kind: string; name: string; text: string }
 	| { op: "revise"; id: string; name: string; text: string }
-	| { op: "recategorize"; id: string; kind: string }
+	| { op: "rekind"; id: string; kind: string }
 	| { op: "retire"; id: string }
 	| { op: "delete"; id: string }
 	| { op: "edit_kind"; id: string; author_permission: Role[] };
@@ -190,7 +184,7 @@ export function validateAgreementWrite(
 	}
 
 	switch (write.op) {
-		case "recategorize":
+		case "rekind":
 			if (!ctx.kinds.some((k) => k.id === write.kind))
 				return deny("no such kind");
 			// The invariant, from the entry side: authoring the source is not enough,

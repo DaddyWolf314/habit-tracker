@@ -294,7 +294,7 @@ describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () =>
 		// The same escalation from the entry side: authoring in the sub's category
 		// by moving something they already own into it.
 		const r = validateAgreementWrite(
-			{ op: "recategorize", id: "ag_7f3", kind: "limit" },
+			{ op: "rekind", id: "ag_7f3", kind: "limit" },
 			ctx(),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
@@ -305,7 +305,7 @@ describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () =>
 		// can push an entry into the other's category either.
 		const limit = agreement({ id: "ag_2c", kind: "limit" });
 		const r = validateAgreementWrite(
-			{ op: "recategorize", id: "ag_2c", kind: "protocol" },
+			{ op: "rekind", id: "ag_2c", kind: "protocol" },
 			ctx({ role: "sub", agreements: [limit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
@@ -313,7 +313,7 @@ describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () =>
 
 	it("allows a re-kind between two kinds the actor authors", () => {
 		const r = validateAgreementWrite(
-			{ op: "recategorize", id: "ag_7f3", kind: "ritual" },
+			{ op: "rekind", id: "ag_7f3", kind: "ritual" },
 			ctx(),
 		);
 		expect(r.ok).toBe(true);
