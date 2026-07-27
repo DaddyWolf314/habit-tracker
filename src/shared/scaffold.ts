@@ -96,6 +96,32 @@ export function citingKeyOf(type: EventType): string | null {
 }
 
 /**
+ * The event type whose citation can count this kind of Agreement, with the key
+ * that does it — or null when nothing cites the kind.
+ *
+ * The **one** derivation: the server builds the plan from it and the screen
+ * builds its preview from it, so the confirmation cannot describe something
+ * other than what gets made. Hardcoding `ritual_completed`/`ritual_id` on either
+ * side would be a second derivation wearing a constant, and would quietly
+ * mis-describe a couple's own ritual-shaped type.
+ */
+export function countingTypeFor(
+	kindId: string,
+	types: EventType[],
+): { type: EventType; refKey: string } | null {
+	for (const type of types) {
+		const refKey = citingKeyOf(type);
+		if (!refKey) continue;
+		const field = type.metadata[refKey];
+		if (field.kind !== "ref") continue;
+		if (field.agreement_kind === undefined || field.agreement_kind === kindId) {
+			return { type, refKey };
+		}
+	}
+	return null;
+}
+
+/**
  * Whether some rule already points this Agreement at a counter — i.e. it is
  * already tracked.
  *
@@ -105,13 +131,23 @@ export function citingKeyOf(type: EventType): string | null {
  * deletes the rule is offered tracking again — both of which are right, and
  * neither of which a stored flag would get correct.
  */
-export function isTracked(agreementId: string, rules: Rule[]): boolean {
-	return rules.some(
-		(rule) =>
-			rule.enabled !== false &&
-			Object.entries(rule.condition.metadata).some(
-				([, value]) => value === agreementId,
-			) &&
-			rule.effects.some((e) => e.verb === "increment_counter"),
-	);
+export function isTracked(
+	agreementId: string,
+	rules: Rule[],
+	types: EventType[],
+): boolean {
+	const byId = new Map(types.map((t) => [t.id, t]));
+	return rules.some((rule) => {
+		if (rule.enabled === false) return false;
+		if (!rule.effects.some((e) => e.verb === "increment_counter")) return false;
+		const type = byId.get(rule.condition.type);
+		if (!type) return false;
+		// A *citation* of this term, not any value that happens to equal its id:
+		// the same question `tickFor` asks before offering a tick, so the two
+		// cannot disagree about whether a ritual is being counted.
+		return Object.entries(rule.condition.metadata).some(([key, value]) => {
+			const field = type.metadata[key];
+			return value === agreementId && field !== undefined && isCitingRef(field);
+		});
+	});
 }

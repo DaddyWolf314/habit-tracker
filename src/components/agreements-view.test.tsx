@@ -17,6 +17,7 @@ vi.mock("#/lib/api.ts", () => ({
 	reviseAgreement: vi.fn(() => Promise.resolve({})),
 	listAgreementKinds: vi.fn(() => Promise.resolve({ kinds: KINDS })),
 	listRules: vi.fn(() => Promise.resolve({ rules: [] })),
+	listEventTypes: vi.fn(() => Promise.resolve({ types: TYPES })),
 	trackAgreement: vi.fn(() => Promise.resolve({})),
 	listAgreements: vi.fn(() => Promise.resolve({ agreements: AGREEMENTS })),
 	getRoles: vi.fn(() => Promise.resolve({ members: MEMBERS })),
@@ -33,6 +34,7 @@ import {
 	trackAgreement,
 } from "#/lib/api.ts";
 import type { AgreementKind, VersionedAgreement } from "#/shared/agreements.ts";
+import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import { AgreementsView } from "./agreements-view.tsx";
 
@@ -74,6 +76,29 @@ const AGREEMENTS: VersionedAgreement[] = [
 				retired: false,
 			},
 		],
+	},
+];
+
+/** The shipped ritual type, so the tracking derivation has something to find. */
+const TYPES: EventType[] = [
+	{
+		id: "ritual_completed",
+		label: "Ritual completed",
+		valence: "positive",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: false,
+		metadata: {
+			ritual_id: {
+				kind: "ref",
+				ref_kind: "agreement",
+				agreement_kind: "ritual",
+				label: "Ritual",
+				required: false,
+				set_permission: ["dom", "sub", "switch"],
+			},
+		},
+		awaiting: [],
+		journaling: false,
 	},
 ];
 

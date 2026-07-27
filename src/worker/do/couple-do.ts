@@ -124,7 +124,7 @@ import {
 	versionFromDefinition,
 } from "#/shared/rules.ts";
 import {
-	citingKeyOf,
+	countingTypeFor,
 	isTracked,
 	type ScaffoldPlan,
 	scaffoldPlan,
@@ -1222,13 +1222,7 @@ export class CoupleDO extends DurableObject<Env> {
 		// fix. A counter's live value/updated_at is preserved (only policy changes),
 		// and a rule's `enabled` is preserved so a couple's toggle survives a bump.
 		for (const counter of DEFAULT_COUNTERS) {
-			this.sql.exec(
-				`INSERT INTO counters (id, definition, value, updated_at)
-					VALUES (?, ?, 0, NULL)
-					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
-				counter.id,
-				JSON.stringify(counter),
-			);
+			this.writeCounterDefinition(counter);
 		}
 		// Adopt-on-edit reconciliation (ADR 0002): install brand-new pack rules and
 		// upsert un-adopted ones the pack changed, but never overwrite a rule the
@@ -1704,23 +1698,14 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 		const rules = rulesEffectiveAt(this.versionedRules(), Date.now());
-		if (isTracked(agreementId, rules)) {
+		if (isTracked(agreementId, rules, this.eventTypes())) {
 			throw coupleError("CONFLICT", "this is already being tracked");
 		}
-		// The type whose citation drives the counter: the one naming this kind of
-		// Agreement. Derived, so a couple's own ritual-shaped type works too.
-		const type = this.eventTypes().find((t) => {
-			const key = citingKeyOf(t);
-			if (!key) return false;
-			const field = t.metadata[key];
-			return (
-				field.kind === "ref" &&
-				(field.agreement_kind === undefined ||
-					field.agreement_kind === agreement.kind)
-			);
-		});
-		const refKey = type ? citingKeyOf(type) : null;
-		if (!type || !refKey) {
+		const types = this.eventTypes();
+		// The one derivation, shared with the screen's preview: which type's
+		// citation can count this kind, and the key that does it.
+		const counting = countingTypeFor(agreement.kind, types);
+		if (!counting) {
 			throw coupleError(
 				"BAD_REQUEST",
 				"no event type cites this kind of agreement, so nothing could count it",
@@ -1730,19 +1715,22 @@ export class CoupleDO extends DurableObject<Env> {
 		const plan = scaffoldPlan({
 			agreementId,
 			name: version?.name ?? latestAgreementVersion(agreement).name,
-			eventTypeId: type.id,
-			refKey,
+			eventTypeId: counting.type.id,
+			refKey: counting.refKey,
 		});
 		const at = Date.now();
-		for (const definition of [plan.counter, plan.streak]) {
-			this.sql.exec(
-				`INSERT INTO counters (id, definition, value, updated_at)
-					VALUES (?, ?, 0, NULL)
-					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
-				definition.id,
-				JSON.stringify(definition),
-			);
-		}
+		// The target lands before the streak that folds it, which is the same
+		// ordering `createCounter` enforces with an explicit guard — a streak whose
+		// target does not exist folds nothing, for ever.
+		this.writeCounterDefinition(plan.counter);
+		this.writeCounterDefinition(plan.streak);
+		// The rule goes through the checks `createRule` runs, not around them:
+		// conditioning on a nonexistent key or targeting an unknown projection is
+		// caught at creation rather than silently never firing. The counters exist
+		// by now, so the rule's target validates.
+		this.assertRuleFireable(plan.rule);
+		const validation = validateRule(plan.rule, this.ruleValidationCtx());
+		if (!validation.ok) throw coupleError("BAD_REQUEST", validation.error);
 		this.writeRuleVersion(
 			{ id: plan.rule.id, origin: "custom", adopted: false },
 			versionFromDefinition(plan.rule, at),
@@ -4060,6 +4048,21 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/** A free counter id from a slug base, suffixing `_2`, `_3`… on collision. */
+	/**
+	 * Upserts a counter's *definition*, leaving its value alone — a counter's value
+	 * is a cache the log rebuilds, only its policy is being written here. Shared by
+	 * pack seeding and ritual tracking so the two cannot drift.
+	 */
+	private writeCounterDefinition(definition: CounterDefinition): void {
+		this.sql.exec(
+			`INSERT INTO counters (id, definition, value, updated_at)
+				VALUES (?, ?, 0, NULL)
+				ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
+			definition.id,
+			JSON.stringify(definition),
+		);
+	}
+
 	private uniqueCounterId(base: string): string {
 		if (!base) throw coupleError("BAD_REQUEST", "counter name is required");
 		if (!this.counterById(base)) return base;

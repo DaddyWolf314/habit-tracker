@@ -10,6 +10,7 @@ import {
 	getRoles,
 	listAgreementKinds,
 	listAgreements,
+	listEventTypes,
 	listRules,
 	retireAgreement,
 	reviseAgreement,
@@ -23,10 +24,12 @@ import {
 	latestAgreementVersion,
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
+import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { Role } from "#/shared/roles.ts";
 import type { Rule } from "#/shared/rules.ts";
 import {
+	countingTypeFor,
 	isTracked,
 	type ScaffoldPlan,
 	scaffoldPlan,
@@ -60,20 +63,26 @@ export function AgreementsView() {
 	// What already tracks a term is derived from the rules, since ADR 0006 keeps
 	// no link — the rule *is* the record that tracking happened.
 	const [rules, setRules] = useState<Rule[]>([]);
+	// Which type can count a kind is derived, not assumed — the same derivation
+	// the server makes, so the preview cannot describe a different plan (#121).
+	const [types, setTypes] = useState<EventType[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [adding, setAdding] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
-		const [kindRes, agreementRes, roleRes, ruleRes] = await Promise.all([
-			listAgreementKinds(),
-			listAgreements(),
-			getRoles(),
-			listRules(),
-		]);
+		const [kindRes, agreementRes, roleRes, ruleRes, typeRes] =
+			await Promise.all([
+				listAgreementKinds(),
+				listAgreements(),
+				getRoles(),
+				listRules(),
+				listEventTypes(),
+			]);
 		setKinds(kindRes.kinds);
 		setAgreements(agreementRes.agreements);
 		setMembers(roleRes.members);
 		setRules(ruleRes.rules);
+		setTypes(typeRes.types);
 	}, []);
 
 	const reload = useCallback(async () => {
@@ -172,6 +181,7 @@ export function AgreementsView() {
 					now={now}
 					canAuthor={authorsKind(kinds, kind.id, selfRole)}
 					rules={rules}
+					types={types}
 					adding={adding === kind.id}
 					onAdd={() => setAdding(kind.id)}
 					onCancelAdd={() => setAdding(null)}
@@ -217,6 +227,7 @@ function KindSection({
 	now,
 	canAuthor,
 	rules,
+	types,
 	adding,
 	onAdd,
 	onCancelAdd,
@@ -228,6 +239,7 @@ function KindSection({
 	now: number;
 	canAuthor: boolean;
 	rules: Rule[];
+	types: EventType[];
 	adding: boolean;
 	onAdd: () => void;
 	onCancelAdd: () => void;
@@ -274,10 +286,12 @@ function KindSection({
 							canAuthor={canAuthor}
 							// Only a ritual has something to count, and only while nothing
 							// already counts it (#121).
-							trackable={
-								canAuthor &&
-								kind.id === "ritual" &&
-								!isTracked(agreement.id, rules)
+							// Trackable only where something could count it: a type must
+							// cite this kind, and nothing may already be counting it.
+							counting={
+								canAuthor && !isTracked(agreement.id, rules, types)
+									? countingTypeFor(kind.id, types)
+									: null
 							}
 							onChanged={onChanged}
 							onError={onError}
@@ -294,7 +308,7 @@ function AgreementRow({
 	agreement,
 	now,
 	canAuthor,
-	trackable = false,
+	counting = null,
 	retired = false,
 	onChanged,
 	onError,
@@ -302,8 +316,8 @@ function AgreementRow({
 	agreement: VersionedAgreement;
 	now: number;
 	canAuthor: boolean;
-	/** This term can still be tracked: its author, not retired, not already. */
-	trackable?: boolean;
+	/** The type that would count this term, when it can still be tracked. */
+	counting?: { type: EventType; refKey: string } | null;
 	/** Already retired: still its author's to delete, never to revise or re-retire. */
 	retired?: boolean;
 	onChanged: () => void;
@@ -401,10 +415,11 @@ function AgreementRow({
 				/>
 			)}
 
-			{open && trackable && (
+			{open && counting && !retired && (
 				<TrackOffer
 					agreement={agreement}
 					name={current?.name ?? latest.name}
+					counting={counting}
 					onDone={onChanged}
 					onError={onError}
 				/>
@@ -570,26 +585,29 @@ function AgreementForm({
 function TrackOffer({
 	agreement,
 	name,
+	counting,
 	onDone,
 	onError,
 }: {
 	agreement: VersionedAgreement;
 	name: string;
+	/** Derived by `countingTypeFor` — the same answer the server reaches. */
+	counting: { type: EventType; refKey: string };
 	onDone: () => void;
 	onError: (message: string) => void;
 }) {
 	const [preview, setPreview] = useState<ScaffoldPlan | null>(null);
 	const [busy, setBusy] = useState(false);
 
-	// The preview is computed, not fetched: the server derives the same plan from
-	// the same function, so a round trip could only add a way for them to differ.
+	// Computed, not fetched: both sides build from `scaffoldPlan` over the same
+	// derived inputs, so a round trip could only add a way for them to differ.
 	function show() {
 		setPreview(
 			scaffoldPlan({
 				agreementId: agreement.id,
 				name,
-				eventTypeId: "ritual_completed",
-				refKey: "ritual_id",
+				eventTypeId: counting.type.id,
+				refKey: counting.refKey,
 			}),
 		);
 	}

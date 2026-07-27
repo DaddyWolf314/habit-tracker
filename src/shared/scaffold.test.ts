@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { EventType } from "./event-types.ts";
 import type { Rule } from "./rules.ts";
-import { citingKeyOf, isTracked, scaffoldPlan } from "./scaffold.ts";
+import {
+	citingKeyOf,
+	countingTypeFor,
+	isTracked,
+	scaffoldPlan,
+} from "./scaffold.ts";
 
 /**
  * Tracking a ritual (#121, stories 34–37). The plan is a pure function of the
@@ -118,6 +123,54 @@ describe("citingKeyOf", () => {
 	});
 });
 
+/** The shipped shape: a ritual type whose citation names a ritual Agreement. */
+const RITUAL_TYPE: EventType = {
+	id: "ritual_completed",
+	label: "Ritual completed",
+	valence: "positive",
+	log_permission: ["dom", "sub", "switch"],
+	subject_required: false,
+	metadata: {
+		ritual_id: {
+			kind: "ref",
+			ref_kind: "agreement",
+			agreement_kind: "ritual",
+			label: "Ritual",
+			required: false,
+			set_permission: ["dom", "sub", "switch"],
+		},
+	},
+	awaiting: [],
+	journaling: false,
+};
+
+describe("countingTypeFor", () => {
+	it("finds the type whose citation counts this kind", () => {
+		expect(countingTypeFor("ritual", [RITUAL_TYPE])).toMatchObject({
+			refKey: "ritual_id",
+		});
+	});
+
+	it("finds nothing for a kind no type cites", () => {
+		// A limit has nothing to count, so tracking must refuse rather than create
+		// a counter no event could ever move.
+		expect(countingTypeFor("limit", [RITUAL_TYPE])).toBeNull();
+	});
+
+	it("accepts a type that cites any kind", () => {
+		const unnarrowed = {
+			...RITUAL_TYPE,
+			metadata: {
+				ritual_id: {
+					...RITUAL_TYPE.metadata.ritual_id,
+					agreement_kind: undefined,
+				},
+			},
+		} as EventType;
+		expect(countingTypeFor("ritual", [unnarrowed])).not.toBeNull();
+	});
+});
+
 describe("isTracked", () => {
 	const tracking: Rule = {
 		id: "track_ag_7f3",
@@ -127,16 +180,18 @@ describe("isTracked", () => {
 	};
 
 	it("is true once a rule points the Agreement at a counter", () => {
-		expect(isTracked("ag_7f3", [tracking])).toBe(true);
+		expect(isTracked("ag_7f3", [tracking], [RITUAL_TYPE])).toBe(true);
 	});
 
 	it("is false for an Agreement nothing points at", () => {
-		expect(isTracked("ag_other", [tracking])).toBe(false);
+		expect(isTracked("ag_other", [tracking], [RITUAL_TYPE])).toBe(false);
 	});
 
 	it("is false once the rule is disabled", () => {
 		// Offering tracking again is right: a disabled rule counts nothing.
-		expect(isTracked("ag_7f3", [{ ...tracking, enabled: false }])).toBe(false);
+		expect(
+			isTracked("ag_7f3", [{ ...tracking, enabled: false }], [RITUAL_TYPE]),
+		).toBe(false);
 	});
 
 	it("recognises a recipe the couple built by hand", () => {
@@ -147,7 +202,7 @@ describe("isTracked", () => {
 			id: "my-own-rule",
 			effects: [{ verb: "increment_counter", counter: "kneels", by: 1 }],
 		};
-		expect(isTracked("ag_7f3", [handmade])).toBe(true);
+		expect(isTracked("ag_7f3", [handmade], [RITUAL_TYPE])).toBe(true);
 	});
 
 	it("ignores a rule that cites it without counting anything", () => {
@@ -155,6 +210,42 @@ describe("isTracked", () => {
 			...tracking,
 			effects: [{ verb: "reset_anchor", anchor: "since_last_infraction" }],
 		};
-		expect(isTracked("ag_7f3", [noCounter])).toBe(false);
+		expect(isTracked("ag_7f3", [noCounter], [RITUAL_TYPE])).toBe(false);
+	});
+});
+
+describe("isTracked — only a citation counts", () => {
+	it("ignores a value that merely equals the id on a non-citing key", () => {
+		// Tightened after review: matching any metadata value would read a
+		// coincidence as tracking, and disagree with what `tickFor` offers.
+		const coincidence: Rule = {
+			id: "r",
+			enabled: true,
+			condition: { type: "ritual_completed", metadata: { late: "ag_7f3" } },
+			effects: [{ verb: "increment_counter", counter: "c", by: 1 }],
+		};
+		const withLate = {
+			...RITUAL_TYPE,
+			metadata: {
+				...RITUAL_TYPE.metadata,
+				late: {
+					kind: "text",
+					label: "Late",
+					required: false,
+					set_permission: ["dom", "sub", "switch"],
+				},
+			},
+		} as EventType;
+		expect(isTracked("ag_7f3", [coincidence], [withLate])).toBe(false);
+	});
+
+	it("ignores a rule whose type the couple no longer has", () => {
+		const tracking: Rule = {
+			id: "r",
+			enabled: true,
+			condition: { type: "gone", metadata: { ritual_id: "ag_7f3" } },
+			effects: [{ verb: "increment_counter", counter: "c", by: 1 }],
+		};
+		expect(isTracked("ag_7f3", [tracking], [RITUAL_TYPE])).toBe(false);
 	});
 });
