@@ -455,6 +455,17 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				);
 			}
 		}
+		const agreementTrackMatch = path.match(
+			/^\/api\/agreements\/([^/]+)\/track$/,
+		);
+		if (agreementTrackMatch && method === "POST") {
+			const id = decodeURIComponent(agreementTrackMatch[1]);
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.trackAgreement(auth.identityHash, id)
+					.then((plan) => json(plan, 201)),
+			);
+		}
 		const agreementRetireMatch = path.match(
 			/^\/api\/agreements\/([^/]+)\/retire$/,
 		);

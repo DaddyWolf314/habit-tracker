@@ -6,7 +6,9 @@ import {
 	type AgreementVersion,
 	type AgreementWrite,
 	agreementChangeKind,
+	agreementEffectiveAt,
 	agreementRefKeys,
+	authorsKind,
 	type CreateAgreementInput,
 	latestAgreementVersion,
 	type ReviseAgreementInput,
@@ -121,6 +123,12 @@ import {
 	ruleSchema,
 	versionFromDefinition,
 } from "#/shared/rules.ts";
+import {
+	countingTypeFor,
+	isTracked,
+	type ScaffoldPlan,
+	scaffoldPlan,
+} from "#/shared/scaffold.ts";
 import { catchUpFireAt, dueItems, earliestFireAt } from "#/shared/scheduler.ts";
 import {
 	DAY_MS,
@@ -1214,13 +1222,7 @@ export class CoupleDO extends DurableObject<Env> {
 		// fix. A counter's live value/updated_at is preserved (only policy changes),
 		// and a rule's `enabled` is preserved so a couple's toggle survives a bump.
 		for (const counter of DEFAULT_COUNTERS) {
-			this.sql.exec(
-				`INSERT INTO counters (id, definition, value, updated_at)
-					VALUES (?, ?, 0, NULL)
-					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
-				counter.id,
-				JSON.stringify(counter),
-			);
+			this.writeCounterDefinition(counter);
 		}
 		// Adopt-on-edit reconciliation (ADR 0002): install brand-new pack rules and
 		// upsert un-adopted ones the pack changed, but never overwrite a rule the
@@ -1663,6 +1665,78 @@ export class CoupleDO extends DurableObject<Env> {
 		const kind = this.agreementKinds().find((k) => k.id === id);
 		if (!kind) throw coupleError("NOT_FOUND", "no such kind");
 		return kind;
+	}
+
+	/**
+	 * Tracks a ritual Agreement (#121, stories 34–37): creates its target counter,
+	 * the streak folding it, and the rule pointing its citation at the counter.
+	 *
+	 * One call rather than three from the client, so a half-built recipe cannot
+	 * survive a dropped connection — a counter with no rule counts nothing, and a
+	 * rule with no counter fires into a projection that does not exist. The DO
+	 * serialises per couple, so all three land or none do.
+	 *
+	 * What comes out is **ordinary** (ADR 0006): nothing records that these were
+	 * generated, nothing links them back, and editing or deleting any of them is
+	 * the same act it would be for a hand-made one. Scaffolding is a starting
+	 * point, not a relationship.
+	 *
+	 * Gated to a member who authors the Agreement's kind *and* may author rules —
+	 * this creates automation, and ADR 0002 keeps that to dom/switch.
+	 */
+	async trackAgreement(
+		identityHash: string,
+		agreementId: string,
+	): Promise<ScaffoldPlan> {
+		const me = this.requireAuthor(identityHash);
+		const agreement = this.agreements().find((a) => a.id === agreementId);
+		if (!agreement) throw coupleError("NOT_FOUND", "no such agreement");
+		if (!authorsKind(this.agreementKinds(), agreement.kind, me.role as Role)) {
+			throw coupleError(
+				"FORBIDDEN",
+				"your role doesn't author this kind of agreement",
+			);
+		}
+		const rules = rulesEffectiveAt(this.versionedRules(), Date.now());
+		if (isTracked(agreementId, rules, this.eventTypes())) {
+			throw coupleError("CONFLICT", "this is already being tracked");
+		}
+		const types = this.eventTypes();
+		// The one derivation, shared with the screen's preview: which type's
+		// citation can count this kind, and the key that does it.
+		const counting = countingTypeFor(agreement.kind, types);
+		if (!counting) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"no event type cites this kind of agreement, so nothing could count it",
+			);
+		}
+		const version = agreementEffectiveAt(agreement, Date.now());
+		const plan = scaffoldPlan({
+			agreementId,
+			name: version?.name ?? latestAgreementVersion(agreement).name,
+			eventTypeId: counting.type.id,
+			refKey: counting.refKey,
+		});
+		const at = Date.now();
+		// The target lands before the streak that folds it, which is the same
+		// ordering `createCounter` enforces with an explicit guard — a streak whose
+		// target does not exist folds nothing, for ever.
+		this.writeCounterDefinition(plan.counter);
+		this.writeCounterDefinition(plan.streak);
+		// The rule goes through the checks `createRule` runs, not around them:
+		// conditioning on a nonexistent key or targeting an unknown projection is
+		// caught at creation rather than silently never firing. The counters exist
+		// by now, so the rule's target validates.
+		this.assertRuleFireable(plan.rule);
+		const validation = validateRule(plan.rule, this.ruleValidationCtx());
+		if (!validation.ok) throw coupleError("BAD_REQUEST", validation.error);
+		this.writeRuleVersion(
+			{ id: plan.rule.id, origin: "custom", adopted: false },
+			versionFromDefinition(plan.rule, at),
+		);
+		this.recordRuleChange(me, "create", plan.rule.id, at);
+		return plan;
 	}
 
 	/** The couple's event-type schema set (starter seven + any custom types). */
@@ -3974,6 +4048,21 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/** A free counter id from a slug base, suffixing `_2`, `_3`… on collision. */
+	/**
+	 * Upserts a counter's *definition*, leaving its value alone — a counter's value
+	 * is a cache the log rebuilds, only its policy is being written here. Shared by
+	 * pack seeding and ritual tracking so the two cannot drift.
+	 */
+	private writeCounterDefinition(definition: CounterDefinition): void {
+		this.sql.exec(
+			`INSERT INTO counters (id, definition, value, updated_at)
+				VALUES (?, ?, 0, NULL)
+				ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
+			definition.id,
+			JSON.stringify(definition),
+		);
+	}
+
 	private uniqueCounterId(base: string): string {
 		if (!base) throw coupleError("BAD_REQUEST", "counter name is required");
 		if (!this.counterById(base)) return base;

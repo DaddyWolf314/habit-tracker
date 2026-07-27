@@ -10,8 +10,11 @@ import {
 	getRoles,
 	listAgreementKinds,
 	listAgreements,
+	listEventTypes,
+	listRules,
 	retireAgreement,
 	reviseAgreement,
+	trackAgreement,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import {
@@ -21,8 +24,16 @@ import {
 	latestAgreementVersion,
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
+import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { Role } from "#/shared/roles.ts";
+import type { Rule } from "#/shared/rules.ts";
+import {
+	countingTypeFor,
+	isTracked,
+	type ScaffoldPlan,
+	scaffoldPlan,
+} from "#/shared/scaffold.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
@@ -49,18 +60,29 @@ export function AgreementsView() {
 	const [kinds, setKinds] = useState<AgreementKind[]>([]);
 	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
+	// What already tracks a term is derived from the rules, since ADR 0006 keeps
+	// no link — the rule *is* the record that tracking happened.
+	const [rules, setRules] = useState<Rule[]>([]);
+	// Which type can count a kind is derived, not assumed — the same derivation
+	// the server makes, so the preview cannot describe a different plan (#121).
+	const [types, setTypes] = useState<EventType[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [adding, setAdding] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
-		const [kindRes, agreementRes, roleRes] = await Promise.all([
-			listAgreementKinds(),
-			listAgreements(),
-			getRoles(),
-		]);
+		const [kindRes, agreementRes, roleRes, ruleRes, typeRes] =
+			await Promise.all([
+				listAgreementKinds(),
+				listAgreements(),
+				getRoles(),
+				listRules(),
+				listEventTypes(),
+			]);
 		setKinds(kindRes.kinds);
 		setAgreements(agreementRes.agreements);
 		setMembers(roleRes.members);
+		setRules(ruleRes.rules);
+		setTypes(typeRes.types);
 	}, []);
 
 	const reload = useCallback(async () => {
@@ -158,6 +180,8 @@ export function AgreementsView() {
 					agreements={live.filter((a) => a.kind === kind.id)}
 					now={now}
 					canAuthor={authorsKind(kinds, kind.id, selfRole)}
+					rules={rules}
+					types={types}
 					adding={adding === kind.id}
 					onAdd={() => setAdding(kind.id)}
 					onCancelAdd={() => setAdding(null)}
@@ -202,6 +226,8 @@ function KindSection({
 	agreements,
 	now,
 	canAuthor,
+	rules,
+	types,
 	adding,
 	onAdd,
 	onCancelAdd,
@@ -212,6 +238,8 @@ function KindSection({
 	agreements: VersionedAgreement[];
 	now: number;
 	canAuthor: boolean;
+	rules: Rule[];
+	types: EventType[];
 	adding: boolean;
 	onAdd: () => void;
 	onCancelAdd: () => void;
@@ -256,6 +284,15 @@ function KindSection({
 							agreement={agreement}
 							now={now}
 							canAuthor={canAuthor}
+							// Only a ritual has something to count, and only while nothing
+							// already counts it (#121).
+							// Trackable only where something could count it: a type must
+							// cite this kind, and nothing may already be counting it.
+							counting={
+								canAuthor && !isTracked(agreement.id, rules, types)
+									? countingTypeFor(kind.id, types)
+									: null
+							}
 							onChanged={onChanged}
 							onError={onError}
 						/>
@@ -271,6 +308,7 @@ function AgreementRow({
 	agreement,
 	now,
 	canAuthor,
+	counting = null,
 	retired = false,
 	onChanged,
 	onError,
@@ -278,6 +316,8 @@ function AgreementRow({
 	agreement: VersionedAgreement;
 	now: number;
 	canAuthor: boolean;
+	/** The type that would count this term, when it can still be tracked. */
+	counting?: { type: EventType; refKey: string } | null;
 	/** Already retired: still its author's to delete, never to revise or re-retire. */
 	retired?: boolean;
 	onChanged: () => void;
@@ -371,6 +411,16 @@ function AgreementRow({
 					}
 					onDone={onChanged}
 					onCancel={() => setEditing(false)}
+					onError={onError}
+				/>
+			)}
+
+			{open && counting && !retired && (
+				<TrackOffer
+					agreement={agreement}
+					name={current?.name ?? latest.name}
+					counting={counting}
+					onDone={onChanged}
 					onError={onError}
 				/>
 			)}
@@ -516,6 +566,100 @@ function AgreementForm({
 					{busy ? "…" : submitLabel}
 				</Button>
 				<Button size="sm" variant="ghost" onClick={onCancel} disabled={busy}>
+					Cancel
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * "Track this" — the one-time scaffold (#121, stories 34–35).
+ *
+ * The plan is rendered *before* anything is created, from the same pure function
+ * the server builds from, so the confirmation cannot describe something other
+ * than what gets made. Three artifacts appearing unannounced in a couple's
+ * counters and rules would be exactly the kind of surprise this app avoids
+ * elsewhere by showing mechanical fallout up front (§8.4's confirm sheet).
+ */
+function TrackOffer({
+	agreement,
+	name,
+	counting,
+	onDone,
+	onError,
+}: {
+	agreement: VersionedAgreement;
+	name: string;
+	/** Derived by `countingTypeFor` — the same answer the server reaches. */
+	counting: { type: EventType; refKey: string };
+	onDone: () => void;
+	onError: (message: string) => void;
+}) {
+	const [preview, setPreview] = useState<ScaffoldPlan | null>(null);
+	const [busy, setBusy] = useState(false);
+
+	// Computed, not fetched: both sides build from `scaffoldPlan` over the same
+	// derived inputs, so a round trip could only add a way for them to differ.
+	function show() {
+		setPreview(
+			scaffoldPlan({
+				agreementId: agreement.id,
+				name,
+				eventTypeId: counting.type.id,
+				refKey: counting.refKey,
+			}),
+		);
+	}
+
+	async function confirm() {
+		setBusy(true);
+		try {
+			await trackAgreement(agreement.id);
+			setPreview(null);
+			onDone();
+		} catch (err) {
+			onError(err instanceof Error ? err.message : "Couldn't track that.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	if (!preview) {
+		return (
+			<div className="mt-2 border-t pt-2">
+				<Button size="xs" variant="outline" onClick={show}>
+					Track this
+				</Button>
+				<p className="mt-1 text-xs text-muted-foreground">
+					Counts each time it's done, and keeps a streak.
+				</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="mt-2 space-y-2 border-t pt-2 text-xs">
+			<p className="font-medium">This will add:</p>
+			<ul className="space-y-1 text-muted-foreground">
+				<li>a daily counter, “{preview.counter.name}”, with a target of 1</li>
+				<li>a streak of it, “{preview.streak.name}”</li>
+				<li>a rule counting every “{name}” you log</li>
+			</ul>
+			<p className="text-muted-foreground">
+				They become ordinary counters and an ordinary rule — edit or remove them
+				like any other.
+			</p>
+			<div className="flex gap-2">
+				<Button size="xs" onClick={confirm} disabled={busy}>
+					{busy ? "…" : "Add them"}
+				</Button>
+				<Button
+					size="xs"
+					variant="ghost"
+					onClick={() => setPreview(null)}
+					disabled={busy}
+				>
 					Cancel
 				</Button>
 			</div>
