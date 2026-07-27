@@ -24,7 +24,7 @@ import {
 const KINDS: AgreementKind[] = [
 	{ id: "protocol", label: "Protocol", author_permission: ["dom", "switch"] },
 	{ id: "ritual", label: "Ritual", author_permission: ["dom", "switch"] },
-	{ id: "limit", label: "Limit", author_permission: ["sub"] },
+	{ id: "limit", label: "Limit", author_permission: ["sub", "switch"] },
 	{
 		id: "safeword",
 		label: "Safeword",
@@ -209,11 +209,15 @@ describe("authorsKind", () => {
 		expect(authorsKind(KINDS, "nonsense", "dom")).toBe(false);
 	});
 
-	it("leaves limits unauthorable in a switch/switch couple", () => {
-		// The ADR 0003 dormancy pattern, inherited: a `sub`-only kind matches
-		// nobody when neither member holds that role. Recorded as a known
-		// consequence rather than special-cased.
-		expect(authorsKind(KINDS, "limit", "switch")).toBe(false);
+	it("lets a switch author limits — a switch is partly a sub", () => {
+		// ADR 0003's dormancy was the wrong thing to inherit here. A dom/sub
+		// qualifier matching nobody is harmless for *rules* — scoring simply stops
+		// — but a `sub`-only limit kind would mean a switch/switch couple could
+		// not record a boundary at all, which is the opposite of what the kind is
+		// for. A switch holds both sides of the dynamic, so they author both.
+		expect(authorsKind(KINDS, "limit", "switch")).toBe(true);
+		// The property that matters is unchanged: a plain dom still cannot.
+		expect(authorsKind(KINDS, "limit", "dom")).toBe(false);
 	});
 });
 

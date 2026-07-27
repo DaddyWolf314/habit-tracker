@@ -45,8 +45,18 @@ export type AgreementVersion = z.infer<typeof agreementVersionSchema>;
 
 /**
  * A per-couple kind, shaped like an event type: a label plus the roles that may
- * author entries of it. `author_permission` is what makes "the sub alone writes
- * limits" structural, and {@link validateAgreementWrite} guards the layer above it.
+ * author entries of it. `author_permission` is what makes "the dom does not write
+ * the sub's limits" structural, and {@link validateAgreementWrite} guards the
+ * layer above it.
+ *
+ * A `switch` authors both sides, sub-side kinds included: they hold both halves
+ * of the dynamic, and a `sub`-only limit kind would leave a switch/switch couple
+ * unable to record a boundary at all. Known consequence, stated here because it
+ * is easier to meet as a decision than to discover: authorship is **by role, not
+ * by member**, so in a `switch`+`sub` couple the switch — the dom-side partner
+ * there — can edit that sub's limits. Closing that means scoping a limit to the
+ * member it protects rather than to a role, which is a model change, not a
+ * permission tweak.
  */
 export const agreementKindSchema = z.object({
 	id: z.string().min(1),
