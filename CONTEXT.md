@@ -42,8 +42,10 @@ in and should not.
 - **Agreement kind** — a per-couple definition classifying an Agreement
   (`protocol`, `ritual`, `limit`, `safeword`, or the couple's own), carrying the
   role list that may author entries of that kind. Authorship follows the kind:
-  limits are the sub's alone. Neither a kind's author list nor an Agreement's kind
-  may be set to one the actor does not already hold. _Avoid_: "category", "type"
+  a plain dom never authors limits. A **switch authors both sides** — they hold
+  both halves of the dynamic — so authorship is by role, not by member. Neither a
+  kind's author list nor an Agreement's kind may be set to one the actor does not
+  already hold. _Avoid_: "category", "type"
   (an **event type** is a different thing); treating kind as display-only.
 - **Protocol** — the Agreement kind for a standing expectation the sub is held to
   and can break. One kind among several, not the name of the corpus. _Avoid_:

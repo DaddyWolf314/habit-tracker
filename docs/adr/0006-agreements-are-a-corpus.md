@@ -26,7 +26,17 @@ expectation, a recurring practice, a limit, a safeword. It is **not** scoped to
   `author_permission` role list. The pack seeds `protocol`, `ritual`, `limit` and
   `safeword`; couples may add their own. Authorship therefore follows the kind:
   the dom writes protocols and rituals with the sub notified (ADR 0002 parity),
-  the **sub alone** writes limits, safewords are either-authored.
+  the **sub side alone** writes limits, safewords are either-authored. A `switch`
+  authors both sides, limits included: they hold both halves of the dynamic, and
+  a `sub`-only limit kind would leave a switch/switch couple unable to record a
+  boundary at all — ADR 0003's dormancy is right for rules, whose scoring simply
+  stops, and wrong for the kind that exists to record a boundary.
+
+  Authorship is therefore **by role, not by member**, and that has a known hole:
+  in a `switch` + `sub` couple the switch is the dom-side partner and can still
+  edit that sub's limits. Closing it means scoping a limit to the member it
+  protects rather than to a role — a model change, not a permission tweak — so it
+  is recorded rather than patched around.
 - **You cannot grant yourself authorship you do not hold.** Editing a kind's
   `author_permission` requires already being in it, and an Agreement's `kind` may
   only be set to one you author. Without both halves the safety property is
