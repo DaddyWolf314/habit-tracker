@@ -61,7 +61,23 @@ function refType(
 	};
 }
 
+/** A journaling-capable type — the only kind that carries the visibility axis. */
+function journalType(id: string): EventType {
+	return {
+		id,
+		label: id,
+		valence: "neutral",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: false,
+		metadata: {},
+		awaiting: [],
+		journaling: true,
+	};
+}
+
 const TYPES: EventType[] = [
+	journalType("journal_entry"),
+	journalType("morning_pages"),
 	refType("session_started", "session_id", "Session", { minted: true }),
 	refType("session_ended", "session_id", "Session"),
 	refType("task_assigned", "task_id", "Task", {
@@ -260,6 +276,89 @@ describe("LogComposer ref fields", () => {
 
 		expect(logEvent).toHaveBeenCalledWith(
 			expect.objectContaining({ metadata: { session_id: "sess-off-list" } }),
+		);
+	});
+});
+
+/**
+ * Visibility is chosen, never defaulted (#94, ADR 0001, CONTEXT §Visibility —
+ * "the author *always* chooses explicitly; there is no silent default"). A
+ * preselected control makes `shared` — the *most exposed* level — the outcome of
+ * touching nothing, on the axis the design treats as an inviolable right. These
+ * assert the choice is demanded and carried, never how the control is built.
+ */
+describe("LogComposer visibility", () => {
+	// The mocked `logEvent` is one `vi.fn()` for the whole file, so its calls
+	// accumulate across tests; these assert on *not* being called and need it
+	// clean rather than merely restored.
+	beforeEach(() => vi.mocked(logEvent).mockClear());
+	afterEach(cleanup);
+
+	/** The visibility select, present only on a journaling-capable type. */
+	const picker = () => screen.getByRole("combobox", { name: /visibility/i });
+
+	it("preselects nothing on a journaling type", () => {
+		renderComposer();
+		chooseType("journal_entry");
+
+		expect(picker()).toHaveProperty("value", "");
+	});
+
+	it("refuses to log a journaling entry until visibility is chosen", async () => {
+		renderComposer();
+		chooseType("journal_entry");
+
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		expect(logEvent).not.toHaveBeenCalled();
+		expect(screen.getByText(/please fill in:.*visibility/i)).not.toBeNull();
+	});
+
+	it("logs the chosen visibility once it is set", async () => {
+		const onLogged = vi.fn();
+		renderComposer(onLogged);
+		chooseType("journal_entry");
+
+		fireEvent.change(picker(), { target: { value: "secret" } });
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		expect(onLogged).toHaveBeenCalled();
+		expect(logEvent).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "journal_entry", visibility: "secret" }),
+		);
+	});
+
+	it("does not carry a choice across a type switch", async () => {
+		// Two journaling types in a row: the second must ask again rather than
+		// inherit what the first was set to, or the choice stops being per-entry.
+		renderComposer();
+		chooseType("journal_entry");
+		fireEvent.change(picker(), { target: { value: "secret" } });
+
+		chooseType("morning_pages");
+
+		expect(picker()).toHaveProperty("value", "");
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+		expect(logEvent).not.toHaveBeenCalled();
+	});
+
+	it("leaves a non-journaling type alone", async () => {
+		// The gate is journaling capability, not the composer: an accountability
+		// type has no choice to make and must not gain a blocking one.
+		const onLogged = vi.fn();
+		renderComposer(onLogged);
+		chooseType("session_started");
+
+		expect(screen.queryByRole("combobox", { name: /visibility/i })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		expect(onLogged).toHaveBeenCalled();
+		expect(logEvent).toHaveBeenCalledWith(
+			expect.objectContaining({ visibility: "shared" }),
 		);
 	});
 });
