@@ -946,6 +946,31 @@ export class CoupleDO extends DurableObject<Env> {
 	 * remaining devices" (#41) rather than a badge that fires identically for the
 	 * partner who started the takeover and already knows.
 	 */
+	/**
+	 * How many events await this caller's ruling (#136, handoff §8.1) — the number
+	 * behind Today's queue entry.
+	 *
+	 * Its own endpoint so the screen never has to hold the log to derive it.
+	 * Shipping the whole log to the home screen every poll is exactly the shape
+	 * #88 recorded as the reason for an aggregate endpoint, and this count is one
+	 * integer.
+	 */
+	async queueCount(identityHash: string): Promise<{ awaiting: number }> {
+		const me = this.requireMember(identityHash);
+		const events = await this.listEvents(identityHash, null);
+		return {
+			awaiting: awaitingMyRuling({
+				events,
+				types: this.eventTypes(),
+				members: this.members().map((m) => ({
+					member_id: m.id,
+					role: (m.role as Role | null) ?? null,
+				})),
+				role: (me.role as Role | null) ?? null,
+			}),
+		};
+	}
+
 	async notificationCount(identityHash: string): Promise<{ unread: number }> {
 		const me = this.requireMember(identityHash);
 		// Unlimited: an event awaiting adjudication must stay in the badge however

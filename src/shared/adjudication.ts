@@ -6,7 +6,7 @@ import {
 	type MetadataField,
 } from "./event-types.ts";
 import type { EventView } from "./events.ts";
-import { formatMetaValue, type Role } from "./roles.ts";
+import { formatMetaValue, type Role, subjectRoleOf } from "./roles.ts";
 
 /**
  * The read model behind the adjudication queue UX (handoff §4.2, §9 surface 3).
@@ -42,6 +42,45 @@ export function awaitedRulings(
 			(key) => rulable.has(key) && event.composite_metadata[key] === undefined,
 		)
 		.map((key) => ({ key, field: type.metadata[key] }));
+}
+
+/** One queued event: what it is, its type, and the keys this role must rule. */
+export interface QueuedEvent {
+	event: EventView;
+	type: EventType;
+	rulings: AwaitedRuling[];
+}
+
+/**
+ * The adjudication queue for one role — every event with a key they must rule
+ * (handoff §8). The queue is "a lens over the log, not a holding pen"
+ * (CONTEXT §Adjudication queue), so it is a fold rather than a stored list.
+ *
+ * One fold, because two would drift: the dom's queue panel and the Today entry's
+ * count are the same question asked twice, and a change to what counts as
+ * awaiting a ruling has to reach both. Subject-qualified `awaiting` entries
+ * (ADR 0003) resolve through the same seam the DO uses.
+ */
+export function queueFor({
+	events,
+	types,
+	members,
+	role,
+}: {
+	events: EventView[];
+	types: EventType[];
+	members: Array<{ member_id: string; role: Role | null }>;
+	role: Role | null;
+}): QueuedEvent[] {
+	if (role === null) return [];
+	const byId = new Map(types.map((t) => [t.id, t]));
+	return events.flatMap((event) => {
+		const type = byId.get(event.type);
+		if (!type) return [];
+		const subjectRole = subjectRoleOf(event.subject, members);
+		const rulings = awaitedRulings(event, type, role, subjectRole);
+		return rulings.length > 0 ? [{ event, type, rulings }] : [];
+	});
 }
 
 /**

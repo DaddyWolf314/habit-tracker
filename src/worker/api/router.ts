@@ -491,6 +491,13 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 			});
 		}
 
+		// #136: the number behind Today's queue entry. One integer, so the screen
+		// never holds the log to derive it.
+		if (path === "/api/queue/count" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.queueCount(auth.identityHash).then((r) => json(r)),
+			);
+		}
 		// #136: the sub's half of the queue signal. Acknowledged from the log,
 		// where a ruling's content is; explicit, so a GET never mutates.
 		if (path === "/api/rulings/seen" && method === "POST") {

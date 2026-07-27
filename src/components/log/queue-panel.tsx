@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
-import { type AwaitedRuling, awaitedRulings } from "#/shared/adjudication.ts";
+import { type AwaitedRuling, queueFor } from "#/shared/adjudication.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
 import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
 import {
@@ -58,16 +58,9 @@ export function QueuePanel({
 	selfRole: Role | null;
 	onAmended: () => void;
 }) {
-	const typeMap = new Map(types.map((t) => [t.id, t]));
-	const queue = events.flatMap((event) => {
-		const type = typeMap.get(event.type);
-		if (!type) return [];
-		// Subject-qualified awaiting entries (ADR 0003) ask for no ruling when the
-		// event's subject doesn't match — resolved through the same seam the DO uses.
-		const subjectRole = subjectRoleOf(event.subject, members);
-		const rulings = awaitedRulings(event, type, selfRole, subjectRole);
-		return rulings.length > 0 ? [{ event, type, rulings }] : [];
-	});
+	// The same fold Today's queue entry counts (#136): two derivations of "what
+	// awaits my ruling" would eventually disagree about what counts.
+	const queue = queueFor({ events, types, members, role: selfRole });
 
 	if (queue.length === 0) return null;
 

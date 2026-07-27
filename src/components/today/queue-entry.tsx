@@ -1,41 +1,22 @@
 import { Link } from "@tanstack/react-router";
-import type { EventType } from "#/shared/event-types.ts";
-import type { EventView } from "#/shared/events.ts";
-import type { RoleMember } from "#/shared/identity.ts";
-import { awaitingMyRuling } from "#/shared/notifications.ts";
-import type { Role } from "#/shared/roles.ts";
 
 /**
  * "2 awaiting your ruling" — handoff §8.1's entry point to the queue, on the
  * screen it asks for (#136).
  *
- * Shown only to a member with something to rule, which is gated on the type's
- * `adjudicated_by` rather than on being the dom — the same gating the queue
- * itself uses, and what handles a switch without a special case.
+ * Takes the count rather than deriving it: the number comes from `queueCount`,
+ * which folds the log server-side. Holding the log on Today to derive one
+ * integer is the shape #88 recorded as the reason an aggregate endpoint is
+ * wanted, and it would be a poor trade for a screen that polls every 15s.
  *
  * There is deliberately **no sub-side counterpart**. §8.3 gives the sub a "quiet
  * 'awaiting ruling' chip" on their own log entries and says "no countdowns, no
  * anxiety mechanics"; a row on their home screen counting how many of their
  * confessions are still being judged is the thing that line declines. The chips
- * already exist in the event stream.
+ * already exist in the event stream, and a sub's count is zero here because
+ * nothing awaits *their* ruling.
  */
-export function QueueEntry({
-	events,
-	types,
-	members,
-	selfRole,
-}: {
-	events: EventView[];
-	types: EventType[];
-	members: RoleMember[];
-	selfRole: Role | null;
-}) {
-	const count = awaitingMyRuling({
-		events,
-		types,
-		members: members.map((m) => ({ member_id: m.member_id, role: m.role })),
-		role: selfRole,
-	});
+export function QueueEntry({ count }: { count: number }) {
 	if (count === 0) return null;
 
 	return (

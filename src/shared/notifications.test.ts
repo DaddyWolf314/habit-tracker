@@ -432,7 +432,10 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 		).toBe(0);
 	});
 
-	it("counts each correction, since each is a new thing to hear", () => {
+	it("counts one event once, however often its ruling was corrected", () => {
+		// Counting corrections separately would inflate "N new items" for one thing
+		// that happened — the same overstatement this issue removes from the dom's
+		// side of the count.
 		const corrected = pendingEvent({
 			amendments: [
 				ruling(),
@@ -445,6 +448,24 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 				memberId: "sub1",
 				seenAt: 0,
 			}),
-		).toBe(2);
+		).toBe(1);
+	});
+
+	it("counts a correction the sub has not seen", () => {
+		// The first ruling was seen; the correction changes what they were told, so
+		// it is news again — still one event, still one item.
+		const corrected = pendingEvent({
+			amendments: [
+				ruling(),
+				ruling({ id: "a2", created_at: 6_000, supersedes: "a1" }),
+			],
+		});
+		expect(
+			rulingsReceivedSince({
+				events: [corrected],
+				memberId: "sub1",
+				seenAt: 5_500,
+			}),
+		).toBe(1);
 	});
 });
