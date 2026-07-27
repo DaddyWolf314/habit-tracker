@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { anchorElapsedDays, anchorElapsedMs, resetAnchor } from "./anchors.ts";
+import {
+	anchorElapsedDays,
+	anchorElapsedMs,
+	elapsedDaysText,
+	resetAnchor,
+} from "./anchors.ts";
 
 const DAY = 86_400_000;
 
@@ -37,5 +42,28 @@ describe("elapsed-since display (handoff §4.5 — live 'days since')", () => {
 
 	it("floors elapsed milliseconds to whole days for the display", () => {
 		expect(anchorElapsedDays(3 * DAY + 5_000)).toBe(3);
+	});
+});
+
+describe("elapsedDaysText — the one formatter every surface reads", () => {
+	it("reads a never-reset anchor as a dash, not a zero", () => {
+		// "0 days since your last infraction" asserts something that never
+		// happened; the clock has simply never started.
+		expect(elapsedDaysText(null)).toBe("—");
+	});
+
+	it("reads the day it happened as today", () => {
+		expect(elapsedDaysText(0)).toBe("today");
+	});
+
+	it("does not pluralise one day", () => {
+		expect(elapsedDaysText(1)).toBe("1 day");
+		expect(elapsedDaysText(2)).toBe("2 days");
+	});
+
+	it("has a compact form for the queue's evidence chips", () => {
+		expect(elapsedDaysText(3, true)).toBe("3d");
+		// Never-reset stays a dash even compact: there is no short way to say it.
+		expect(elapsedDaysText(null, true)).toBe("—");
 	});
 });

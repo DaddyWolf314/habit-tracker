@@ -1,6 +1,5 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AnchorsPanel } from "#/components/log/anchors-panel.tsx";
 import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
@@ -49,6 +48,9 @@ export function LogView() {
 	// event's log-time (ADR 0002), exactly as the DO will on commit.
 	const [rules, setRules] = useState<VersionedRule[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
+	// Still loaded though the clocks moved to Today (#88): the queue's confirm
+	// sheet reads them to show a ruling's fallout ("reset good-behaviour streak")
+	// before it commits.
 	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	const [events, setEvents] = useState<EventView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
@@ -195,7 +197,6 @@ export function LogView() {
 				selfRole={selfRole}
 				onAmended={refreshLog}
 			/>
-			<AnchorsPanel anchors={anchors} />
 
 			{/* Counters collapse behind a summary row so the surface reads as a log,
 			    not a dashboard — the stream below gets the page (#91). */}

@@ -3,6 +3,10 @@ import type { RoleMember } from "#/shared/identity.ts";
 // The metadata-value formatter is shared (client and DO agree how a value
 // reads); re-exported here so log components keep importing it alongside the
 // other display helpers.
+// The anchor formatter moved to `shared/anchors.ts` when the clocks moved to
+// Today (#88): it is "one formatter for every surface" by its own description,
+// and two surfaces in different folders now read it.
+export { elapsedDaysText } from "#/shared/anchors.ts";
 export { formatMetaValue } from "#/shared/roles.ts";
 // Trace decoding and effect phrasing live in the Trace ledger (shared) so the DO
 // writes and the UI reads through one taxonomy; re-exported here so the log
@@ -21,18 +25,6 @@ export function formatTime(ms: number): string {
 		hour: "numeric",
 		minute: "2-digit",
 	});
-}
-
-/**
- * The "days since" phrasing for an anchor (handoff §4.5, #78) — one formatter
- * for every surface: null (never reset) reads "—", 0 reads "today". `compact`
- * yields the chip form ("3d") the adjudication evidence uses.
- */
-export function elapsedDaysText(days: number | null, compact = false): string {
-	if (days === null) return "—";
-	if (days === 0) return "today";
-	if (compact) return `${days}d`;
-	return days === 1 ? "1 day" : `${days} days`;
 }
 
 /** Coarse "waiting 9h" style elapsed label for pending events (handoff §8). */

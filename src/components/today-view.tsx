@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { RuleChangeNotice } from "#/components/rule-change-notice.tsx";
+import { AnchorsPanel } from "#/components/today/anchors-panel.tsx";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
 import { QueueEntry } from "#/components/today/queue-entry.tsx";
@@ -8,6 +9,7 @@ import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
 import { TargetsPanel } from "#/components/today/targets-panel.tsx";
 import {
 	getRoles,
+	listAnchors,
 	listCounters,
 	listEventTypes,
 	listOpenPrompts,
@@ -17,6 +19,7 @@ import {
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
+import type { AnchorView } from "#/shared/anchors.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -39,6 +42,7 @@ export function TodayView() {
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
+	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	// What says which target rows are tickable (#135), so it has to stay current:
 	// see the poll below.
 	const [rules, setRules] = useState<Rule[]>([]);
@@ -55,6 +59,7 @@ export function TodayView() {
 			{ rules },
 			{ types },
 			{ awaiting },
+			{ anchors },
 		] = await Promise.all([
 			listTimers(),
 			listOpenPrompts(),
@@ -62,6 +67,7 @@ export function TodayView() {
 			listRules(),
 			listEventTypes(),
 			queueCount(),
+			listAnchors(),
 		]);
 		setTimers(timers);
 		setOpenPrompts(prompts);
@@ -74,6 +80,7 @@ export function TodayView() {
 		setRules(rules);
 		setTypes(types);
 		setAwaiting(awaiting);
+		setAnchors(anchors);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -100,6 +107,7 @@ export function TodayView() {
 				ruleRes,
 				typeRes,
 				eventRes,
+				anchorRes,
 			] = await Promise.all([
 				listTimers(),
 				getRoles(),
@@ -108,6 +116,7 @@ export function TodayView() {
 				listRules(),
 				listEventTypes(),
 				queueCount(),
+				listAnchors(),
 			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
@@ -116,6 +125,7 @@ export function TodayView() {
 			setRules(ruleRes.rules);
 			setTypes(typeRes.types);
 			setAwaiting(eventRes.awaiting);
+			setAnchors(anchorRes.anchors);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -165,6 +175,8 @@ export function TodayView() {
 			<RuleChangeNotice />
 
 			<QueueEntry count={awaiting} />
+
+			<AnchorsPanel anchors={anchors} />
 
 			<TargetsPanel
 				counters={counters}
