@@ -1,6 +1,18 @@
 import { DurableObject } from "cloudflare:workers";
 import type { ZodType } from "zod";
 import { ulid } from "#/lib/ulid.ts";
+import {
+	type AgreementKind,
+	type AgreementVersion,
+	type AgreementWrite,
+	agreementChangeKind,
+	agreementEffectiveAt,
+	agreementRefKeys,
+	type CreateAgreementInput,
+	type ReviseAgreementInput,
+	type VersionedAgreement,
+	validateAgreementWrite,
+} from "#/shared/agreements.ts";
 import { validateAmendment } from "#/shared/amendment-validation.ts";
 import type { Amendment, AmendmentInput } from "#/shared/amendments.ts";
 import { amendmentInputSchema } from "#/shared/amendments.ts";
@@ -1391,6 +1403,182 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		this.recordRuleChange(me, "disable", id, at);
 		return { purged: false };
+	}
+
+	// ── The Agreement corpus (#121, ADR 0006) ──────────────────────────────────
+
+	/** The couple's Agreement kinds — who may author what. Readable by both. */
+	async listAgreementKinds(identityHash: string): Promise<AgreementKind[]> {
+		this.requireMember(identityHash);
+		return this.agreementKinds();
+	}
+
+	/**
+	 * The whole corpus with every version (ADR 0006). Readable by both members
+	 * unconditionally: an Agreement is always shared, because a term binds two
+	 * people and both must be able to read it. There is no visibility axis here to
+	 * filter on — the journaling gradient deliberately does not extend to terms.
+	 */
+	async listAgreements(identityHash: string): Promise<VersionedAgreement[]> {
+		this.requireMember(identityHash);
+		return this.agreements();
+	}
+
+	/**
+	 * Adds an Agreement (ADR 0006). Authorship is the kind's, not a blanket
+	 * dom/switch gate like rule authoring — the sub side alone writes limits — so
+	 * this goes through {@link validateAgreementWrite} rather than
+	 * `requireAuthor`, and every other write below does the same.
+	 */
+	async createAgreement(
+		identityHash: string,
+		input: CreateAgreementInput,
+	): Promise<VersionedAgreement> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertAgreementWrite(
+			{ op: "create", kind: input.kind, name: input.name, text: input.text },
+			me,
+		);
+		const id = ulid();
+		const at = Date.now();
+		this.sql.exec(
+			`INSERT INTO agreements (id, kind, created_at) VALUES (?, ?, ?)`,
+			id,
+			input.kind,
+			at,
+		);
+		this.writeAgreementVersion(id, {
+			// A future `effective_from` is the announced draft — visible to both,
+			// governing nothing until it arrives (ADR 0006: there is no draft state).
+			effective_from: input.effective_from ?? at,
+			name: input.name,
+			text: input.text,
+			review_cadence_days: input.review_cadence_days,
+			retired: false,
+		});
+		this.recordAgreementChange("create", id, at, { kind: input.kind });
+		return this.requireAgreement(id);
+	}
+
+	/**
+	 * Appends a version (ADR 0006). Never overwrites: a citation resolved against
+	 * an older version must keep resolving there, which is what makes editing a
+	 * term non-retroactive. Name travels with the prose, so a rename does not
+	 * rewrite how past citations read.
+	 */
+	async reviseAgreement(
+		identityHash: string,
+		id: string,
+		input: ReviseAgreementInput,
+	): Promise<VersionedAgreement> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertAgreementWrite(
+			{ op: "revise", id, name: input.name, text: input.text },
+			me,
+		);
+		const at = Date.now();
+		this.writeAgreementVersion(id, {
+			effective_from: input.effective_from ?? at,
+			name: input.name,
+			text: input.text,
+			review_cadence_days: input.review_cadence_days,
+			retired: false,
+		});
+		this.recordAgreementChange("revise", id, at, { name: input.name });
+		return this.requireAgreement(id);
+	}
+
+	/**
+	 * Moves an Agreement to another kind. Guarded on *both* kinds by the validator:
+	 * authoring only the source would let someone walk an entry they own into the
+	 * other role's category, which is the escalation the direct-edit gate closes.
+	 */
+	async rekindAgreement(
+		identityHash: string,
+		id: string,
+		kind: string,
+	): Promise<VersionedAgreement> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertAgreementWrite({ op: "rekind", id, kind }, me);
+		const at = Date.now();
+		this.sql.exec(`UPDATE agreements SET kind = ? WHERE id = ?`, kind, id);
+		this.recordAgreementChange("rekind", id, at, { kind });
+		return this.requireAgreement(id);
+	}
+
+	/**
+	 * Retires an Agreement — the real "remove" (ADR 0002's "delete collapses to
+	 * disable", applied to terms). Effective-dated like any other change, so a
+	 * retired Agreement leaves the picker while staying readable and resolvable
+	 * for every citation already made against it.
+	 */
+	async retireAgreement(
+		identityHash: string,
+		id: string,
+		effectiveFrom?: number,
+	): Promise<VersionedAgreement> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertAgreementWrite({ op: "retire", id }, me);
+		const at = Date.now();
+		const current = agreementEffectiveAt(this.requireAgreement(id), at);
+		this.writeAgreementVersion(id, {
+			effective_from: effectiveFrom ?? at,
+			// Carry the current wording forward: retiring ends a term, it does not
+			// blank what the term said.
+			name: current?.name ?? "",
+			text: current?.text ?? "",
+			review_cadence_days: undefined,
+			retired: true,
+		});
+		this.recordAgreementChange("retire", id, at, null);
+		return this.requireAgreement(id);
+	}
+
+	/**
+	 * Hard-deletes an Agreement nothing has ever cited. The validator refuses any
+	 * that has been: a term someone was held to must not be able to leave the
+	 * record, so a cited one can only ever be retired.
+	 */
+	async deleteAgreement(
+		identityHash: string,
+		id: string,
+	): Promise<{ id: string }> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertAgreementWrite({ op: "delete", id }, me);
+		const at = Date.now();
+		this.sql.exec(`DELETE FROM agreement_versions WHERE agreement_id = ?`, id);
+		this.sql.exec(`DELETE FROM agreements WHERE id = ?`, id);
+		this.recordAgreementChange("delete", id, at, null);
+		return { id };
+	}
+
+	/**
+	 * Changes who authors a kind. The validator requires the caller to already be
+	 * in the list — without that the dom simply adds themselves to `limit` and
+	 * every guard on the entries below becomes decoration.
+	 */
+	async updateAgreementKind(
+		identityHash: string,
+		id: string,
+		authorPermission: Role[],
+	): Promise<AgreementKind> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertAgreementWrite(
+			{ op: "edit_kind", id, author_permission: authorPermission },
+			me,
+		);
+		const at = Date.now();
+		this.sql.exec(
+			`UPDATE agreement_kinds SET author_permission = ? WHERE id = ?`,
+			JSON.stringify(authorPermission),
+			id,
+		);
+		this.recordAgreementChange("edit_kind", id, at, {
+			author_permission: authorPermission,
+		});
+		const kind = this.agreementKinds().find((k) => k.id === id);
+		if (!kind) throw coupleError("NOT_FOUND", "no such kind");
+		return kind;
 	}
 
 	/** The couple's event-type schema set (starter seven + any custom types). */
@@ -3293,6 +3481,174 @@ export class CoupleDO extends DurableObject<Env> {
 			version.effective_from,
 			definition,
 			enabled,
+		);
+	}
+
+	/**
+	 * A member on a live, role-confirmed dynamic. Agreement writes need the same
+	 * preconditions rule authoring does; what differs is *who* may write, and that
+	 * is the kind's business rather than a blanket dom/switch gate.
+	 */
+	private requireLiveMember(identityHash: string): MemberRow {
+		const me = this.requireMember(identityHash);
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		return me;
+	}
+
+	/**
+	 * The single authorization bridge for the corpus: build the context, ask
+	 * `validateAgreementWrite`, and turn a refusal into the right status. The DO
+	 * holds no authorship logic of its own, so the escalation invariant lives in
+	 * exactly one unit-tested place (ADR 0006).
+	 */
+	private assertAgreementWrite(write: AgreementWrite, me: MemberRow): void {
+		const result = validateAgreementWrite(write, {
+			role: (me.role as Role | null) ?? null,
+			kinds: this.agreementKinds(),
+			agreements: this.agreements(),
+			cited: this.citedAgreementIds(),
+		});
+		if (result.ok) return;
+		// `forbidden` separates "you may not" from "that makes no sense", the same
+		// split `validateAmendment` draws. A missing row is a 404, not a 400.
+		if (result.forbidden) throw coupleError("FORBIDDEN", result.error);
+		if (result.error.startsWith("no such")) {
+			throw coupleError("NOT_FOUND", result.error);
+		}
+		throw coupleError("BAD_REQUEST", result.error);
+	}
+
+	private agreementKinds(): AgreementKind[] {
+		return this.sql
+			.exec<{
+				id: string;
+				label: string;
+				author_permission: string;
+			}>(`SELECT id, label, author_permission FROM agreement_kinds ORDER BY id`)
+			.toArray()
+			.map((row) => ({
+				id: row.id,
+				label: row.label,
+				author_permission: JSON.parse(row.author_permission) as Role[],
+			}));
+	}
+
+	private agreements(): VersionedAgreement[] {
+		const rows = this.sql
+			.exec<{
+				id: string;
+				kind: string;
+			}>(`SELECT id, kind FROM agreements ORDER BY created_at`)
+			.toArray();
+		return rows.map((row) => ({
+			id: row.id,
+			kind: row.kind,
+			versions: this.agreementVersions(row.id),
+		}));
+	}
+
+	private agreementVersions(id: string): AgreementVersion[] {
+		return this.sql
+			.exec<{
+				effective_from: number;
+				name: string;
+				text: string;
+				review_cadence_days: number | null;
+				retired: number;
+			}>(
+				`SELECT effective_from, name, text, review_cadence_days, retired
+					FROM agreement_versions WHERE agreement_id = ? ORDER BY effective_from`,
+				id,
+			)
+			.toArray()
+			.map((row) => ({
+				effective_from: row.effective_from,
+				name: row.name,
+				text: row.text,
+				review_cadence_days: row.review_cadence_days ?? undefined,
+				retired: row.retired === 1,
+			}));
+	}
+
+	private requireAgreement(id: string): VersionedAgreement {
+		const found = this.agreements().find((a) => a.id === id);
+		if (!found) throw coupleError("NOT_FOUND", "no such agreement");
+		return found;
+	}
+
+	private writeAgreementVersion(id: string, version: AgreementVersion): void {
+		this.sql.exec(
+			`INSERT INTO agreement_versions
+				(agreement_id, effective_from, name, text, review_cadence_days, retired)
+				VALUES (?, ?, ?, ?, ?, ?)
+				ON CONFLICT(agreement_id, effective_from) DO UPDATE SET
+					name = excluded.name,
+					text = excluded.text,
+					review_cadence_days = excluded.review_cadence_days,
+					retired = excluded.retired`,
+			id,
+			version.effective_from,
+			version.name,
+			version.text,
+			version.review_cadence_days ?? null,
+			version.retired ? 1 : 0,
+		);
+	}
+
+	/**
+	 * Every Agreement id an event has ever cited — the gate on hard delete.
+	 *
+	 * Derived from the schema rather than a hardcoded key list: a metadata field
+	 * declaring `ref_kind: "agreement"` is exactly the statement "this key names an
+	 * Agreement", so a custom type citing the corpus is covered the day it exists.
+	 * Returns empty until the pack change lands and any key declares it — which is
+	 * correct, not a stub: nothing can have cited a corpus that nothing points at.
+	 */
+	private citedAgreementIds(): Set<string> {
+		const keys = new Set<string>();
+		for (const type of this.eventTypes()) {
+			for (const key of agreementRefKeys(type)) keys.add(key);
+		}
+		const cited = new Set<string>();
+		if (keys.size === 0) return cited;
+		for (const row of this.sql
+			.exec<{ metadata: string }>(`SELECT metadata FROM events`)
+			.toArray()) {
+			let parsed: Record<string, unknown>;
+			try {
+				parsed = JSON.parse(row.metadata) as Record<string, unknown>;
+			} catch {
+				continue; // An unreadable row cannot be shown to cite anything.
+			}
+			for (const key of keys) {
+				const value = parsed[key];
+				if (typeof value === "string" && value !== "") cited.add(value);
+			}
+		}
+		return cited;
+	}
+
+	/**
+	 * Records a corpus change in the consent history (ADR 0006). This table has
+	 * described itself as the place "later agreements append" since Phase 1; a
+	 * change to the couple's terms is exactly that, which is why it lands here
+	 * rather than in the `audit_log` that records rule authoring.
+	 */
+	private recordAgreementChange(
+		op: AgreementWrite["op"],
+		id: string,
+		at: number,
+		detail: Record<string, unknown> | null,
+	): void {
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, ?, ?)`,
+			crypto.randomUUID(),
+			at,
+			agreementChangeKind(op),
+			JSON.stringify({ agreement_id: id, ...(detail ?? {}) }),
 		);
 	}
 

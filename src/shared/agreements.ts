@@ -109,6 +109,28 @@ export function agreementsInForce(
 	});
 }
 
+/**
+ * The metadata keys on a type that cite an Agreement — every `ref` field
+ * declaring `ref_kind: "agreement"`.
+ *
+ * Derived from the schema rather than a hardcoded key list, for the same reason
+ * ref candidates are derived from the rules: a field declaring the ref kind *is*
+ * the statement "this key names an Agreement", so a custom type citing the
+ * corpus is covered the day someone writes it. Returns nothing until the pack
+ * change lands, which is correct rather than a stub — nothing can cite a corpus
+ * that nothing points at.
+ */
+export function agreementRefKeys(type: {
+	metadata: Record<string, { kind: string; ref_kind?: string }>;
+}): string[] {
+	return Object.entries(type.metadata)
+		.filter(([, f]) => f.kind === "ref" && f.ref_kind === AGREEMENT_REF_KIND)
+		.map(([key]) => key);
+}
+
+/** The `ref_kind` a citing ref declares to point at the corpus. */
+export const AGREEMENT_REF_KIND = "agreement";
+
 /** Whether `role` may author entries of `kindId`. An unresolved role authors nothing. */
 export function authorsKind(
 	kinds: AgreementKind[],
@@ -119,6 +141,26 @@ export function authorsKind(
 	const kind = kinds.find((k) => k.id === kindId);
 	return kind?.author_permission.includes(role) ?? false;
 }
+
+/**
+ * The authoring payloads, shared so the route parses exactly what the DO stores.
+ * `effective_from` is optional and defaults to now at the write site; supplying a
+ * future one is how a change is *announced* rather than sprung — ADR 0006 has no
+ * draft state precisely because a future-dated version is a better one.
+ */
+export const createAgreementInputSchema = z.object({
+	kind: z.string().min(1),
+	name: z.string().min(1),
+	text: z.string(),
+	effective_from: z.number().int().optional(),
+	review_cadence_days: z.number().int().positive().optional(),
+});
+export type CreateAgreementInput = z.infer<typeof createAgreementInputSchema>;
+
+export const reviseAgreementInputSchema = createAgreementInputSchema.omit({
+	kind: true,
+});
+export type ReviseAgreementInput = z.infer<typeof reviseAgreementInputSchema>;
 
 /** Every write the corpus accepts. One shape in, one validation gate. */
 export type AgreementWrite =
@@ -221,3 +263,20 @@ export function validateAgreementWrite(
 			return { ok: true };
 	}
 }
+
+/**
+ * The `consent_history` entry kind for each write (ADR 0006). Defined here, next
+ * to the ops themselves, so the record of *what a couple agreed and when* uses
+ * one vocabulary rather than a string typed at each write site — the same
+ * discipline `ruleChangeAction` applies to the audit log.
+ *
+ * These land in the consent history rather than the audit log on purpose: an
+ * `audit_log` row records that someone *did* something, while this table is the
+ * couple's record of their agreements changing, which is what a corpus edit is.
+ */
+export function agreementChangeKind(op: AgreementWrite["op"]): string {
+	return `agreement_${op}`;
+}
+
+/** The `agreement_`-namespaced consent kinds, for selecting corpus changes out. */
+export const AGREEMENT_CHANGE_PREFIX = "agreement_";

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	AGREEMENT_CHANGE_PREFIX,
 	type AgreementKind,
+	agreementChangeKind,
 	agreementEffectiveAt,
+	agreementRefKeys,
 	agreementsInForce,
 	authorsKind,
 	type VersionedAgreement,
@@ -355,5 +358,49 @@ describe("validateAgreementWrite — delete legality (ADR 0002 parity)", () => {
 			ctx({ agreements: [limit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
+	});
+});
+
+describe("agreementRefKeys — which metadata cites the corpus", () => {
+	const field = (kind: string, refKind?: string) => ({
+		kind,
+		...(refKind ? { ref_kind: refKind } : {}),
+	});
+
+	it("finds a ref field declaring the agreement kind", () => {
+		expect(
+			agreementRefKeys({
+				metadata: {
+					rule_ref: field("ref", "agreement"),
+					severity: field("enum"),
+				},
+			}),
+		).toEqual(["rule_ref"]);
+	});
+
+	it("ignores refs pointing at anything else", () => {
+		// A task ref names an id an event minted; only a citing ref names a row in
+		// the corpus, and the declared `ref_kind` is what says which.
+		expect(
+			agreementRefKeys({ metadata: { task_id: field("ref", "task") } }),
+		).toEqual([]);
+	});
+
+	it("finds nothing before the pack declares any", () => {
+		// Correct rather than a stub: nothing can cite a corpus nothing points at,
+		// so the hard-delete gate is vacuously satisfied until the pack change.
+		expect(agreementRefKeys({ metadata: { severity: field("enum") } })).toEqual(
+			[],
+		);
+	});
+});
+
+describe("agreementChangeKind — the consent-history vocabulary", () => {
+	it("namespaces every op so corpus changes select out of the history", () => {
+		expect(agreementChangeKind("create")).toBe("agreement_create");
+		expect(agreementChangeKind("edit_kind")).toBe("agreement_edit_kind");
+		expect(
+			agreementChangeKind("retire").startsWith(AGREEMENT_CHANGE_PREFIX),
+		).toBe(true);
 	});
 });
