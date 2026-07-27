@@ -148,6 +148,38 @@ export function agreementRefKeys(type: {
 /** The `ref_kind` a citing ref declares to point at the corpus. */
 export const AGREEMENT_REF_KIND = "agreement";
 
+/**
+ * How a citation reads: the term's name **as it stood when the act happened**,
+ * and the current one beside it when they differ.
+ *
+ * Both halves are load-bearing. Rendering today's name would quietly rewrite
+ * what the person agreed to — the same retroactivity the `occurred_at` clock
+ * exists to prevent, moved from resolution into display. Rendering only the old
+ * one would leave a reader unable to find the term in the corpus after a rename.
+ *
+ * Returns null when the id names nothing the couple holds — a free-text citation
+ * logged before the pack change, or a hard-deleted term. The caller shows the
+ * raw value then, because an opaque id is a better answer than a blank.
+ */
+export function describeCitation(
+	agreements: VersionedAgreement[],
+	id: string,
+	occurredAt: number,
+	now: number,
+): string | null {
+	const agreement = agreements.find((a) => a.id === id);
+	if (!agreement) return null;
+	const then = agreementEffectiveAt(agreement, occurredAt);
+	const current =
+		agreementEffectiveAt(agreement, now) ?? latestAgreementVersion(agreement);
+	// A citation can predate the term's first version only if someone backdated
+	// the event; fall back to the earliest wording rather than showing nothing.
+	const thenName = then?.name ?? latestAgreementVersion(agreement).name;
+	return thenName === current.name
+		? thenName
+		: `${thenName} (now: ${current.name})`;
+}
+
 /** Whether `role` may author entries of `kindId`. An unresolved role authors nothing. */
 export function authorsKind(
 	kinds: AgreementKind[],

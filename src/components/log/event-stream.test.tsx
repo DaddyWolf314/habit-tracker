@@ -14,6 +14,7 @@ vi.mock("#/lib/api.ts", () => ({
 }));
 
 import { amendEvent } from "#/lib/api.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -50,9 +51,18 @@ function event(over: Partial<EventView> & Pick<EventView, "type">): EventView {
 	};
 }
 
-function renderStream(events: EventView[]) {
+function renderStream(
+	events: EventView[],
+	agreements: VersionedAgreement[] = [],
+) {
 	return render(
-		<EventStream events={events} types={TYPES} members={MEMBERS} selfId="m1" />,
+		<EventStream
+			events={events}
+			types={TYPES}
+			members={MEMBERS}
+			agreements={agreements}
+			selfId="m1"
+		/>,
 	);
 }
 
@@ -66,7 +76,7 @@ describe("minted refs on the event card", () => {
 				composite_metadata: { prompt_id: "01JB6X", floor: "sealed" },
 			}),
 		]);
-		expect(screen.getByText("floor: sealed")).not.toBeNull();
+		expect(screen.getByText("Minimum visibility: sealed")).not.toBeNull();
 		expect(screen.queryByText(/prompt_id/)).toBeNull();
 		expect(screen.queryByText(/01JB6X/)).toBeNull();
 	});
@@ -82,8 +92,10 @@ describe("minted refs on the event card", () => {
 				},
 			}),
 		]);
-		expect(screen.getByText("task_name: dishes")).not.toBeNull();
-		expect(screen.queryByText(/task_id/)).toBeNull();
+		expect(screen.getByText("Task: dishes")).not.toBeNull();
+		// The minted id itself stays out — asserted on the value, since the key is
+		// no longer rendered for any field.
+		expect(screen.queryByText(/01JB6X/)).toBeNull();
 	});
 
 	it("keeps an echoing ref — that id is the one the author chose", () => {
@@ -95,13 +107,15 @@ describe("minted refs on the event card", () => {
 				composite_metadata: { task_id: "01JB6X", quality: "met" },
 			}),
 		]);
-		expect(screen.getByText("task_id: 01JB6X")).not.toBeNull();
+		expect(screen.getByText("Task: 01JB6X")).not.toBeNull();
 	});
 
 	it("hides nothing for a type the couple no longer has", () => {
 		renderStream([
 			event({ type: "gone", composite_metadata: { prompt_id: "01JB6X" } }),
 		]);
+		// No schema means no label, so the raw key stands in — better an unlabelled
+		// value than a dropped one.
 		expect(screen.getByText("prompt_id: 01JB6X")).not.toBeNull();
 	});
 });
@@ -147,5 +161,63 @@ describe("retracting your own pending event", () => {
 		expect(vi.mocked(amendEvent)).not.toHaveBeenCalled();
 		expect(screen.queryByRole("button", { name: "Yes, retract" })).toBeNull();
 		expect(screen.getByRole("button", { name: "Retract" })).not.toBeNull();
+	});
+});
+
+/**
+ * A citation reads as the term, not its id (#121, story 23). The pack change made
+ * `rule_ref` a citing ref, so its stored value became a ULID — ADR 0005's "a ref
+ * stops being readable", which tasks solved with a `task_name` beside the id. A
+ * citation cannot: the name lives in the corpus and versions over time.
+ */
+describe("citations on the event card", () => {
+	afterEach(cleanup);
+
+	const MAR = 1_600_000_000_000;
+	const term = (name: string, renamedTo?: string): VersionedAgreement => ({
+		id: "ag_1",
+		kind: "protocol",
+		versions: [
+			{ effective_from: MAR, name, text: "", retired: false },
+			...(renamedTo
+				? [
+						{
+							effective_from: MAR + 1_000,
+							name: renamedTo,
+							text: "",
+							retired: false,
+						},
+					]
+				: []),
+		],
+	});
+
+	const cited = () =>
+		event({
+			type: "infraction",
+			occurred_at: MAR + 500,
+			composite_metadata: { rule_ref: "ag_1", severity: "minor" },
+		});
+
+	it("reads the term's name instead of its id", () => {
+		renderStream([cited()], [term("no phone at dinner")]);
+		expect(screen.getByText("Agreement: no phone at dinner")).not.toBeNull();
+		expect(screen.queryByText(/ag_1/)).toBeNull();
+	});
+
+	it("shows the name in force then, and the current one beside it", () => {
+		// Rendering only today's name would quietly restate what the person was
+		// held to; showing only the old one would leave them unable to find it.
+		renderStream([cited()], [term("no phone at dinner", "phones away")]);
+		expect(
+			screen.getByText("Agreement: no phone at dinner (now: phones away)"),
+		).not.toBeNull();
+	});
+
+	it("falls back to the raw value for an id the couple doesn't hold", () => {
+		// A free-text citation logged before the pack change, or a term deleted
+		// while uncited. An opaque value beats a blank.
+		renderStream([cited()], []);
+		expect(screen.getByText("Agreement: ag_1")).not.toBeNull();
 	});
 });

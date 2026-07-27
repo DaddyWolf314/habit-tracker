@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+	AGREEMENT_CHANGE_ACTION_PREFIX,
+	agreementChangeAction,
 	type NotificationSignals,
+	RULE_CHANGE_ACTION_PREFIX,
 	type RuleChangeKind,
 	ruleChangeAction,
 	ruleChangeKindFromAction,
@@ -17,6 +20,7 @@ function signals(
 		pending_events: 0,
 		recovery_pending: false,
 		rule_changes: 0,
+		agreement_changes: 0,
 		...partial,
 	};
 }
@@ -203,5 +207,35 @@ describe("a never-pending dom-subject event can't inflate the badge (#75, ADR 00
 				signals({ pending_events: [view].filter((v) => v.pending).length }),
 			),
 		).toBe(1);
+	});
+});
+
+describe("agreement changes in the count (#121, ADR 0006)", () => {
+	it("counts a partner's corpus change like a rule change", () => {
+		// ADR 0002's transparency-for-consent argument, applied where it lands
+		// harder: a rule change alters what a demerit is worth, an Agreement
+		// change alters what the person agreed to.
+		expect(unreadCount(signals({ agreement_changes: 2 }))).toBe(2);
+	});
+
+	it("adds to the other signals rather than replacing them", () => {
+		expect(
+			unreadCount(
+				signals({ pending_events: 1, rule_changes: 1, agreement_changes: 1 }),
+			),
+		).toBe(3);
+	});
+
+	it("namespaces its audit action so corpus changes select out", () => {
+		expect(agreementChangeAction("revise")).toBe("agreement.revise");
+		expect(
+			agreementChangeAction("retire").startsWith(
+				AGREEMENT_CHANGE_ACTION_PREFIX,
+			),
+		).toBe(true);
+		// Distinct from the rule namespace, or one would count the other.
+		expect(
+			agreementChangeAction("revise").startsWith(RULE_CHANGE_ACTION_PREFIX),
+		).toBe(false);
 	});
 });

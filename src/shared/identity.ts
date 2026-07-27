@@ -130,6 +130,14 @@ export interface CoupleExport {
 	members: Array<{ member_id: string; role: Role | null }>;
 	devices: Device[];
 	consent_history: ConsentEntry[];
+	/**
+	 * The Agreement corpus with every version (#121, ADR 0006). Present for the
+	 * same reason the log is: the consent history records *that* a term changed,
+	 * and without the terms themselves those rows point at ids whose words the
+	 * export doesn't carry — a worse artifact than none.
+	 */
+	agreements: ExportRow[];
+	agreement_kinds: ExportRow[];
 	events: ExportRow[];
 	amendments: ExportRow[];
 	rules: ExportRow[];

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/identity.ts", () => ({ hasIdentity: () => true }));
 vi.mock("#/lib/api.ts", () => ({
+	ackAgreementChanges: vi.fn(() => Promise.resolve({ ok: true })),
 	createAgreement: vi.fn(() => Promise.resolve({})),
 	deleteAgreement: vi.fn(() => Promise.resolve({})),
 	retireAgreement: vi.fn(() => Promise.resolve({})),
@@ -20,6 +21,7 @@ vi.mock("#/lib/api.ts", () => ({
 }));
 
 import {
+	ackAgreementChanges,
 	createAgreement,
 	getRoles,
 	listAgreements,
@@ -317,5 +319,34 @@ describe("AgreementsView — a retired term", () => {
 		expect(
 			screen.getByRole("button", { name: /delete for good/i }),
 		).not.toBeNull();
+	});
+});
+
+describe("AgreementsView — acknowledging a partner's change", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
+		asRole("sub");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("marks corpus changes seen once the terms are on screen", async () => {
+		// This screen is the content behind the count, so having read it is what
+		// "seen" means — the same trade ADR 0002 makes for rules, where a notice
+		// the bound party can reach is what stands in for a handshake.
+		await renderView();
+		expect(ackAgreementChanges).toHaveBeenCalled();
+	});
+
+	it("still shows the terms when the acknowledgement fails", async () => {
+		// Showing a notice twice is the right failure; marking a change seen that
+		// never reached the server is not.
+		vi.mocked(ackAgreementChanges).mockRejectedValueOnce(new Error("offline"));
+		await renderView();
+		expect(screen.getByText("text me when you land")).not.toBeNull();
 	});
 });
