@@ -4,11 +4,22 @@ import { RuleChangeNotice } from "#/components/rule-change-notice.tsx";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
 import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
-import { getRoles, listOpenPrompts, listTimers } from "#/lib/api.ts";
+import { TargetsPanel } from "#/components/today/targets-panel.tsx";
+import {
+	getRoles,
+	listCounters,
+	listEventTypes,
+	listOpenPrompts,
+	listRules,
+	listTimers,
+} from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
+import type { Counter } from "#/shared/counters.ts";
+import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
+import type { Rule } from "#/shared/rules.ts";
 import type { TimerView } from "#/shared/timers.ts";
 
 /**
@@ -25,15 +36,22 @@ export function TodayView() {
 	const [timers, setTimers] = useState<TimerView[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
+	const [counters, setCounters] = useState<Counter[]>([]);
+	// Rules and types change under the viewer far less than counters do, but they
+	// are what say which rows are tickable, so they ride the same load.
+	const [rules, setRules] = useState<Rule[]>([]);
+	const [types, setTypes] = useState<EventType[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const refresh = useCallback(async () => {
-		const [{ timers }, { prompts }] = await Promise.all([
+		const [{ timers }, { prompts }, { counters }] = await Promise.all([
 			listTimers(),
 			listOpenPrompts(),
+			listCounters(),
 		]);
 		setTimers(timers);
 		setOpenPrompts(prompts);
+		setCounters(counters);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -52,14 +70,21 @@ export function TodayView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [timerRes, roleRes, promptRes] = await Promise.all([
-				listTimers(),
-				getRoles(),
-				listOpenPrompts(),
-			]);
+			const [timerRes, roleRes, promptRes, counterRes, ruleRes, typeRes] =
+				await Promise.all([
+					listTimers(),
+					getRoles(),
+					listOpenPrompts(),
+					listCounters(),
+					listRules(),
+					listEventTypes(),
+				]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
 			setOpenPrompts(promptRes.prompts);
+			setCounters(counterRes.counters);
+			setRules(ruleRes.rules);
+			setTypes(typeRes.types);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -107,6 +132,13 @@ export function TodayView() {
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
 			<RuleChangeNotice />
+
+			<TargetsPanel
+				counters={counters}
+				rules={rules}
+				types={types}
+				onChange={refreshAfterMutation}
+			/>
 
 			<StopwatchesPanel
 				timers={timers}
