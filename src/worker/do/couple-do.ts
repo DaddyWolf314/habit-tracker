@@ -6,9 +6,9 @@ import {
 	type AgreementVersion,
 	type AgreementWrite,
 	agreementChangeKind,
-	agreementEffectiveAt,
 	agreementRefKeys,
 	type CreateAgreementInput,
+	latestAgreementVersion,
 	type ReviseAgreementInput,
 	type VersionedAgreement,
 	validateAgreementWrite,
@@ -1520,13 +1520,18 @@ export class CoupleDO extends DurableObject<Env> {
 		const me = this.requireLiveMember(identityHash);
 		this.assertAgreementWrite({ op: "retire", id }, me);
 		const at = Date.now();
-		const current = agreementEffectiveAt(this.requireAgreement(id), at);
+		const last = latestAgreementVersion(this.requireAgreement(id));
 		this.writeAgreementVersion(id, {
-			effective_from: effectiveFrom ?? at,
-			// Carry the current wording forward: retiring ends a term, it does not
-			// blank what the term said.
-			name: current?.name ?? "",
-			text: current?.text ?? "",
+			// After *every* existing version, not merely after now. An Agreement
+			// whose only version is an announced draft has nothing in force yet, and
+			// a retirement dated before that draft would be resolved straight past —
+			// the draft would arrive and quietly un-retire the term.
+			effective_from: Math.max(effectiveFrom ?? at, last.effective_from + 1),
+			// Carry the last wording forward: retiring ends a term, it does not blank
+			// what the term said. Reading the *latest* version rather than the one in
+			// force is what keeps this defined for a draft-only Agreement.
+			name: last.name,
+			text: last.text,
 			review_cadence_days: undefined,
 			retired: true,
 		});
@@ -3512,12 +3517,10 @@ export class CoupleDO extends DurableObject<Env> {
 			cited: this.citedAgreementIds(),
 		});
 		if (result.ok) return;
-		// `forbidden` separates "you may not" from "that makes no sense", the same
-		// split `validateAmendment` draws. A missing row is a 404, not a 400.
+		// The flags are the discriminant, never the message text: matching on prose
+		// would let a reworded error silently change a status code.
 		if (result.forbidden) throw coupleError("FORBIDDEN", result.error);
-		if (result.error.startsWith("no such")) {
-			throw coupleError("NOT_FOUND", result.error);
-		}
+		if (result.not_found) throw coupleError("NOT_FOUND", result.error);
 		throw coupleError("BAD_REQUEST", result.error);
 	}
 
@@ -3580,15 +3583,29 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	private writeAgreementVersion(id: string, version: AgreementVersion): void {
+		// Append-only, enforced rather than asserted. `effective_from` is
+		// client-suppliable, so an upsert here would let a second write at the same
+		// timestamp silently rewrite the first — and any citation already resolved
+		// to that moment would retroactively read different text, which is the one
+		// thing effective-dating exists to prevent.
+		const clash = this.sql
+			.exec<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM agreement_versions
+					WHERE agreement_id = ? AND effective_from = ?`,
+				id,
+				version.effective_from,
+			)
+			.toArray()[0];
+		if ((clash?.n ?? 0) > 0) {
+			throw coupleError(
+				"CONFLICT",
+				"a version already takes force at that moment",
+			);
+		}
 		this.sql.exec(
 			`INSERT INTO agreement_versions
 				(agreement_id, effective_from, name, text, review_cadence_days, retired)
-				VALUES (?, ?, ?, ?, ?, ?)
-				ON CONFLICT(agreement_id, effective_from) DO UPDATE SET
-					name = excluded.name,
-					text = excluded.text,
-					review_cadence_days = excluded.review_cadence_days,
-					retired = excluded.retired`,
+				VALUES (?, ?, ?, ?, ?, ?)`,
 			id,
 			version.effective_from,
 			version.name,

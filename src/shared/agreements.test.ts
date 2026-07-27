@@ -7,6 +7,7 @@ import {
 	agreementRefKeys,
 	agreementsInForce,
 	authorsKind,
+	latestAgreementVersion,
 	type VersionedAgreement,
 	validateAgreementWrite,
 } from "./agreements.ts";
@@ -270,11 +271,22 @@ describe("validateAgreementWrite — authorship (ADR 0006)", () => {
 	});
 
 	it("distinguishes an unknown agreement from a forbidden one", () => {
-		// A 404 and a 403 are different answers, and the caller maps them to
-		// different statuses — mirroring how amendment validation separates them.
+		// A 404 and a 403 are different answers, carried by flags rather than by
+		// message text: a caller matching on prose would silently change status
+		// codes the next time someone rewords an error.
 		const r = validateAgreementWrite({ op: "retire", id: "nope" }, ctx());
-		expect(r).toMatchObject({ ok: false });
+		expect(r).toMatchObject({ ok: false, not_found: true });
 		expect(r.ok === false && r.forbidden).toBeFalsy();
+	});
+
+	it("flags a forbidden write without flagging it missing", () => {
+		const limit = agreement({ id: "ag_2c", kind: "limit" });
+		const r = validateAgreementWrite(
+			{ op: "retire", id: "ag_2c" },
+			ctx({ agreements: [limit] }),
+		);
+		expect(r).toMatchObject({ ok: false, forbidden: true });
+		expect(r.ok === false && r.not_found).toBeFalsy();
 	});
 });
 
@@ -402,5 +414,54 @@ describe("agreementChangeKind — the consent-history vocabulary", () => {
 		expect(
 			agreementChangeKind("retire").startsWith(AGREEMENT_CHANGE_PREFIX),
 		).toBe(true);
+	});
+});
+
+describe("latestAgreementVersion — what a retirement must follow", () => {
+	it("is the last version written, not the one in force", () => {
+		// The distinction that matters for retiring: an announced draft dated ahead
+		// is the latest version while governing nothing yet.
+		const announced = agreement({
+			versions: [
+				...agreement().versions,
+				{
+					effective_from: JUN,
+					name: "landing check-in",
+					text: "…and when you leave.",
+					retired: false,
+				},
+			],
+		});
+		expect(latestAgreementVersion(announced).name).toBe("landing check-in");
+		expect(agreementEffectiveAt(announced, MAR + 1)?.name).toBe(
+			"text me when you land",
+		);
+	});
+
+	it("is defined for a draft-only Agreement, where nothing is in force", () => {
+		// The case that made retiring write an empty name and sort *before* the
+		// pending draft, so the draft would arrive and un-retire the term.
+		const draftOnly = agreement({
+			versions: [
+				{
+					effective_from: JUN,
+					name: "not yet",
+					text: "starts in June",
+					retired: false,
+				},
+			],
+		});
+		expect(agreementEffectiveAt(draftOnly, MAR)).toBeNull();
+		expect(latestAgreementVersion(draftOnly).name).toBe("not yet");
+	});
+
+	it("is order-independent", () => {
+		const unsorted = agreement({
+			versions: [
+				{ effective_from: JUN, name: "later", text: "", retired: false },
+				{ effective_from: MAR, name: "earlier", text: "", retired: false },
+			],
+		});
+		expect(latestAgreementVersion(unsorted).name).toBe("later");
 	});
 });

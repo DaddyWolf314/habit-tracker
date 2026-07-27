@@ -93,6 +93,23 @@ export function agreementEffectiveAt(
 }
 
 /**
+ * The last version written, by `effective_from` — which is not the same as the
+ * one in force: an announced draft dated ahead is the latest while governing
+ * nothing yet. Retiring reads this rather than {@link agreementEffectiveAt},
+ * because a retirement has to land after *every* existing version or a pending
+ * draft would later resolve past it and quietly un-retire the term.
+ */
+export function latestAgreementVersion(
+	agreement: VersionedAgreement,
+): AgreementVersion {
+	let latest = agreement.versions[0];
+	for (const version of agreement.versions) {
+		if (version.effective_from >= latest.effective_from) latest = version;
+	}
+	return latest;
+}
+
+/**
  * The Agreements a citing ref may offer at `atMs`: those in force and not
  * retired. The lifecycle is the *opposite* of an echoing ref's candidates — a
  * retired Agreement leaves the picker while every past citation of it still
@@ -182,14 +199,24 @@ export interface AgreementContext {
 
 export type AgreementValidation =
 	| { ok: true }
-	/** `forbidden` marks an authorization refusal (a 403) vs a malformed one (a 400). */
-	| { ok: false; error: string; forbidden?: boolean };
+	/**
+	 * The flags are the discriminant the caller maps to a status, so no one has to
+	 * read the message text to tell an authorization refusal from a missing row
+	 * from a malformed request: `forbidden` is a 403, `not_found` a 404, neither a
+	 * 400. Matching on prose would make a reworded message silently change a
+	 * status code, with nothing to catch it.
+	 */
+	| {
+			ok: false;
+			error: string;
+			forbidden?: boolean;
+			not_found?: boolean;
+	  };
 
-const deny = (error: string, forbidden = false): AgreementValidation => ({
-	ok: false,
-	error,
-	forbidden,
-});
+const deny = (
+	error: string,
+	flags: { forbidden?: boolean; not_found?: boolean } = {},
+): AgreementValidation => ({ ok: false, error, ...flags });
 
 /**
  * Validates a proposed write. First failure wins.
@@ -206,46 +233,48 @@ export function validateAgreementWrite(
 ): AgreementValidation {
 	if (write.op === "edit_kind") {
 		const kind = ctx.kinds.find((k) => k.id === write.id);
-		if (!kind) return deny("no such kind");
+		if (!kind) return deny("no such kind", { not_found: true });
 		// The invariant, from the kind side. Without this the dom adds themselves
 		// to `limit` and every guard below becomes decoration.
 		if (!authorsKind(ctx.kinds, write.id, ctx.role)) {
-			return deny(
-				"only an author of this kind may change who authors it",
-				true,
-			);
+			return deny("only an author of this kind may change who authors it", {
+				forbidden: true,
+			});
 		}
 		return { ok: true };
 	}
 
 	if (write.op === "create") {
 		if (!ctx.kinds.some((k) => k.id === write.kind))
-			return deny("no such kind");
+			return deny("no such kind", { not_found: true });
 		if (!authorsKind(ctx.kinds, write.kind, ctx.role)) {
-			return deny("your role doesn't author this kind of agreement", true);
+			return deny("your role doesn't author this kind of agreement", {
+				forbidden: true,
+			});
 		}
 		return { ok: true };
 	}
 
 	const agreement = ctx.agreements.find((a) => a.id === write.id);
-	if (!agreement) return deny("no such agreement");
+	if (!agreement) return deny("no such agreement", { not_found: true });
 	// Every remaining op edits an existing entry, so all of them need authorship
 	// of the kind it currently sits in.
 	if (!authorsKind(ctx.kinds, agreement.kind, ctx.role)) {
-		return deny("your role doesn't author this kind of agreement", true);
+		return deny("your role doesn't author this kind of agreement", {
+			forbidden: true,
+		});
 	}
 
 	switch (write.op) {
 		case "rekind":
 			if (!ctx.kinds.some((k) => k.id === write.kind))
-				return deny("no such kind");
+				return deny("no such kind", { not_found: true });
 			// The invariant, from the entry side: authoring the source is not enough,
 			// or a dom could walk a protocol they own into the sub's category.
 			if (!authorsKind(ctx.kinds, write.kind, ctx.role)) {
-				return deny(
-					"your role doesn't author the kind you're moving it to",
-					true,
-				);
+				return deny("your role doesn't author the kind you're moving it to", {
+					forbidden: true,
+				});
 			}
 			return { ok: true };
 		case "delete":
