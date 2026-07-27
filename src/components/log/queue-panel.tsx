@@ -3,7 +3,7 @@ import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, queueFor } from "#/shared/adjudication.ts";
-import type { AnchorView } from "#/shared/anchors.ts";
+import { type AnchorView, elapsedDaysText } from "#/shared/anchors.ts";
 import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
 import {
 	awaitingKeysFor,
@@ -21,7 +21,6 @@ import {
 import type { VersionedRule } from "#/shared/rules.ts";
 import { anchorLabel } from "#/templates/index.ts";
 import {
-	elapsedDaysText,
 	formatElapsed,
 	formatMetaValue,
 	formatTime,

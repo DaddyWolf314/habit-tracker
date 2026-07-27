@@ -47,9 +47,9 @@ describe("AnchorsPanel", () => {
 				]}
 			/>,
 		);
-		const labels = [...document.querySelectorAll("li")].map((li) =>
-			li.textContent?.replace(/\s+/g, " ").trim(),
-		);
+		const labels = screen
+			.getAllByRole("listitem")
+			.map((li) => li.textContent?.replace(/\s+/g, " ").trim());
 		const sub = labels.findIndex((l) => l?.includes("3 days"));
 		const dom = labels.findIndex((l) => l?.includes("9 days"));
 		expect(dom).toBe(sub + 1);

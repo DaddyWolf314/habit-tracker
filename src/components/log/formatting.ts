@@ -3,10 +3,6 @@ import type { RoleMember } from "#/shared/identity.ts";
 // The metadata-value formatter is shared (client and DO agree how a value
 // reads); re-exported here so log components keep importing it alongside the
 // other display helpers.
-// The anchor formatter moved to `shared/anchors.ts` when the clocks moved to
-// Today (#88): it is "one formatter for every surface" by its own description,
-// and two surfaces in different folders now read it.
-export { elapsedDaysText } from "#/shared/anchors.ts";
 export { formatMetaValue } from "#/shared/roles.ts";
 // Trace decoding and effect phrasing live in the Trace ledger (shared) so the DO
 // writes and the UI reads through one taxonomy; re-exported here so the log

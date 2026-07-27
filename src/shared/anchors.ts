@@ -59,8 +59,12 @@ export type AnchorView = z.infer<typeof anchorViewSchema>;
  * yields the chip form ("3d") the adjudication evidence uses.
  *
  * Beside the anchor it formats rather than in a surface's folder, since the
- * clocks read it from Today and the queue's confirm sheet reads it from the Log
- * — the same reason trace phrasing lives in `trace.ts`.
+ * clocks read it from Today and the queue's confirm sheet reads it from the Log.
+ * `rule-describe.ts` is the precedent — phrasing shared between surfaces lives
+ * next to the thing it phrases, and is client-only there too. (Not `trace.ts`,
+ * which is here because the DO *writes* through it and the client reads back:
+ * a different reason that does not apply to a formatter nothing server-side
+ * calls.)
  */
 export function elapsedDaysText(days: number | null, compact = false): string {
 	if (days === null) return "—";
