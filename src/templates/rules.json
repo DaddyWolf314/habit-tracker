@@ -1,5 +1,5 @@
 {
-	"version": 7,
+	"version": 8,
 	"rules": [
 		{
 			"id": "R1",
@@ -40,20 +40,29 @@
 		},
 		{
 			"id": "R6",
-			"condition": { "type": "infraction", "metadata": {} },
+			"condition": {
+				"type": "infraction",
+				"subject_role": "sub",
+				"metadata": {}
+			},
 			"effects": [
 				{ "verb": "increment_counter", "counter": "infractions_lifetime" }
 			]
 		},
 		{
 			"id": "R7",
-			"condition": { "type": "infraction", "metadata": {} },
+			"condition": {
+				"type": "infraction",
+				"subject_role": "sub",
+				"metadata": {}
+			},
 			"effects": [{ "verb": "reset_anchor", "anchor": "since_last_infraction" }]
 		},
 		{
 			"id": "R8",
 			"condition": {
 				"type": "infraction",
+				"subject_role": "sub",
 				"metadata": { "severity": "major" }
 			},
 			"effects": [
@@ -64,6 +73,7 @@
 			"id": "R9",
 			"condition": {
 				"type": "infraction",
+				"subject_role": "sub",
 				"metadata": { "severity": "minor", "self_reported": false }
 			},
 			"effects": [{ "verb": "increment_counter", "counter": "demerits" }]
