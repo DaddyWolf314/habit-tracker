@@ -2,7 +2,7 @@ import { useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
-import { amendEvent, getEventTrace } from "#/lib/api.ts";
+import { ackRulings, amendEvent, getEventTrace } from "#/lib/api.ts";
 import {
 	type AmendmentLine,
 	describeAmendment,
@@ -389,9 +389,15 @@ function OwnEventActions({
  * behind a content-safe "You have an update" until the sub chooses to open it, a
  * small deliberate interaction. Shown on the author's own resolved event.
  *
- * V1 reveals on tap and stays open for the session; persistent read-state (so an
- * already-seen ruling stops announcing itself) rides in with content-free
- * notifications in Phase 6.
+ * Revealing is also what marks rulings *seen* (#136): the tap is the moment the
+ * sub actually receives it, so acknowledging on page load instead would clear
+ * their signal before they had read anything — which is what this button exists
+ * to prevent.
+ *
+ * The watermark is per-member and time-based, so revealing one ruling marks any
+ * others already landed as seen too. Per-event read state would be finer and is
+ * not built; the coarse version is chosen over acking on load, which was simply
+ * wrong.
  */
 function RulingReveal({ line }: { line: AmendmentLine }) {
 	const [revealed, setRevealed] = useState(false);
@@ -402,7 +408,12 @@ function RulingReveal({ line }: { line: AmendmentLine }) {
 				variant="outline"
 				size="sm"
 				className="mt-2"
-				onClick={() => setRevealed(true)}
+				onClick={() => {
+					setRevealed(true);
+					// A failed ack leaves the count up: telling someone twice beats
+					// marking a ruling seen that never reached the server.
+					ackRulings().catch(() => {});
+				}}
 			>
 				You have an update — reveal
 			</Button>

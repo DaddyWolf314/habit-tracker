@@ -1,3 +1,5 @@
+import { queueFor } from "./adjudication.ts";
+import type { EventView } from "./events.ts";
 /**
  * Content-free notifications (handoff §3.5, #42). Discretion is a product
  * requirement: a notification may reveal only a *count*, never anything about
@@ -9,8 +11,18 @@
 
 /** The couple-side signals that feed the unread count. Counts only — no content. */
 export interface NotificationSignals {
-	/** Events currently awaiting an adjudication (the queue). */
+	/**
+	 * Events awaiting **this member's** ruling (#136, §8.1). Not "everything
+	 * pending": counting a sub's own confessions back at them is the anxiety
+	 * mechanic §8.3 declines, delivered as a number.
+	 */
 	pending_events: number;
+	/**
+	 * Rulings landed on this member's own events since they last looked (#136,
+	 * §8.3 — "You have an update"). The sub's half of the queue signal, and the
+	 * reason their count is not simply zero.
+	 */
+	rulings_received: number;
 	/** A partner-assisted recovery is in progress and worth noticing (#41). */
 	recovery_pending: boolean;
 	/**
@@ -38,6 +50,7 @@ export interface NotificationSignals {
 export function unreadCount(signals: NotificationSignals): number {
 	return (
 		signals.pending_events +
+		signals.rulings_received +
 		(signals.recovery_pending ? 1 : 0) +
 		signals.rule_changes +
 		signals.agreement_changes
@@ -154,3 +167,58 @@ export function agreementChangeAction(op: string): string {
 
 /** The `agreement.`-namespaced audit actions, for selecting corpus changes out. */
 export const AGREEMENT_CHANGE_ACTION_PREFIX = "agreement.";
+
+/**
+ * Events awaiting **this member's** ruling (#136, handoff §8.1 — "badge on today
+ * view: '2 awaiting your ruling'").
+ *
+ * The queue's own fold, counted: `queueFor` already answers "is this yours to
+ * rule" through the type's `adjudicated_by`, which is what handles a switch with
+ * no special case, exactly as the queue panel does. The question is never "are
+ * you the dom".
+ *
+ * It replaced a count of *every* pending event, which meant a sub's badge tallied
+ * their own confessions awaiting the dom's ruling: a number that rises when you
+ * self-report and sits there until you are judged. §8.3 asks for the opposite —
+ * "quiet 'awaiting ruling' chip… No countdowns, no anxiety mechanics."
+ */
+export function awaitingMyRuling(args: Parameters<typeof queueFor>[0]): number {
+	return queueFor(args).length;
+}
+
+/**
+ * Rulings landed on this member's own events since they last looked (#136,
+ * handoff §8.3 — "On ruling: content-safe notification ('You have an update')").
+ *
+ * This half never existed. When the dom ruled, the sub's count silently *dropped*
+ * — the one moment the spec calls "emotionally load-bearing in LDR play" was the
+ * one moment nothing happened.
+ *
+ * A ruling you made yourself is not news to you, so only the other member's
+ * amendments count — and an *event* counts once however many times its ruling
+ * was corrected. Counting corrections separately would inflate "N new items" for
+ * one thing that happened, which is the same overstatement this issue exists to
+ * remove from the other side of the count.
+ */
+export function rulingsReceivedSince({
+	events,
+	memberId,
+	seenAt,
+}: {
+	events: EventView[];
+	memberId: string;
+	seenAt: number;
+}): number {
+	let count = 0;
+	for (const event of events) {
+		if (event.actor !== memberId) continue;
+		const heard = event.amendments.some(
+			(a) =>
+				a.kind === "adjudication" &&
+				a.actor !== memberId &&
+				a.created_at > seenAt,
+		);
+		if (heard) count++;
+	}
+	return count;
+}

@@ -283,6 +283,20 @@ export function listEventTypes(): Promise<{ types: EventType[] }> {
 }
 
 /** The event log, newest first, as composite views. */
+/**
+ * Marks rulings the caller has received as seen (#136, §8.3). Sent by the log,
+ * which is where the ruling's content lives — the count only ever says *that*
+ * something landed.
+ */
+/** How many events await the caller's ruling (#136) — Today's queue entry. */
+export function queueCount(): Promise<{ awaiting: number }> {
+	return apiFetch<{ awaiting: number }>("/api/queue/count");
+}
+
+export function ackRulings(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/rulings/seen", { method: "POST" });
+}
+
 export function listEvents(): Promise<{ events: EventView[] }> {
 	return apiFetch<{ events: EventView[] }>("/api/events");
 }

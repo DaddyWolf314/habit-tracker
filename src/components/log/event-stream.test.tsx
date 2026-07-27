@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
+	ackRulings: vi.fn(() => Promise.resolve({ ok: true })),
 	amendEvent: vi.fn(() => Promise.resolve({})),
 	getEventTrace: vi.fn(() => Promise.resolve({ rows: [] })),
 }));

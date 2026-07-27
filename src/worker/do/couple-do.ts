@@ -78,11 +78,13 @@ import {
 import {
 	AGREEMENT_CHANGE_ACTION_PREFIX,
 	agreementChangeAction,
+	awaitingMyRuling,
 	RULE_CHANGE_ACTION_PREFIX,
 	type RuleChangeKind,
 	type RuleChangeNotice,
 	ruleChangeAction,
 	ruleChangeKindFromAction,
+	rulingsReceivedSince,
 	unreadCount,
 } from "#/shared/notifications.ts";
 import {
@@ -928,8 +930,15 @@ export class CoupleDO extends DurableObject<Env> {
 	/**
 	 * The content-free unread count for the caller (#42) — a number only, never any
 	 * relationship content, so the notification badge it drives ("You have N new
-	 * items") reveals nothing. Counts the events awaiting an adjudication plus a
-	 * pending recovery worth noticing.
+	 * items") reveals nothing.
+	 *
+	 * Every signal is **the caller's own** (#136): events awaiting *their* ruling,
+	 * rulings landed on *their* events, rule and corpus changes *someone else*
+	 * made, and a recovery targeted at *them*. It used to count every pending
+	 * event for both members, which meant a sub's badge tallied their own
+	 * confessions awaiting the dom's ruling — a number rising when they
+	 * self-report and sitting there until judged, which is the anxiety mechanic
+	 * §8.3 declines.
 	 *
 	 * The recovery signal is *targeted*, not broadcast: only the member whose slot
 	 * is being recovered — the old identity that can still cancel from a remaining
@@ -937,15 +946,56 @@ export class CoupleDO extends DurableObject<Env> {
 	 * remaining devices" (#41) rather than a badge that fires identically for the
 	 * partner who started the takeover and already knows.
 	 */
+	/**
+	 * How many events await this caller's ruling (#136, handoff §8.1) — the number
+	 * behind Today's queue entry.
+	 *
+	 * Its own endpoint so the screen never has to hold the log to derive it.
+	 * Shipping the whole log to the home screen every poll is exactly the shape
+	 * #88 recorded as the reason for an aggregate endpoint, and this count is one
+	 * integer.
+	 */
+	async queueCount(identityHash: string): Promise<{ awaiting: number }> {
+		const me = this.requireMember(identityHash);
+		const events = await this.listEvents(identityHash, null);
+		return {
+			awaiting: awaitingMyRuling({
+				events,
+				types: this.eventTypes(),
+				members: this.members().map((m) => ({
+					member_id: m.id,
+					role: (m.role as Role | null) ?? null,
+				})),
+				role: (me.role as Role | null) ?? null,
+			}),
+		};
+	}
+
 	async notificationCount(identityHash: string): Promise<{ unread: number }> {
 		const me = this.requireMember(identityHash);
 		// Unlimited: an event awaiting adjudication must stay in the badge however
 		// deep in the log it sits — the list view's page limit doesn't apply here.
 		const events = await this.listEvents(identityHash, null);
 		const recovery = this.recoveryState();
+		const role = (me.role as Role | null) ?? null;
 		return {
 			unread: unreadCount({
-				pending_events: events.filter((e) => e.pending).length,
+				pending_events: awaitingMyRuling({
+					events,
+					types: this.eventTypes(),
+					// Data in, not a resolver: the shared count stays member-id-free
+					// beyond this mapping, like every other consumer of ADR 0003.
+					members: this.members().map((m) => ({
+						member_id: m.id,
+						role: (m.role as Role | null) ?? null,
+					})),
+					role,
+				}),
+				rulings_received: rulingsReceivedSince({
+					events,
+					memberId: me.id,
+					seenAt: Number(this.getSetting(`rulings_seen_at_${me.id}`) ?? "0"),
+				}),
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
 				rule_changes: this.ruleChangesUnseen(me.id),
 				agreement_changes: this.agreementChangesUnseen(me.id),
@@ -3884,6 +3934,15 @@ export class CoupleDO extends DurableObject<Env> {
 			)
 			.toArray()[0];
 		return row?.n ?? 0;
+	}
+
+	/**
+	 * Marks the caller's received rulings seen (#136) — sent by the log, which is
+	 * where a ruling's content lives. Explicit, so a GET never mutates.
+	 */
+	async ackRulings(identityHash: string): Promise<void> {
+		const me = this.requireMember(identityHash);
+		this.setSetting(`rulings_seen_at_${me.id}`, String(Date.now()));
 	}
 
 	private ruleChangesUnseen(memberId: string): number {
