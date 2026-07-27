@@ -6,6 +6,7 @@ import {
 	createRule,
 	deleteRule,
 	getRoles,
+	listAgreements,
 	listCounters,
 	listEventTypes,
 	listRuleHistory,
@@ -13,10 +14,15 @@ import {
 	updateRule,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
+import {
+	agreementEffectiveAt,
+	agreementsInForce,
+	type VersionedAgreement,
+} from "#/shared/agreements.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import { isOriginatingRef } from "#/shared/refs.ts";
+import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
 	describeCondition,
@@ -53,22 +59,26 @@ export function RulesView() {
 	const [rules, setRules] = useState<VersionedRule[]>([]);
 	const [types, setTypes] = useState<EventType[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
+	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState<VersionedRule | "new" | null>(null);
 
 	const load = useCallback(async () => {
 		try {
-			const [ruleRes, typeRes, counterRes, roleRes] = await Promise.all([
-				listRuleHistory(),
-				listEventTypes(),
-				listCounters(),
-				getRoles(),
-			]);
+			const [ruleRes, typeRes, counterRes, roleRes, agreementRes] =
+				await Promise.all([
+					listRuleHistory(),
+					listEventTypes(),
+					listCounters(),
+					getRoles(),
+					listAgreements(),
+				]);
 			setRules(ruleRes.rules);
 			setTypes(typeRes.types);
 			setCounters(counterRes.counters);
 			setMembers(roleRes.members);
+			setAgreements(agreementRes.agreements);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the rules.");
 		}
@@ -126,6 +136,7 @@ export function RulesView() {
 					existing={null}
 					types={types}
 					counters={counters}
+					agreements={agreements}
 					onSaved={afterChange}
 					onCancel={() => setEditing(null)}
 				/>
@@ -139,6 +150,7 @@ export function RulesView() {
 								existing={rule}
 								types={types}
 								counters={counters}
+								agreements={agreements}
 								onSaved={afterChange}
 								onCancel={() => setEditing(null)}
 							/>
@@ -366,12 +378,15 @@ function RuleEditor({
 	existing,
 	types,
 	counters,
+	agreements,
 	onSaved,
 	onCancel,
 }: {
 	existing: VersionedRule | null;
 	types: EventType[];
 	counters: Counter[];
+	/** The corpus a citing-ref condition picks from (#121, ADR 0006). */
+	agreements: VersionedAgreement[];
 	onSaved: () => void;
 	onCancel: () => void;
 }) {
@@ -650,6 +665,7 @@ function RuleEditor({
 								<ConditionValue
 									field={field}
 									value={cond.value}
+									agreements={agreements}
 									onChange={(v) =>
 										setConditions((cs) =>
 											cs.map((c, j) => (j === i ? { ...c, value: v } : c)),
@@ -757,12 +773,47 @@ function RuleEditor({
 function ConditionValue({
 	field,
 	value,
+	agreements,
 	onChange,
 }: {
 	field: EventType["metadata"][string] | undefined;
 	value: string;
+	/** The corpus, so a condition on a citing ref is a pick (#121, ADR 0006). */
+	agreements: VersionedAgreement[];
 	onChange: (value: string) => void;
 }) {
+	// A citing ref is the *other* side of the equality the composer already picks
+	// on. Leaving this a text box would reproduce exactly the failure #114 named:
+	// the dom hand-types an id here, the sub picks one there, and a rule that
+	// looks right silently matches nothing, for ever.
+	if (field?.kind === "ref" && isCitingRef(field)) {
+		const now = Date.now();
+		const wanted = field.agreement_kind;
+		const offered = agreementsInForce(agreements, now).filter(
+			(a) => wanted === undefined || a.kind === wanted,
+		);
+		const known = offered.some((a) => a.id === value);
+		return (
+			<select
+				className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+			>
+				<option value="">—</option>
+				{offered.map((a) => (
+					<option key={a.id} value={a.id}>
+						{agreementEffectiveAt(a, now)?.name ?? a.id}
+					</option>
+				))}
+				{/* A condition written against a since-retired term still matches the
+				    events that cited it, so the rule must stay editable without
+				    silently losing what it points at. */}
+				{value !== "" && !known && (
+					<option value={value}>{value} — no longer offered</option>
+				)}
+			</select>
+		);
+	}
 	if (field?.kind === "boolean") {
 		return (
 			<select

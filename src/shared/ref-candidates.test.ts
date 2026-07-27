@@ -82,9 +82,30 @@ const CLOSE_TASK: Rule = {
 
 const RULES = [CLOSE_SESSION, OPEN_SESSION, CLOSE_TASK];
 
+/** An ordinary echoing ref — the flavor most of these tests are about. */
+const ECHOING_FIELD: MetadataField = {
+	kind: "ref",
+	ref_kind: "session",
+	label: "Session",
+	required: false,
+	set_permission: ["dom", "sub", "switch"],
+};
+
+/**
+ * `refCandidates` requires the field it is offering for, so that no production
+ * caller can silently omit it. These tests mostly predate citing refs and are
+ * not about the field, so they take the echoing default; the citing tests below
+ * pass their own, which wins through the spread.
+ */
+const offer = (
+	args: Omit<Parameters<typeof refCandidates>[0], "field"> & {
+		field?: MetadataField;
+	},
+) => refCandidates({ field: ECHOING_FIELD, ...args });
+
 describe("refCandidates", () => {
 	it("offers the running stopwatches a session_ended could close", () => {
-		const candidates = refCandidates({
+		const candidates = offer({
 			rules: RULES,
 			timers: [
 				timer({ id: "t1", tag: "kneeling", match: { session_id: "s1" } }),
@@ -101,32 +122,36 @@ describe("refCandidates", () => {
 		// `session_started` opens the stopwatch; naming an already-running session
 		// would double-open the same id, so the field stays free text.
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [timer({ tag: "kneeling", match: { session_id: "s1" } })],
 				typeId: "session_started",
 				key: "session_id",
 				now: NOW,
+				field: { ...ECHOING_FIELD, minted: true },
 			}),
 		).toEqual([]);
 	});
 
 	it("offers nothing for a key no rule matches a timer on", () => {
-		// `ritual_id` and `rule_ref` point at things the engine holds no timer row
-		// for — there are no candidates to draw, so free text stands.
+		// An echoing ref's candidates are derived from the rules: a key no rule
+		// closes a timer on names nothing the engine holds a row for, so free text
+		// stands. (`ritual_id` and `rule_ref` used to be the examples here; they
+		// are citing refs now and draw from the corpus instead — #121.)
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [timer({ match: { session_id: "s1" } })],
 				typeId: "session_ended",
-				key: "ritual_id",
+				key: "unmatched_id",
 				now: NOW,
+				field: { ...ECHOING_FIELD, ref_kind: "unmatched" },
 			}),
 		).toEqual([]);
 	});
 
 	it("labels a countdown with the time it has left", () => {
-		const candidates = refCandidates({
+		const candidates = offer({
 			rules: RULES,
 			timers: [
 				timer({
@@ -165,7 +190,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [overdue, paused],
 				typeId: "task_completed",
@@ -182,7 +207,7 @@ describe("refCandidates", () => {
 		// A completed, canceled, or failed timer can't be closed again — offering
 		// it would hand the author a ref whose close silently matches nothing.
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [
 					timer({ id: "t1", status: "completed", closed_at: NOW - 1_000 }),
@@ -213,7 +238,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [expired],
 				typeId: "task_completed",
@@ -235,7 +260,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [stale],
 				typeId: "task_completed",
@@ -247,7 +272,7 @@ describe("refCandidates", () => {
 
 	it("ignores a disabled rule", () => {
 		expect(
-			refCandidates({
+			offer({
 				rules: [{ ...CLOSE_SESSION, enabled: false }],
 				timers: [timer({ tag: "kneeling", match: { session_id: "s1" } })],
 				typeId: "session_ended",
@@ -273,7 +298,7 @@ describe("refCandidates", () => {
 		};
 
 		expect(
-			refCandidates({
+			offer({
 				rules: [renamed],
 				timers: [
 					timer({ tag: "kneeling", match: { slot: "s1", session_id: "nope" } }),
@@ -287,7 +312,7 @@ describe("refCandidates", () => {
 
 	it("skips a timer that pinned no value for the key", () => {
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [
 					timer({ id: "t1", match: {} }),
@@ -323,7 +348,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [newer, older],
 				typeId: "task_completed",
@@ -336,7 +361,7 @@ describe("refCandidates", () => {
 	it("offers one option per distinct ref, disambiguating equal labels", () => {
 		// Two sessions of the same activity read identically off their tag; the
 		// tail of the id is what tells the author which row they are closing.
-		const candidates = refCandidates({
+		const candidates = offer({
 			rules: RULES,
 			timers: [
 				timer({
@@ -411,7 +436,7 @@ describe("citing-ref candidates", () => {
 	it("offers every term in force when the field names no kind", () => {
 		// An infraction can cite anything the couple agreed — a protocol, a ritual,
 		// a limit — so an unnarrowed field offers the whole corpus.
-		const got = refCandidates({
+		const got = offer({
 			rules: [],
 			timers: [],
 			typeId: "infraction",
@@ -425,7 +450,7 @@ describe("citing-ref candidates", () => {
 
 	it("narrows to one kind when the field names one", () => {
 		// Logging a completed ritual should not offer the couple's limits.
-		const got = refCandidates({
+		const got = offer({
 			rules: [],
 			timers: [],
 			typeId: "ritual_completed",
@@ -438,7 +463,7 @@ describe("citing-ref candidates", () => {
 	});
 
 	it("stops offering a retired term", () => {
-		const got = refCandidates({
+		const got = offer({
 			rules: [],
 			timers: [],
 			typeId: "ritual_completed",
@@ -462,7 +487,7 @@ describe("citing-ref candidates", () => {
 			],
 		};
 		const at = (now: number) =>
-			refCandidates({
+			offer({
 				rules: [],
 				timers: [],
 				typeId: "infraction",
@@ -477,7 +502,7 @@ describe("citing-ref candidates", () => {
 
 	it("falls back to free text when the corpus is empty", () => {
 		expect(
-			refCandidates({
+			offer({
 				rules: [],
 				timers: [],
 				typeId: "infraction",

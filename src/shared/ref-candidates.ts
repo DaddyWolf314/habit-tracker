@@ -141,15 +141,20 @@ export function refCandidates({
 	typeId: string;
 	key: string;
 	now: number;
-	/** The field being offered for, when the caller has it — a citing ref needs it. */
-	field?: MetadataField;
-	/** The corpus a citing ref draws from (ADR 0006). */
+	/**
+	 * The field being offered for. Required, not optional: a caller that omitted
+	 * it would get an empty list for a citing ref and no indication why — the
+	 * failure looks exactly like "this ref has no candidates", which is a normal
+	 * answer here.
+	 */
+	field: MetadataField;
+	/** The corpus a citing ref draws from (ADR 0006). Empty is a real answer. */
 	agreements?: VersionedAgreement[];
 }): RefCandidate[] {
 	// A citing ref draws from the corpus rather than from open timers, and on the
 	// opposite lifecycle: an Agreement is a candidate while it is in force, where
 	// a timer stops being one the moment it resolves.
-	if (field && isCitingRef(field)) {
+	if (isCitingRef(field)) {
 		return citingCandidates(field, agreements, now);
 	}
 	const matches = closingMatches(rules, typeId, key);
