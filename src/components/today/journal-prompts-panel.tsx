@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
+import {
+	VISIBILITY_LABEL,
+	VisibilitySelect,
+} from "#/components/visibility-select.tsx";
 import { logEvent } from "#/lib/api.ts";
 import { type OpenPromptView, PROMPT_ID_KEY } from "#/shared/journaling.ts";
 import type { Visibility } from "#/shared/roles.ts";
@@ -104,10 +108,12 @@ export function JournalPromptsPanel({
 
 /**
  * The inline answer form for one prompt. Prose goes in `note`; visibility is an
- * explicit author choice (ADR 0001 — there is no silent default), defaulting to
- * `shared`. A below-floor answer is still the sub's right to log — the server
- * takes it but it won't discharge the countdown — so the form never blocks it;
- * the floor hint above the form is the only nudge.
+ * explicit author choice with no preselection (ADR 0001 — there is no silent
+ * default), demanded like the prose is (#94). A below-floor answer is still the
+ * sub's right to log — the server takes it but it won't discharge the countdown
+ * — so the form never blocks it; the floor hint above the form is the only nudge.
+ * Requiring a *choice* and refusing a *level* are different things: this does the
+ * first only.
  */
 function PromptAnswerForm({
 	prompt,
@@ -119,13 +125,17 @@ function PromptAnswerForm({
 	onAnswered: () => void;
 }) {
 	const [note, setNote] = useState("");
-	const [visibility, setVisibility] = useState<Visibility>("shared");
+	const [visibility, setVisibility] = useState<Visibility | "">("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
 	async function submit() {
 		if (!note.trim()) {
 			setError("Write something to answer with.");
+			return;
+		}
+		if (!visibility) {
+			setError("Choose who can see this before you answer.");
 			return;
 		}
 		setBusy(true);
@@ -154,20 +164,14 @@ function PromptAnswerForm({
 			/>
 			<div>
 				{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-				<label className="text-xs text-muted-foreground">Visibility</label>
-				<select
+				<label className="text-xs text-muted-foreground">
+					{VISIBILITY_LABEL}
+				</label>
+				<VisibilitySelect
 					className={`${fieldClass} mt-1`}
 					value={visibility}
-					onChange={(e) => setVisibility(e.target.value as Visibility)}
-				>
-					<option value="shared">Shared — my partner can read this</option>
-					<option value="sealed">
-						Sealed — they see that I journaled, not the words
-					</option>
-					<option value="secret">
-						Secret — fully private; they can't tell it exists
-					</option>
-				</select>
+					onChange={setVisibility}
+				/>
 			</div>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}

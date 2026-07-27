@@ -1,6 +1,10 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
+import {
+	VISIBILITY_LABEL,
+	VisibilitySelect,
+} from "#/components/visibility-select.tsx";
 import { logEvent } from "#/lib/api.ts";
 import {
 	awaitingKeysFor,
@@ -61,7 +65,9 @@ export function LogComposer({
 	const [subject, setSubject] = useState<string>("");
 	const [note, setNote] = useState("");
 	const [meta, setMeta] = useState<Record<string, string>>({});
-	const [visibility, setVisibility] = useState<Visibility>("shared");
+	// Unset, not `shared` (#94): the author *always* chooses explicitly (ADR 0001),
+	// so there is no preselection to log by not touching the control.
+	const [visibility, setVisibility] = useState<Visibility | "">("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -71,7 +77,7 @@ export function LogComposer({
 		setSubject("");
 		setNote("");
 		setMeta({});
-		setVisibility("shared");
+		setVisibility("");
 	}
 
 	function selectType(id: string) {
@@ -129,6 +135,10 @@ export function LogComposer({
 	function missingRequired(t: EventType): string[] {
 		const missing: string[] = [];
 		if (t.subject_required && !subject) missing.push("Subject");
+		// Visibility is required on the types that carry it, for the same reason
+		// nothing preselects it: an unmade choice must not resolve to the most
+		// exposed level (#94). Non-journaling types have no choice to make.
+		if (t.journaling && !visibility) missing.push("Visibility");
 		for (const [key, field] of Object.entries(t.metadata)) {
 			if (isOriginatingRef(field)) continue;
 			if (field.required && !awaitedKeys.has(key) && !(meta[key] ?? "")) {
@@ -154,8 +164,10 @@ export function LogComposer({
 				metadata: buildMetadata(type),
 				note: note.trim() || undefined,
 				// Only a journaling-capable type carries a real choice; everything else
-				// is always shared (the server rejects any other value on it).
-				visibility: type.journaling ? visibility : "shared",
+				// is always shared (the server rejects any other value on it). The
+				// unchosen case is refused above, so this never defaults a journaling
+				// entry to the most exposed level (#94).
+				visibility: type.journaling && visibility ? visibility : "shared",
 			};
 			await logEvent(input);
 			setTypeId("");
@@ -231,22 +243,12 @@ export function LogComposer({
 					</Field>
 
 					{type.journaling && (
-						<Field label="Visibility">
-							<select
+						<Field label={VISIBILITY_LABEL}>
+							<VisibilitySelect
 								className={`${fieldClass} mt-1`}
 								value={visibility}
-								onChange={(e) => setVisibility(e.target.value as Visibility)}
-							>
-								<option value="shared">
-									Shared — my partner can read this
-								</option>
-								<option value="sealed">
-									Sealed — they see that I journaled, not the words
-								</option>
-								<option value="secret">
-									Secret — fully private; they can't tell it exists
-								</option>
-							</select>
+								onChange={setVisibility}
+							/>
 						</Field>
 					)}
 
