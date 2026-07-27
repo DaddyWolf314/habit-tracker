@@ -6,6 +6,7 @@ import {
 	VisibilitySelect,
 } from "#/components/visibility-select.tsx";
 import { logEvent } from "#/lib/api.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import {
 	awaitingKeysFor,
 	type EventType,
@@ -45,6 +46,7 @@ export function LogComposer({
 	openPrompts,
 	rules,
 	timers,
+	agreements,
 	onLogged,
 }: {
 	types: EventType[];
@@ -55,6 +57,8 @@ export function LogComposer({
 	rules: Rule[];
 	/** The timers an echoing ref's candidates are drawn from (#89). */
 	timers: TimerView[];
+	/** The corpus a citing ref's candidates are drawn from (#121, ADR 0006). */
+	agreements: VersionedAgreement[];
 	onLogged: () => void;
 }) {
 	const pickable = useMemo(
@@ -125,11 +129,21 @@ export function LogComposer({
 			if (field.kind !== "ref") continue;
 			byKey.set(
 				key,
-				refCandidates({ rules, timers, typeId: type.id, key, now }),
+				refCandidates({
+					rules,
+					timers,
+					typeId: type.id,
+					key,
+					now,
+					// A citing ref draws from the corpus rather than the timers, and
+					// needs the field to know which kind (if any) it narrows to.
+					field,
+					agreements,
+				}),
 			);
 		}
 		return byKey;
-	}, [type, rules, timers]);
+	}, [type, rules, timers, agreements]);
 
 	/** Required fields (non-`awaiting`) the user hasn't filled in yet. */
 	function missingRequired(t: EventType): string[] {

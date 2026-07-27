@@ -1,3 +1,4 @@
+import { AGREEMENT_REF_KIND } from "./agreements.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
 
@@ -25,6 +26,23 @@ import type { MetadataValue } from "./roles.ts";
 /** Whether a field is an originating ref: server-minted, never client-supplied. */
 export function isOriginatingRef(field: MetadataField): boolean {
 	return field.kind === "ref" && field.minted === true;
+}
+
+/**
+ * Whether a field is a **citing** ref — the third flavor (ADR 0006): it names a
+ * definition the app holds a row for, rather than an id some event minted.
+ *
+ * Derived from the declared `ref_kind` rather than a flag of its own, matching
+ * how echoing candidates are derived from the rules: what a ref points at is
+ * already stated in the schema, and a second marker could only ever disagree
+ * with it. Nothing mints a citing ref, so it is never originating.
+ */
+export function isCitingRef(field: MetadataField): boolean {
+	return (
+		field.kind === "ref" &&
+		field.minted !== true &&
+		field.ref_kind === AGREEMENT_REF_KIND
+	);
 }
 
 /**

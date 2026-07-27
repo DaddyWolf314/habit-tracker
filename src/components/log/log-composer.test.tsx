@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("#/lib/api.ts", () => ({ logEvent: vi.fn(() => Promise.resolve({})) }));
 
 import { logEvent } from "#/lib/api.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -75,7 +76,37 @@ function journalType(id: string): EventType {
 	};
 }
 
+/** A type whose ref cites the corpus rather than echoing a minted id. */
+function citingType(
+	id: string,
+	key: string,
+	label: string,
+	agreementKind?: string,
+): EventType {
+	return {
+		id,
+		label: id,
+		valence: "neutral",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: false,
+		metadata: {
+			[key]: {
+				kind: "ref",
+				ref_kind: "agreement",
+				...(agreementKind ? { agreement_kind: agreementKind } : {}),
+				label,
+				required: false,
+				set_permission: ["dom", "sub", "switch"],
+			},
+		},
+		awaiting: [],
+		journaling: false,
+	};
+}
+
 const TYPES: EventType[] = [
+	citingType("infraction", "rule_ref", "Agreement"),
+	citingType("ritual_completed", "ritual_id", "Ritual", "ritual"),
 	journalType("journal_entry"),
 	journalType("morning_pages"),
 	refType("session_started", "session_id", "Session", { minted: true }),
@@ -142,6 +173,33 @@ function stopwatch(id: string, sessionId: string): TimerView {
 
 const TIMERS: TimerView[] = [stopwatch("t1", "sess-1")];
 
+const AGREEMENTS: VersionedAgreement[] = [
+	{
+		id: "ag_1",
+		kind: "protocol",
+		versions: [
+			{
+				effective_from: NOW - 1000,
+				name: "ask before you come",
+				text: "",
+				retired: false,
+			},
+		],
+	},
+	{
+		id: "ag_2",
+		kind: "ritual",
+		versions: [
+			{
+				effective_from: NOW - 1000,
+				name: "morning kneel",
+				text: "",
+				retired: false,
+			},
+		],
+	},
+];
+
 function composer(timers: TimerView[], onLogged: () => void) {
 	return (
 		<LogComposer
@@ -150,6 +208,7 @@ function composer(timers: TimerView[], onLogged: () => void) {
 			openPrompts={[]}
 			rules={RULES}
 			timers={timers}
+			agreements={AGREEMENTS}
 			onLogged={onLogged}
 		/>
 	);
@@ -359,6 +418,61 @@ describe("LogComposer visibility", () => {
 		expect(onLogged).toHaveBeenCalled();
 		expect(logEvent).toHaveBeenCalledWith(
 			expect.objectContaining({ visibility: "shared" }),
+		);
+	});
+});
+
+/**
+ * A citing ref in the composer (#121, ADR 0006). This is the failure #114 named,
+ * finally closed: the couple's terms were free text on both sides of a rule's
+ * equality, so one typo made the rule silently stop firing — the event logged
+ * fine, the counter never moved, and the near-miss trace landed only on a
+ * *matching* event, i.e. never.
+ */
+describe("LogComposer citing refs", () => {
+	beforeEach(() => vi.mocked(logEvent).mockClear());
+	afterEach(cleanup);
+
+	it("offers the corpus instead of a free-text box", () => {
+		renderComposer();
+		chooseType("infraction");
+
+		const picker = screen.getByRole("combobox", { name: /agreement/i });
+		expect(
+			[...picker.querySelectorAll("option")].map((o) => o.textContent),
+		).toContain("ask before you come");
+	});
+
+	it("narrows to one kind where the field says so", () => {
+		// Logging a completed ritual must not offer the couple's protocols.
+		renderComposer();
+		chooseType("ritual_completed");
+
+		const labels = [
+			...screen
+				.getByRole("combobox", { name: /ritual/i })
+				.querySelectorAll("option"),
+		].map((o) => o.textContent);
+		expect(labels).toContain("morning kneel");
+		expect(labels).not.toContain("ask before you come");
+	});
+
+	it("submits the picked id, not a transcription of the name", async () => {
+		const onLogged = vi.fn();
+		renderComposer(onLogged);
+		chooseType("infraction");
+
+		fireEvent.change(screen.getByRole("combobox", { name: /agreement/i }), {
+			target: { value: "ag_1" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		expect(logEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "infraction",
+				metadata: { rule_ref: "ag_1" },
+			}),
 		);
 	});
 });

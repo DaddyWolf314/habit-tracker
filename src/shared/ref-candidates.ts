@@ -1,4 +1,11 @@
 import { EXPIRED_PROMPT_GRACE_MS } from "#/templates/index.ts";
+import {
+	agreementEffectiveAt,
+	agreementsInForce,
+	type VersionedAgreement,
+} from "./agreements.ts";
+import type { MetadataField } from "./event-types.ts";
+import { isCitingRef } from "./refs.ts";
 import type { Rule } from "./rules.ts";
 import {
 	countdownRemainingMs,
@@ -126,13 +133,30 @@ export function refCandidates({
 	typeId,
 	key,
 	now,
+	field,
+	agreements = [],
 }: {
 	rules: Rule[];
 	timers: TimerView[];
 	typeId: string;
 	key: string;
 	now: number;
+	/**
+	 * The field being offered for. Required, not optional: a caller that omitted
+	 * it would get an empty list for a citing ref and no indication why — the
+	 * failure looks exactly like "this ref has no candidates", which is a normal
+	 * answer here.
+	 */
+	field: MetadataField;
+	/** The corpus a citing ref draws from (ADR 0006). Empty is a real answer. */
+	agreements?: VersionedAgreement[];
 }): RefCandidate[] {
+	// A citing ref draws from the corpus rather than from open timers, and on the
+	// opposite lifecycle: an Agreement is a candidate while it is in force, where
+	// a timer stops being one the moment it resolves.
+	if (isCitingRef(field)) {
+		return citingCandidates(field, agreements, now);
+	}
 	const matches = closingMatches(rules, typeId, key);
 	if (matches.length === 0) return [];
 
@@ -170,4 +194,29 @@ export function refCandidates({
 			? { ...c, label: `${c.label} · …${c.value.slice(-4)}` }
 			: c,
 	);
+}
+
+/**
+ * The Agreements a citing field may name, labelled by the name **in force now**
+ * rather than the current one — the same reason a citation renders the old name:
+ * what a term was called at the time is what the person agreed to.
+ *
+ * `agreement_kind` narrows the offer where the field says so. An `infraction`
+ * names no kind because any term can be broken; `ritual_completed` names
+ * `ritual`, so logging a completed ritual does not offer the couple's limits.
+ */
+function citingCandidates(
+	field: MetadataField,
+	agreements: VersionedAgreement[],
+	now: number,
+): RefCandidate[] {
+	const wanted = field.kind === "ref" ? field.agreement_kind : undefined;
+	const out: RefCandidate[] = [];
+	for (const agreement of agreementsInForce(agreements, now)) {
+		if (wanted !== undefined && agreement.kind !== wanted) continue;
+		const version = agreementEffectiveAt(agreement, now);
+		if (!version) continue;
+		out.push({ value: agreement.id, label: version.name });
+	}
+	return out;
 }

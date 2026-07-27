@@ -1,9 +1,14 @@
+import {
+	type AgreementKind,
+	agreementKindSchema,
+} from "#/shared/agreements.ts";
 import type { CounterDefinition } from "#/shared/counters.ts";
 import { counterDefinitionSchema } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import { eventTypeSchema } from "#/shared/event-types.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { ruleSchema } from "#/shared/rules.ts";
+import agreementKindsJson from "./agreement-kinds.json" with { type: "json" };
 import countersJson from "./counters.json" with { type: "json" };
 import eventTypesJson from "./event-types.json" with { type: "json" };
 import rulesJson from "./rules.json" with { type: "json" };
@@ -14,6 +19,21 @@ import rulesJson from "./rules.json" with { type: "json" };
  * and can evolve without a code migration; custom types added later are
  * first-class and identical in shape (handoff §5).
  */
+
+/**
+ * The shipped Agreement kinds (#121, ADR 0006) — the *categories* a couple's
+ * terms fall into, with who may author each. Only the categories ship: the terms
+ * themselves are the couple's own, because a default agreement is one nobody
+ * consented to but everybody has.
+ *
+ * A `switch` authors both sides, limits included. They hold both halves of the
+ * dynamic, and a `sub`-only limit kind would leave a switch/switch couple unable
+ * to record a boundary at all — see #129 for what that leaves open.
+ */
+export const AGREEMENT_KINDS_VERSION: number = agreementKindsJson.version;
+
+export const DEFAULT_AGREEMENT_KINDS: AgreementKind[] =
+	agreementKindsJson.kinds.map((k) => agreementKindSchema.parse(k));
 
 /** Bumped whenever `event-types.json` changes; recorded per couple at seed. */
 export const EVENT_TYPES_VERSION: number = eventTypesJson.version;

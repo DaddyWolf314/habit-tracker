@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { VersionedAgreement } from "./agreements.ts";
+import type { MetadataField } from "./event-types.ts";
 import { refCandidates } from "./ref-candidates.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
@@ -80,9 +82,30 @@ const CLOSE_TASK: Rule = {
 
 const RULES = [CLOSE_SESSION, OPEN_SESSION, CLOSE_TASK];
 
+/** An ordinary echoing ref — the flavor most of these tests are about. */
+const ECHOING_FIELD: MetadataField = {
+	kind: "ref",
+	ref_kind: "session",
+	label: "Session",
+	required: false,
+	set_permission: ["dom", "sub", "switch"],
+};
+
+/**
+ * `refCandidates` requires the field it is offering for, so that no production
+ * caller can silently omit it. These tests mostly predate citing refs and are
+ * not about the field, so they take the echoing default; the citing tests below
+ * pass their own, which wins through the spread.
+ */
+const offer = (
+	args: Omit<Parameters<typeof refCandidates>[0], "field"> & {
+		field?: MetadataField;
+	},
+) => refCandidates({ field: ECHOING_FIELD, ...args });
+
 describe("refCandidates", () => {
 	it("offers the running stopwatches a session_ended could close", () => {
-		const candidates = refCandidates({
+		const candidates = offer({
 			rules: RULES,
 			timers: [
 				timer({ id: "t1", tag: "kneeling", match: { session_id: "s1" } }),
@@ -99,32 +122,36 @@ describe("refCandidates", () => {
 		// `session_started` opens the stopwatch; naming an already-running session
 		// would double-open the same id, so the field stays free text.
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [timer({ tag: "kneeling", match: { session_id: "s1" } })],
 				typeId: "session_started",
 				key: "session_id",
 				now: NOW,
+				field: { ...ECHOING_FIELD, minted: true },
 			}),
 		).toEqual([]);
 	});
 
 	it("offers nothing for a key no rule matches a timer on", () => {
-		// `ritual_id` and `rule_ref` point at things the engine holds no timer row
-		// for — there are no candidates to draw, so free text stands.
+		// An echoing ref's candidates are derived from the rules: a key no rule
+		// closes a timer on names nothing the engine holds a row for, so free text
+		// stands. (`ritual_id` and `rule_ref` used to be the examples here; they
+		// are citing refs now and draw from the corpus instead — #121.)
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [timer({ match: { session_id: "s1" } })],
 				typeId: "session_ended",
-				key: "ritual_id",
+				key: "unmatched_id",
 				now: NOW,
+				field: { ...ECHOING_FIELD, ref_kind: "unmatched" },
 			}),
 		).toEqual([]);
 	});
 
 	it("labels a countdown with the time it has left", () => {
-		const candidates = refCandidates({
+		const candidates = offer({
 			rules: RULES,
 			timers: [
 				timer({
@@ -163,7 +190,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [overdue, paused],
 				typeId: "task_completed",
@@ -180,7 +207,7 @@ describe("refCandidates", () => {
 		// A completed, canceled, or failed timer can't be closed again — offering
 		// it would hand the author a ref whose close silently matches nothing.
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [
 					timer({ id: "t1", status: "completed", closed_at: NOW - 1_000 }),
@@ -211,7 +238,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [expired],
 				typeId: "task_completed",
@@ -233,7 +260,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [stale],
 				typeId: "task_completed",
@@ -245,7 +272,7 @@ describe("refCandidates", () => {
 
 	it("ignores a disabled rule", () => {
 		expect(
-			refCandidates({
+			offer({
 				rules: [{ ...CLOSE_SESSION, enabled: false }],
 				timers: [timer({ tag: "kneeling", match: { session_id: "s1" } })],
 				typeId: "session_ended",
@@ -271,7 +298,7 @@ describe("refCandidates", () => {
 		};
 
 		expect(
-			refCandidates({
+			offer({
 				rules: [renamed],
 				timers: [
 					timer({ tag: "kneeling", match: { slot: "s1", session_id: "nope" } }),
@@ -285,7 +312,7 @@ describe("refCandidates", () => {
 
 	it("skips a timer that pinned no value for the key", () => {
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [
 					timer({ id: "t1", match: {} }),
@@ -321,7 +348,7 @@ describe("refCandidates", () => {
 		});
 
 		expect(
-			refCandidates({
+			offer({
 				rules: RULES,
 				timers: [newer, older],
 				typeId: "task_completed",
@@ -334,7 +361,7 @@ describe("refCandidates", () => {
 	it("offers one option per distinct ref, disambiguating equal labels", () => {
 		// Two sessions of the same activity read identically off their tag; the
 		// tail of the id is what tells the author which row they are closing.
-		const candidates = refCandidates({
+		const candidates = offer({
 			rules: RULES,
 			timers: [
 				timer({
@@ -362,5 +389,128 @@ describe("refCandidates", () => {
 			{ value: "sess-aaaa", label: "kneeling — 1m 0s · …aaaa" },
 			{ value: "sess-bbbb", label: "kneeling — 1m 0s · …bbbb" },
 		]);
+	});
+});
+
+/**
+ * Citing refs (#121, ADR 0006). Their candidates are the Agreements *in force* —
+ * the opposite lifecycle from an echoing ref's, whose candidates are open timers
+ * and which drops a row the moment it resolves. A retired Agreement leaves the
+ * picker while every citation already made against it still resolves.
+ */
+describe("citing-ref candidates", () => {
+	const MAR = 1_700_000_000_000;
+	const JUN = MAR + 90 * 86_400_000;
+
+	const term = (
+		id: string,
+		kind: string,
+		name: string,
+		retiredAt?: number,
+	): VersionedAgreement => ({
+		id,
+		kind,
+		versions: [
+			{ effective_from: MAR, name, text: "", retired: false },
+			...(retiredAt
+				? [{ effective_from: retiredAt, name, text: "", retired: true }]
+				: []),
+		],
+	});
+
+	const AGREEMENTS = [
+		term("ag_1", "protocol", "ask before you come"),
+		term("ag_2", "ritual", "morning kneel"),
+		term("ag_3", "ritual", "evening check-in", JUN),
+	];
+
+	const citing = (agreementKind?: string): MetadataField => ({
+		kind: "ref",
+		ref_kind: "agreement",
+		...(agreementKind ? { agreement_kind: agreementKind } : {}),
+		label: "Agreement",
+		required: false,
+		set_permission: ["dom", "sub", "switch"],
+	});
+
+	it("offers every term in force when the field names no kind", () => {
+		// An infraction can cite anything the couple agreed — a protocol, a ritual,
+		// a limit — so an unnarrowed field offers the whole corpus.
+		const got = offer({
+			rules: [],
+			timers: [],
+			typeId: "infraction",
+			key: "rule_ref",
+			now: MAR + 1,
+			field: citing(),
+			agreements: AGREEMENTS,
+		});
+		expect(got.map((c) => c.value)).toEqual(["ag_1", "ag_2", "ag_3"]);
+	});
+
+	it("narrows to one kind when the field names one", () => {
+		// Logging a completed ritual should not offer the couple's limits.
+		const got = offer({
+			rules: [],
+			timers: [],
+			typeId: "ritual_completed",
+			key: "ritual_id",
+			now: MAR + 1,
+			field: citing("ritual"),
+			agreements: AGREEMENTS,
+		});
+		expect(got.map((c) => c.value)).toEqual(["ag_2", "ag_3"]);
+	});
+
+	it("stops offering a retired term", () => {
+		const got = offer({
+			rules: [],
+			timers: [],
+			typeId: "ritual_completed",
+			key: "ritual_id",
+			now: JUN + 1,
+			field: citing("ritual"),
+			agreements: AGREEMENTS,
+		});
+		expect(got.map((c) => c.value)).toEqual(["ag_2"]);
+	});
+
+	it("labels a candidate by the name in force, not the current one", () => {
+		// Same reason a citation renders the old name: what the term was called
+		// then is what the person agreed to.
+		const renamed: VersionedAgreement = {
+			id: "ag_9",
+			kind: "protocol",
+			versions: [
+				{ effective_from: MAR, name: "old name", text: "", retired: false },
+				{ effective_from: JUN, name: "new name", text: "", retired: false },
+			],
+		};
+		const at = (now: number) =>
+			offer({
+				rules: [],
+				timers: [],
+				typeId: "infraction",
+				key: "rule_ref",
+				now,
+				field: citing(),
+				agreements: [renamed],
+			})[0]?.label;
+		expect(at(MAR + 1)).toBe("old name");
+		expect(at(JUN + 1)).toBe("new name");
+	});
+
+	it("falls back to free text when the corpus is empty", () => {
+		expect(
+			offer({
+				rules: [],
+				timers: [],
+				typeId: "infraction",
+				key: "rule_ref",
+				now: MAR,
+				field: citing(),
+				agreements: [],
+			}),
+		).toEqual([]);
 	});
 });
