@@ -46,6 +46,8 @@ import {
 } from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
 import {
+	agreementKindToExportRow,
+	agreementVersionToExportRow,
 	amendmentToExportRow,
 	anchorToExportRow,
 	counterToExportRow,
@@ -74,6 +76,8 @@ import {
 	satisfiesFloor,
 } from "#/shared/journaling.ts";
 import {
+	AGREEMENT_CHANGE_ACTION_PREFIX,
+	agreementChangeAction,
 	RULE_CHANGE_ACTION_PREFIX,
 	type RuleChangeKind,
 	type RuleChangeNotice,
@@ -944,6 +948,7 @@ export class CoupleDO extends DurableObject<Env> {
 				pending_events: events.filter((e) => e.pending).length,
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
 				rule_changes: this.ruleChangesUnseen(me.id),
+				agreement_changes: this.agreementChangesUnseen(me.id),
 			}),
 		};
 	}
@@ -1002,6 +1007,15 @@ export class CoupleDO extends DurableObject<Env> {
 				current: false,
 			})),
 			consent_history: await this.listConsentHistory(identityHash),
+			// Flattened one row per version: an export is machine-readable and
+			// self-describing, so it carries every wording a citation could resolve
+			// to rather than only what a term says today.
+			agreements: this.agreements().flatMap((agreement) =>
+				agreement.versions.map((version) =>
+					agreementVersionToExportRow(agreement.id, agreement.kind, version),
+				),
+			),
+			agreement_kinds: this.agreementKinds().map(agreementKindToExportRow),
 			events,
 			amendments,
 			rules: this.currentRules().map(ruleToExportRow),
@@ -1465,7 +1479,7 @@ export class CoupleDO extends DurableObject<Env> {
 			review_cadence_days: input.review_cadence_days,
 			retired: false,
 		});
-		this.recordAgreementChange("create", id, at, { kind: input.kind });
+		this.recordAgreementChange("create", me, id, at, { kind: input.kind });
 		return this.requireAgreement(id);
 	}
 
@@ -1499,7 +1513,7 @@ export class CoupleDO extends DurableObject<Env> {
 			review_cadence_days: input.review_cadence_days,
 			retired: false,
 		});
-		this.recordAgreementChange("revise", id, at, { name: input.name });
+		this.recordAgreementChange("revise", me, id, at, { name: input.name });
 		return this.requireAgreement(id);
 	}
 
@@ -1517,7 +1531,7 @@ export class CoupleDO extends DurableObject<Env> {
 		this.assertAgreementWrite({ op: "rekind", id, kind }, me);
 		const at = Date.now();
 		this.sql.exec(`UPDATE agreements SET kind = ? WHERE id = ?`, kind, id);
-		this.recordAgreementChange("rekind", id, at, { kind });
+		this.recordAgreementChange("rekind", me, id, at, { kind });
 		return this.requireAgreement(id);
 	}
 
@@ -1550,7 +1564,7 @@ export class CoupleDO extends DurableObject<Env> {
 			review_cadence_days: undefined,
 			retired: true,
 		});
-		this.recordAgreementChange("retire", id, at, null);
+		this.recordAgreementChange("retire", me, id, at, null);
 		return this.requireAgreement(id);
 	}
 
@@ -1568,7 +1582,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const at = Date.now();
 		this.sql.exec(`DELETE FROM agreement_versions WHERE agreement_id = ?`, id);
 		this.sql.exec(`DELETE FROM agreements WHERE id = ?`, id);
-		this.recordAgreementChange("delete", id, at, null);
+		this.recordAgreementChange("delete", me, id, at, null);
 		return { id };
 	}
 
@@ -1593,7 +1607,7 @@ export class CoupleDO extends DurableObject<Env> {
 			JSON.stringify(authorPermission),
 			id,
 		);
-		this.recordAgreementChange("edit_kind", id, at, {
+		this.recordAgreementChange("edit_kind", me, id, at, {
 			author_permission: authorPermission,
 		});
 		const kind = this.agreementKinds().find((k) => k.id === id);
@@ -3699,6 +3713,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private recordAgreementChange(
 		op: AgreementWrite["op"],
+		actor: MemberRow,
 		id: string,
 		at: number,
 		detail: Record<string, unknown> | null,
@@ -3710,6 +3725,24 @@ export class CoupleDO extends DurableObject<Env> {
 			agreementChangeKind(op),
 			JSON.stringify({ agreement_id: id, ...(detail ?? {}) }),
 		);
+		// And an accountable row: the consent history says what the couple agreed,
+		// this says who moved it, which is what the partner's notice reads.
+		this.sql.exec(
+			`INSERT INTO audit_log (at, actor, action, target) VALUES (?, ?, ?, ?)`,
+			at,
+			actor.id,
+			agreementChangeAction(op),
+			id,
+		);
+	}
+
+	/**
+	 * Marks the caller's corpus notices seen (#121) — the explicit acknowledgement
+	 * the Agreements screen sends, kept out of the read so a GET never mutates.
+	 */
+	async ackAgreementChanges(identityHash: string): Promise<void> {
+		const me = this.requireMember(identityHash);
+		this.setSetting(`agreements_seen_at_${me.id}`, String(Date.now()));
 	}
 
 	/**
@@ -3828,6 +3861,31 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/** A member's count of rule changes made by their partner since they last looked. */
+	/**
+	 * Corpus changes made by the *other* member since this one last acknowledged
+	 * (#121, ADR 0006) — the same shape as {@link ruleChangesUnseen}, reading the
+	 * `agreement.`-namespaced rows a write leaves in the audit log.
+	 *
+	 * The audit log rather than `consent_history` because only it carries an
+	 * actor, and "someone other than you changed it" is the whole question a
+	 * consent notice answers.
+	 */
+	private agreementChangesUnseen(memberId: string): number {
+		const seen = Number(
+			this.getSetting(`agreements_seen_at_${memberId}`) ?? "0",
+		);
+		const row = this.sql
+			.exec<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM audit_log
+					WHERE action LIKE ? AND actor != ? AND at > ?`,
+				`${AGREEMENT_CHANGE_ACTION_PREFIX}%`,
+				memberId,
+				seen,
+			)
+			.toArray()[0];
+		return row?.n ?? 0;
+	}
+
 	private ruleChangesUnseen(memberId: string): number {
 		const seen = Number(this.getSetting(`rules_seen_at_${memberId}`) ?? "0");
 		const row = this.sql

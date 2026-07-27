@@ -4,6 +4,7 @@ import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import {
+	ackAgreementChanges,
 	createAgreement,
 	deleteAgreement,
 	getRoles,
@@ -75,7 +76,12 @@ export function AgreementsView() {
 
 	useEffect(() => {
 		setReady(true);
-		if (hasIdentity()) reload();
+		if (!hasIdentity()) return;
+		// Acknowledge on arrival: this screen *is* the content behind the count, so
+		// having read it is what "seen" means. A failed ack just leaves the notice
+		// up next time — showing it twice is the right failure, marking a change
+		// seen that never reached the server is not.
+		reload().then(() => ackAgreementChanges().catch(() => {}));
 	}, [reload]);
 
 	const selfRole = (members.find((m) => m.is_self)?.role ??

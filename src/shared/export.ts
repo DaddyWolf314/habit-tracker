@@ -1,3 +1,4 @@
+import type { AgreementKind, AgreementVersion } from "./agreements.ts";
 import type { Amendment } from "./amendments.ts";
 import type { AnchorView } from "./anchors.ts";
 import type { Counter } from "./counters.ts";
@@ -112,5 +113,37 @@ export function anchorToExportRow(anchor: AnchorView): ExportRow {
 		since: anchor.since,
 		elapsed_ms: anchor.elapsed_ms,
 		elapsed_days: anchor.elapsed_days,
+	};
+}
+
+/**
+ * One Agreement **version** as an export row (#121, ADR 0006) — flattened per
+ * version rather than per term, because a citation resolves to whichever wording
+ * was in force when the act happened. An export carrying only today's text would
+ * leave every past citation unreadable, which is the same readability loss ADR
+ * 0005 accepted for a minted id and this can avoid.
+ */
+export function agreementVersionToExportRow(
+	agreementId: string,
+	kind: string,
+	version: AgreementVersion,
+): ExportRow {
+	return {
+		agreement_id: agreementId,
+		kind,
+		effective_from: version.effective_from,
+		name: version.name,
+		text: version.text,
+		review_cadence_days: version.review_cadence_days ?? null,
+		retired: version.retired,
+	};
+}
+
+/** One Agreement kind as an export row — who may author that category. */
+export function agreementKindToExportRow(kind: AgreementKind): ExportRow {
+	return {
+		id: kind.id,
+		label: kind.label,
+		author_permission: JSON.stringify(kind.author_permission),
 	};
 }

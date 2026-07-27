@@ -389,6 +389,14 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((kinds) => json({ kinds })),
 			);
 		}
+		// Acknowledging is an explicit POST, never a side effect of reading.
+		if (path === "/api/agreements/changes/seen" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.ackAgreementChanges(auth.identityHash)
+					.then(() => json({ ok: true })),
+			);
+		}
 		if (path === "/api/agreements" && method === "GET") {
 			return await withAuth(request, env, ({ auth, stub }) =>
 				stub

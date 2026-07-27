@@ -4,6 +4,8 @@ import type { AnchorView } from "./anchors.ts";
 import type { Counter } from "./counters.ts";
 import type { Event, EventView } from "./events.ts";
 import {
+	agreementKindToExportRow,
+	agreementVersionToExportRow,
 	amendmentToExportRow,
 	anchorToExportRow,
 	counterToExportRow,
@@ -301,6 +303,69 @@ describe("anchorToExportRow", () => {
 			since: 500,
 			elapsed_ms: 1500,
 			elapsed_days: 0,
+		});
+	});
+});
+
+describe("agreementVersionToExportRow (#121, ADR 0006)", () => {
+	const version = {
+		effective_from: 1_700_000_000_000,
+		name: "text me when you land",
+		text: "Text me when you land.",
+		review_cadence_days: 90,
+		retired: false,
+	};
+
+	it("carries every field of a version", () => {
+		expect(agreementVersionToExportRow("ag_1", "protocol", version)).toEqual({
+			agreement_id: "ag_1",
+			kind: "protocol",
+			effective_from: 1_700_000_000_000,
+			name: "text me when you land",
+			text: "Text me when you land.",
+			review_cadence_days: 90,
+			retired: false,
+		});
+	});
+
+	it("maps an absent cadence to null, never undefined", () => {
+		const row = agreementVersionToExportRow("ag_1", "protocol", {
+			...version,
+			review_cadence_days: undefined,
+		});
+		expect(row.review_cadence_days).toBeNull();
+	});
+
+	it("exports one row per version, so a past citation stays readable", () => {
+		// The point of flattening per version rather than per term: an export
+		// carrying only today's wording would leave every earlier citation
+		// pointing at text it doesn't contain.
+		const renamed = [
+			version,
+			{ ...version, effective_from: 2e12, name: "landing check-in" },
+		];
+		const rows = renamed.map((v) =>
+			agreementVersionToExportRow("ag_1", "protocol", v),
+		);
+		expect(rows.map((r) => r.name)).toEqual([
+			"text me when you land",
+			"landing check-in",
+		]);
+	});
+});
+
+describe("agreementKindToExportRow", () => {
+	it("serializes the author list as JSON, like every nested value", () => {
+		expect(
+			agreementKindToExportRow({
+				id: "limit",
+				label: "Limit",
+				author_permission: ["sub", "switch"],
+			}),
+		).toEqual({
+			id: "limit",
+			label: "Limit",
+			author_permission: '["sub","switch"]',
 		});
 	});
 });

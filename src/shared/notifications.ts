@@ -23,6 +23,15 @@ export interface NotificationSignals {
 	 * badge.)
 	 */
 	rule_changes: number;
+	/**
+	 * Agreement changes the partner has made since the viewer last acknowledged
+	 * them (#121, ADR 0006). The same transparency-for-consent argument ADR 0002
+	 * makes for rules, and it lands harder here: a rule change alters what a
+	 * demerit is worth, an Agreement change alters what the person agreed to.
+	 * Still a count only — which term changed is content, and content never
+	 * reaches the badge.
+	 */
+	agreement_changes: number;
 }
 
 /** The single content-free unread count shown as "You have N new items". */
@@ -30,7 +39,8 @@ export function unreadCount(signals: NotificationSignals): number {
 	return (
 		signals.pending_events +
 		(signals.recovery_pending ? 1 : 0) +
-		signals.rule_changes
+		signals.rule_changes +
+		signals.agreement_changes
 	);
 }
 
@@ -127,3 +137,20 @@ export function ruleChangeNotice(notice: RuleChangeNotice): string {
 			return `The default for the rule ${rule} changed in an app update — your edited version still applies.`;
 	}
 }
+
+/**
+ * The `audit_log` action for a corpus change (#121), namespaced like
+ * {@link ruleChangeAction} so the unread count can select these rows out of the
+ * same log that records rule authoring and support reads.
+ *
+ * A corpus change writes to *both* logs, and the split is the point: the
+ * `consent_history` row is the couple's record of what they agreed and when,
+ * while this row carries an actor, which is what makes "changed by someone other
+ * than you" answerable at all.
+ */
+export function agreementChangeAction(op: string): string {
+	return `agreement.${op}`;
+}
+
+/** The `agreement.`-namespaced audit actions, for selecting corpus changes out. */
+export const AGREEMENT_CHANGE_ACTION_PREFIX = "agreement.";

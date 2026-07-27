@@ -402,6 +402,16 @@ export function listAgreementKinds(): Promise<{ kinds: AgreementKind[] }> {
 	return apiFetch<{ kinds: AgreementKind[] }>("/api/agreement-kinds");
 }
 
+/**
+ * Marks the partner's corpus changes seen (#121). Explicit, like the rule-change
+ * ack: reading the screen is what prompted it, but a GET must never mutate.
+ */
+export function ackAgreementChanges(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/agreements/changes/seen", {
+		method: "POST",
+	});
+}
+
 export function createAgreement(
 	input: CreateAgreementInput,
 ): Promise<VersionedAgreement> {
