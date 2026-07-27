@@ -279,13 +279,22 @@ primitive — it is a *category of event types* plus a question/answer pairing.
   expires unmet, and the dom is never told a below-floor entry exists.
   Self-directed prompts have no floor. `secret` is never a floor (that is just
   self-directed).
-- **Response** — a new amendment kind: the partner's (in practice the dom's)
-  post-hoc prose *reaction* to a journal entry. A **gift, not a debt** — never
-  tracked as pending/owed, never queued. Allowed on `shared` entries (reacting to
-  content) and `sealed` entries (acknowledging the act without the words), never
-  on `secret` ones. Fires no rules, does not touch composite metadata, and is
+- **Response** — an amendment kind: the partner's (in practice the dom's)
+  post-hoc prose *reaction* to something the other logged. A **gift, not a
+  debt** — never tracked as pending/owed, never queued. Allowed on `shared`
+  content (reacting to it) and `sealed` journal entries (acknowledging the act
+  without the words), never on `secret` ones. On a `check_in` carrying
+  `wants_conversation` a response is also what **closes the conversation flag**
+  (ADR 0007). Fires no rules, does not touch composite metadata, and is
   inherently visible to the entry's author. _Avoid_: overloading `note_appended`
   (that is the author's own added context) for this.
+
+- **Conversation flag** — the open state of a `check_in` carrying
+  `flag=wants_conversation` (R18): open until the *other* member attaches a
+  **Response**, derived from the log like **Pending** rather than stored. It never
+  expires — the app cannot observe a conversation, so only a person may end one
+  (ADR 0007). _Avoid_: "notification" (that is the content-free count); treating
+  it as dismissable.
 
 ## Trace (handoff §4.6)
 
