@@ -3,13 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import {
-	ackRuleChanges,
 	createRule,
 	deleteRule,
 	getRoles,
 	listCounters,
 	listEventTypes,
-	listRuleChanges,
 	listRuleHistory,
 	setRuleEnabled,
 	updateRule,
@@ -18,10 +16,6 @@ import { hasIdentity } from "#/lib/identity.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import {
-	type RuleChangeNotice,
-	ruleChangeNotice,
-} from "#/shared/notifications.ts";
 import { isOriginatingRef } from "#/shared/refs.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
@@ -43,12 +37,16 @@ const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /**
- * The Rules screen (#64, ADR 0002). Every member can view the automation that
+ * The Rules screen (#64, ADR 0002), reached from Settings since #123. Every
+ * member can view the automation that
  * governs the dynamic — each rule in plain language, its enabled state, whether
  * it is a default-pack or custom rule (and whether an adopted pack rule has been
  * edited), and its revision history. A member holding dom authority (dom/switch)
  * also gets authoring controls; a sub sees the same rules read-only, never bound
- * by a rule they cannot inspect.
+ * by a rule they cannot inspect. What the partner *changed* is not shown here —
+ * {@link RuleChangeNotice} carries that to Today, because ADR 0002 leans on it
+ * as the consent substitute for dom-only authoring and it cannot do that job
+ * from a screen the bound party has no daily reason to open.
  */
 export function RulesView() {
 	const [ready, setReady] = useState(false);
@@ -56,36 +54,23 @@ export function RulesView() {
 	const [types, setTypes] = useState<EventType[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
-	const [changes, setChanges] = useState<RuleChangeNotice[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [editing, setEditing] = useState<VersionedRule | "new" | null>(null);
 
 	const load = useCallback(async () => {
 		try {
-			const [ruleRes, typeRes, counterRes, roleRes, changeRes] =
-				await Promise.all([
-					listRuleHistory(),
-					listEventTypes(),
-					listCounters(),
-					getRoles(),
-					listRuleChanges(),
-				]);
+			const [ruleRes, typeRes, counterRes, roleRes] = await Promise.all([
+				listRuleHistory(),
+				listEventTypes(),
+				listCounters(),
+				getRoles(),
+			]);
 			setRules(ruleRes.rules);
 			setTypes(typeRes.types);
 			setCounters(counterRes.counters);
 			setMembers(roleRes.members);
-			setChanges(changeRes.changes);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the rules.");
-		}
-	}, []);
-
-	const acknowledge = useCallback(async () => {
-		try {
-			await ackRuleChanges();
-			setChanges([]);
-		} catch {
-			// A failed ack just leaves the notices up for next time.
 		}
 	}, []);
 
@@ -131,22 +116,6 @@ export function RulesView() {
 			</p>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
-
-			{changes.length > 0 && (
-				<section className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3 text-sm">
-					<p className="font-medium">Since you last looked</p>
-					<ul className="space-y-1 text-muted-foreground">
-						{changes.map((change) => (
-							<li key={`${change.at}-${change.kind}-${change.rule_id}`}>
-								{ruleChangeNotice(change)}
-							</li>
-						))}
-					</ul>
-					<Button size="xs" variant="outline" onClick={acknowledge}>
-						Got it
-					</Button>
-				</section>
-			)}
 
 			{canAuthor && editing === null && (
 				<Button onClick={() => setEditing("new")}>New rule</Button>

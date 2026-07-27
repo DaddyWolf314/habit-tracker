@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
+import { RuleChangeNotice } from "#/components/rule-change-notice.tsx";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
 import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
@@ -104,6 +105,8 @@ export function TodayView() {
 			<h1 className="text-2xl font-bold">Today</h1>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
+
+			<RuleChangeNotice />
 
 			<StopwatchesPanel
 				timers={timers}

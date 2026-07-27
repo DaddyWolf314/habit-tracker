@@ -61,6 +61,23 @@ export function SettingsView() {
 				<PinSettings />
 			</div>
 
+			{/* Rules live here rather than in the tab bar (#123, handoff §9 surface
+			    7): authoring automation is a rare act, and the bar is for what you
+			    reach daily. What your partner *changed* is not rare-use — that
+			    notice stays on Today, where the person bound by it will see it. */}
+			<div className="rounded-md border p-4">
+				<h2 className="font-medium">Rules</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					The automations that turn what you log into your counters and timers.
+					Everyone can read them; a dom or switch can change them.
+				</p>
+				<div className="mt-3">
+					<Link to="/rules" className="text-sm underline">
+						View rules
+					</Link>
+				</div>
+			</div>
+
 			<div className="rounded-md border p-4">
 				<h2 className="font-medium">Your devices</h2>
 				<p className="mt-1 text-sm text-muted-foreground">

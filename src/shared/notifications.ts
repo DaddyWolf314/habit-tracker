@@ -102,8 +102,10 @@ export interface RuleChangeNotice {
 
 /**
  * The partner-facing sentence for one rule change (#64, user stories 33 + 35).
- * Rendered only inside the authed rules screen — the notification *badge* stays
- * a content-free count (see {@link unreadCount}); this is the content a member
+ * Rendered only inside the authed app — on Today since #123, where the member
+ * bound by a rule they cannot author will actually see it — while the
+ * notification *badge* stays a content-free count (see {@link unreadCount});
+ * this is the content a member
  * sees once they're looking at the rules themselves. Viewer-relative: authoring
  * kinds are always changes the *other* member made (a member's own changes need
  * no notice), and `upstream_changed` is the app's pack, not a partner.
