@@ -1225,7 +1225,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 * The rule changes the caller hasn't acknowledged yet (#64, user stories 33 +
 	 * 35): every change made by someone other than them — the partner's authoring
 	 * actions plus the pack's upstream-changed flags — since they last acked. The
-	 * rules screen composes each into a sentence (`ruleChangeNotice`), so the sub
+	 * Today surface composes each into a sentence (`ruleChangeNotice`), so the sub
 	 * always learns the current terms; the same rows drive the unread-count badge.
 	 */
 	async listRuleChanges(identityHash: string): Promise<RuleChangeNotice[]> {
@@ -1251,8 +1251,8 @@ export class CoupleDO extends DurableObject<Env> {
 
 	/**
 	 * Marks the caller's rule-change notices seen (#64). The explicit
-	 * acknowledgement the rules screen sends once the notices have been shown —
-	 * kept out of the history read so a GET never mutates state.
+	 * acknowledgement the Today notice sends once it has been shown — kept out of
+	 * the history read so a GET never mutates state.
 	 */
 	async ackRuleChanges(identityHash: string): Promise<void> {
 		const me = this.requireMember(identityHash);
@@ -3426,7 +3426,7 @@ export class CoupleDO extends DurableObject<Env> {
 		return row?.n ?? 0;
 	}
 
-	/** Marks the caller's rule-change notices seen — opening the rules screen acks. */
+	/** Marks the caller's rule-change notices seen — dismissing the Today notice acks. */
 	private markRuleChangesSeen(memberId: string): void {
 		this.setSetting(`rules_seen_at_${memberId}`, String(Date.now()));
 	}

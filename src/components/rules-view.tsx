@@ -38,8 +38,8 @@ const fieldClass =
 
 /**
  * The Rules screen (#64, ADR 0002), reached from Settings since #123. Every
- * member can view the automation that
- * governs the dynamic — each rule in plain language, its enabled state, whether
+ * member can view the automation that governs the dynamic — each rule in plain
+ * language, its enabled state, whether
  * it is a default-pack or custom rule (and whether an adopted pack rule has been
  * edited), and its revision history. A member holding dom authority (dom/switch)
  * also gets authoring controls; a sub sees the same rules read-only, never bound
