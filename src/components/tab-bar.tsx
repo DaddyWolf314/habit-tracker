@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { CalendarDays, ScrollText, Settings } from "lucide-react";
+import { CalendarDays, Handshake, ScrollText, Settings } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { getNotifications } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
@@ -9,6 +9,7 @@ import { useSession } from "#/lib/use-session.ts";
 const TABS = [
 	{ to: "/today", label: "Today", Icon: CalendarDays },
 	{ to: "/log", label: "Log", Icon: ScrollText },
+	{ to: "/agreements", label: "Agreements", Icon: Handshake },
 	{ to: "/settings", label: "Settings", Icon: Settings },
 ] as const;
 
