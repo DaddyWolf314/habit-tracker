@@ -478,6 +478,7 @@ function AgreementForm({
 					onChange={(e) => setName(e.target.value)}
 				/>
 			</label>
+			{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the Textarea */}
 			<label className="block">
 				<span className="text-xs text-muted-foreground">
 					What you've agreed
