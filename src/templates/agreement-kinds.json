@@ -1,0 +1,25 @@
+{
+	"version": 1,
+	"kinds": [
+		{
+			"id": "protocol",
+			"label": "Protocol",
+			"author_permission": ["dom", "switch"]
+		},
+		{
+			"id": "ritual",
+			"label": "Ritual",
+			"author_permission": ["dom", "switch"]
+		},
+		{
+			"id": "limit",
+			"label": "Limit",
+			"author_permission": ["sub", "switch"]
+		},
+		{
+			"id": "safeword",
+			"label": "Safeword",
+			"author_permission": ["dom", "sub", "switch"]
+		}
+	]
+}

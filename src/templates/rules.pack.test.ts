@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { agreementRefKeys } from "#/shared/agreements.ts";
 import { evaluateRules, rulesEffectiveAt } from "#/shared/engine.ts";
 import { awaitingKeysFor } from "#/shared/event-types.ts";
+import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
 import { matchStopwatch, type OpenStopwatch } from "#/shared/timers.ts";
 import {
+	DEFAULT_AGREEMENT_KINDS,
 	DEFAULT_ANCHORS,
 	DEFAULT_COUNTERS,
 	DEFAULT_RULES,
@@ -473,5 +476,93 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			match_on: { prompt_id: "p1" },
 			status: "completed",
 		});
+	});
+});
+
+/**
+ * The pack's citing refs (#121, ADR 0006). These two keys were the last
+ * unstructured refs in the app — free text naming nothing the app held a row for
+ * — and they are what makes the corpus reachable from the log.
+ */
+describe("citing refs in the shipped pack", () => {
+	const fieldOn = (typeId: string, key: string) => {
+		const type = STARTER_EVENT_TYPES.find((t) => t.id === typeId);
+		if (!type) throw new Error(`no ${typeId} in the pack`);
+		const field = type.metadata[key];
+		if (!field) throw new Error(`no ${typeId}.${key}`);
+		return field;
+	};
+
+	it("an infraction cites an Agreement, and no longer calls it a Rule", () => {
+		// The collision this whole line of work removed: a sub logging an
+		// infraction was asked for a "Rule" while "Rules" meant automation.
+		const field = fieldOn("infraction", "rule_ref");
+		expect(isCitingRef(field)).toBe(true);
+		expect(field.label).toBe("Agreement");
+	});
+
+	it("a completed ritual cites a ritual, not the whole corpus", () => {
+		// Narrowed on purpose: logging a ritual must not offer the couple's limits.
+		const field = fieldOn("ritual_completed", "ritual_id");
+		expect(isCitingRef(field)).toBe(true);
+		expect(field.kind === "ref" && field.agreement_kind).toBe("ritual");
+	});
+
+	it("keeps both keys' names, so stored citations and rule conditions still match", () => {
+		// ADR 0005's precedent: semantics change, history is left alone. Renaming
+		// would orphan every citation already logged *and* silently break any rule
+		// condition keyed on the old name.
+		expect(
+			agreementRefKeys(
+				STARTER_EVENT_TYPES.find((t) => t.id === "infraction") ?? {
+					metadata: {},
+				},
+			),
+		).toEqual(["rule_ref"]);
+		expect(
+			agreementRefKeys(
+				STARTER_EVENT_TYPES.find((t) => t.id === "ritual_completed") ?? {
+					metadata: {},
+				},
+			),
+		).toEqual(["ritual_id"]);
+	});
+
+	it("no citing ref is minted — nothing mints a definition that already exists", () => {
+		for (const type of STARTER_EVENT_TYPES) {
+			for (const key of agreementRefKeys(type)) {
+				expect(isOriginatingRef(type.metadata[key])).toBe(false);
+			}
+		}
+	});
+});
+
+describe("the shipped Agreement kinds", () => {
+	it("ships the four categories and no terms", () => {
+		expect(DEFAULT_AGREEMENT_KINDS.map((k) => k.id)).toEqual([
+			"protocol",
+			"ritual",
+			"limit",
+			"safeword",
+		]);
+	});
+
+	it("keeps a plain dom out of limits, and lets a switch in", () => {
+		const limit = DEFAULT_AGREEMENT_KINDS.find((k) => k.id === "limit");
+		expect(limit?.author_permission).not.toContain("dom");
+		expect(limit?.author_permission).toEqual(["sub", "switch"]);
+	});
+
+	it("names a kind for every agreement_kind the pack narrows to", () => {
+		// A field narrowing to a kind nobody seeds would offer nothing, for ever,
+		// with no error anywhere.
+		const ids = new Set(DEFAULT_AGREEMENT_KINDS.map((k) => k.id));
+		for (const type of STARTER_EVENT_TYPES) {
+			for (const field of Object.values(type.metadata)) {
+				if (field.kind === "ref" && field.agreement_kind) {
+					expect(ids.has(field.agreement_kind)).toBe(true);
+				}
+			}
+		}
 	});
 });

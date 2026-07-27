@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { VersionedAgreement } from "./agreements.ts";
+import type { MetadataField } from "./event-types.ts";
 import { refCandidates } from "./ref-candidates.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
@@ -362,5 +364,128 @@ describe("refCandidates", () => {
 			{ value: "sess-aaaa", label: "kneeling — 1m 0s · …aaaa" },
 			{ value: "sess-bbbb", label: "kneeling — 1m 0s · …bbbb" },
 		]);
+	});
+});
+
+/**
+ * Citing refs (#121, ADR 0006). Their candidates are the Agreements *in force* —
+ * the opposite lifecycle from an echoing ref's, whose candidates are open timers
+ * and which drops a row the moment it resolves. A retired Agreement leaves the
+ * picker while every citation already made against it still resolves.
+ */
+describe("citing-ref candidates", () => {
+	const MAR = 1_700_000_000_000;
+	const JUN = MAR + 90 * 86_400_000;
+
+	const term = (
+		id: string,
+		kind: string,
+		name: string,
+		retiredAt?: number,
+	): VersionedAgreement => ({
+		id,
+		kind,
+		versions: [
+			{ effective_from: MAR, name, text: "", retired: false },
+			...(retiredAt
+				? [{ effective_from: retiredAt, name, text: "", retired: true }]
+				: []),
+		],
+	});
+
+	const AGREEMENTS = [
+		term("ag_1", "protocol", "ask before you come"),
+		term("ag_2", "ritual", "morning kneel"),
+		term("ag_3", "ritual", "evening check-in", JUN),
+	];
+
+	const citing = (agreementKind?: string): MetadataField => ({
+		kind: "ref",
+		ref_kind: "agreement",
+		...(agreementKind ? { agreement_kind: agreementKind } : {}),
+		label: "Agreement",
+		required: false,
+		set_permission: ["dom", "sub", "switch"],
+	});
+
+	it("offers every term in force when the field names no kind", () => {
+		// An infraction can cite anything the couple agreed — a protocol, a ritual,
+		// a limit — so an unnarrowed field offers the whole corpus.
+		const got = refCandidates({
+			rules: [],
+			timers: [],
+			typeId: "infraction",
+			key: "rule_ref",
+			now: MAR + 1,
+			field: citing(),
+			agreements: AGREEMENTS,
+		});
+		expect(got.map((c) => c.value)).toEqual(["ag_1", "ag_2", "ag_3"]);
+	});
+
+	it("narrows to one kind when the field names one", () => {
+		// Logging a completed ritual should not offer the couple's limits.
+		const got = refCandidates({
+			rules: [],
+			timers: [],
+			typeId: "ritual_completed",
+			key: "ritual_id",
+			now: MAR + 1,
+			field: citing("ritual"),
+			agreements: AGREEMENTS,
+		});
+		expect(got.map((c) => c.value)).toEqual(["ag_2", "ag_3"]);
+	});
+
+	it("stops offering a retired term", () => {
+		const got = refCandidates({
+			rules: [],
+			timers: [],
+			typeId: "ritual_completed",
+			key: "ritual_id",
+			now: JUN + 1,
+			field: citing("ritual"),
+			agreements: AGREEMENTS,
+		});
+		expect(got.map((c) => c.value)).toEqual(["ag_2"]);
+	});
+
+	it("labels a candidate by the name in force, not the current one", () => {
+		// Same reason a citation renders the old name: what the term was called
+		// then is what the person agreed to.
+		const renamed: VersionedAgreement = {
+			id: "ag_9",
+			kind: "protocol",
+			versions: [
+				{ effective_from: MAR, name: "old name", text: "", retired: false },
+				{ effective_from: JUN, name: "new name", text: "", retired: false },
+			],
+		};
+		const at = (now: number) =>
+			refCandidates({
+				rules: [],
+				timers: [],
+				typeId: "infraction",
+				key: "rule_ref",
+				now,
+				field: citing(),
+				agreements: [renamed],
+			})[0]?.label;
+		expect(at(MAR + 1)).toBe("old name");
+		expect(at(JUN + 1)).toBe("new name");
+	});
+
+	it("falls back to free text when the corpus is empty", () => {
+		expect(
+			refCandidates({
+				rules: [],
+				timers: [],
+				typeId: "infraction",
+				key: "rule_ref",
+				now: MAR,
+				field: citing(),
+				agreements: [],
+			}),
+		).toEqual([]);
 	});
 });

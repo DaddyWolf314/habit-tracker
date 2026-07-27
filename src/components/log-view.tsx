@@ -10,6 +10,7 @@ import { Button } from "#/components/ui/button.tsx";
 import { Sheet, SheetContent, SheetTrigger } from "#/components/ui/sheet.tsx";
 import {
 	getRoles,
+	listAgreements,
 	listAnchors,
 	listCounters,
 	listEvents,
@@ -20,6 +21,7 @@ import {
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
@@ -54,6 +56,7 @@ export function LogView() {
 	// The timers feed the composer's ref pickers (#89) — the candidates a
 	// `session_ended`/`task_completed` can name — so they refresh with the log.
 	const [timers, setTimers] = useState<TimerView[]>([]);
+	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [composerOpen, setComposerOpen] = useState(false);
 
@@ -61,19 +64,27 @@ export function LogView() {
 	// the viewer, so loadAll owns those). Throws on failure — the two callers
 	// below decide whether a failure is loud or quiet.
 	const refresh = useCallback(async () => {
-		const [{ events }, { counters }, { anchors }, { prompts }, { timers }] =
-			await Promise.all([
-				listEvents(),
-				listCounters(),
-				listAnchors(),
-				listOpenPrompts(),
-				listTimers(),
-			]);
+		const [
+			{ events },
+			{ counters },
+			{ anchors },
+			{ prompts },
+			{ timers },
+			{ agreements },
+		] = await Promise.all([
+			listEvents(),
+			listCounters(),
+			listAnchors(),
+			listOpenPrompts(),
+			listTimers(),
+			listAgreements(),
+		]);
 		setEvents(events);
 		setCounters(counters);
 		setAnchors(anchors);
 		setOpenPrompts(prompts);
 		setTimers(timers);
+		setAgreements(agreements);
 	}, []);
 
 	// Children fire this un-awaited after a mutation commits, so it must never
@@ -111,6 +122,7 @@ export function LogView() {
 				roleRes,
 				promptRes,
 				timerRes,
+				agreementRes,
 			] = await Promise.all([
 				listEventTypes(),
 				listRuleHistory(),
@@ -120,6 +132,7 @@ export function LogView() {
 				getRoles(),
 				listOpenPrompts(),
 				listTimers(),
+				listAgreements(),
 			]);
 			setTypes(typeRes.types);
 			setRules(ruleRes.rules);
@@ -129,6 +142,7 @@ export function LogView() {
 			setMembers(roleRes.members);
 			setOpenPrompts(promptRes.prompts);
 			setTimers(timerRes.timers);
+			setAgreements(agreementRes.agreements);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the log.");
 		}
@@ -213,6 +227,7 @@ export function LogView() {
 						openPrompts={openPrompts}
 						rules={liveRules}
 						timers={timers}
+						agreements={agreements}
 						onLogged={() => {
 							refreshLog();
 							setComposerOpen(false);

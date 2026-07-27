@@ -48,8 +48,15 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 	}),
 	z.object({
 		kind: z.literal("ref"),
-		// e.g. "ritual" | "task" | "rule" — what the ref points at.
+		// e.g. "task" | "session" | "agreement" — what the ref points at.
 		ref_kind: z.string().optional(),
+		/**
+		 * Narrows a **citing** ref to one Agreement kind (ADR 0006). Without it a
+		 * citing field offers the whole corpus, which is right for an `infraction`
+		 * — any term can be broken — and wrong for `ritual_completed`, which should
+		 * offer rituals rather than the couple's limits and safewords.
+		 */
+		agreement_kind: z.string().optional(),
 		/**
 		 * A minted ref is *assigned by the server* at log time (a fresh ULID), never
 		 * supplied by the client — the event carrying it is the origin of the ref,

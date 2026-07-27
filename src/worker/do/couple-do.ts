@@ -175,8 +175,10 @@ import {
 	visibleView,
 } from "#/shared/visibility.ts";
 import {
+	AGREEMENT_KINDS_VERSION,
 	COUNTER_ADJUSTED_TYPE,
 	COUNTER_RESET_TYPE,
+	DEFAULT_AGREEMENT_KINDS,
 	DEFAULT_ANCHORS,
 	DEFAULT_COUNTERS,
 	DEFAULT_EVENT_TYPES,
@@ -1120,6 +1122,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 * untouched). Idempotent; the version is recorded to guard re-runs.
 	 */
 	private seedDefaults(): void {
+		this.seedAgreementKinds();
 		for (const type of DEFAULT_EVENT_TYPES) {
 			this.sql.exec(
 				`INSERT INTO event_types (id, definition) VALUES (?, ?)
@@ -3487,6 +3490,33 @@ export class CoupleDO extends DurableObject<Env> {
 			definition,
 			enabled,
 		);
+	}
+
+	/**
+	 * Seeds the shipped Agreement kinds (#121, ADR 0006) — the categories, never
+	 * the terms. Upserts the definition on a bump like the event types do, so a
+	 * corrected label or author list reaches already-seeded couples; a couple's own
+	 * custom kinds have distinct ids and are untouched.
+	 *
+	 * Carries its own version key rather than riding the event-type one, so a
+	 * kinds-only change does not need an unrelated pack bump to reach anybody.
+	 */
+	private seedAgreementKinds(): void {
+		const seeded = Number(this.getSetting("agreement_kinds_version") ?? "0");
+		if (seeded >= AGREEMENT_KINDS_VERSION) return;
+		for (const kind of DEFAULT_AGREEMENT_KINDS) {
+			this.sql.exec(
+				`INSERT INTO agreement_kinds (id, label, author_permission)
+					VALUES (?, ?, ?)
+					ON CONFLICT(id) DO UPDATE SET
+						label = excluded.label,
+						author_permission = excluded.author_permission`,
+				kind.id,
+				kind.label,
+				JSON.stringify(kind.author_permission),
+			);
+		}
+		this.setSetting("agreement_kinds_version", String(AGREEMENT_KINDS_VERSION));
 	}
 
 	/**

@@ -1,5 +1,5 @@
 {
-	"version": 9,
+	"version": 10,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -11,7 +11,8 @@
 			"metadata": {
 				"ritual_id": {
 					"kind": "ref",
-					"ref_kind": "ritual",
+					"ref_kind": "agreement",
+					"agreement_kind": "ritual",
 					"label": "Ritual",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"]
@@ -97,8 +98,8 @@
 			"metadata": {
 				"rule_ref": {
 					"kind": "ref",
-					"ref_kind": "rule",
-					"label": "Rule",
+					"ref_kind": "agreement",
+					"label": "Agreement",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"]
 				},
