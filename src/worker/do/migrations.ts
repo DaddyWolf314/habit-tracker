@@ -187,6 +187,46 @@ export const DO_MIGRATIONS: string[][] = [
 	// it as a "new default" notice, and the flag clears when the couple next edits
 	// the rule — they've seen the new default and made their choice.
 	[`ALTER TABLE rules ADD COLUMN upstream_changed INTEGER NOT NULL DEFAULT 0`],
+	// v10 — the Agreement corpus (#121, ADR 0006): the couple's own terms, as
+	// distinct from the engine rules that share the word. Shaped after `rules` /
+	// `rule_versions` because it carries the same guarantee — a stable identity
+	// plus append-only effective-dated versions, so editing a term appends rather
+	// than overwrites and a citation can still resolve what was in force when the
+	// act happened.
+	//
+	// Two departures from the rules tables, both deliberate:
+	//   - `agreement_versions` carries `name` alongside the prose, so renaming is
+	//     not retroactive: a citation renders what the term was called at the time.
+	//   - `kind` lives on the identity row and is never versioned. A versioned kind
+	//     would be an escalation path, since re-kinding is how you would otherwise
+	//     author in the other role's category.
+	//
+	// `agreement_kinds` is what makes "the sub alone writes limits" structural
+	// rather than conventional; nothing is seeded here (kinds arrive with the
+	// template pack, entries are the couple's own — a default term is one nobody
+	// consented to but everybody has).
+	[
+		`CREATE TABLE IF NOT EXISTS agreement_kinds (
+			id TEXT PRIMARY KEY,
+			label TEXT NOT NULL,
+			author_permission TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS agreements (
+			id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS agreement_versions (
+			agreement_id TEXT NOT NULL,
+			effective_from INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			text TEXT NOT NULL,
+			review_cadence_days INTEGER,
+			retired INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (agreement_id, effective_from)
+		)`,
+		`CREATE INDEX IF NOT EXISTS agreements_kind_idx ON agreements (kind)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";
