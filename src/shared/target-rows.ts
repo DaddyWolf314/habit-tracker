@@ -21,14 +21,17 @@ export interface TargetRow {
 	counter: Counter;
 	target: number;
 	period: "daily" | "weekly";
-	/** Days (or weeks) of the streak folding this counter, or null if none does. */
-	streak: number | null;
+	/**
+	 * The streak folding this counter, with its period — a streak may be weekly,
+	 * and one rendered as days would misstate it. Null when nothing folds it.
+	 */
+	streak: { length: number; period: "daily" | "weekly" } | null;
 	met: boolean;
 	/**
-	 * The event a tick should log, when the rules say what this counter counts.
+	 * What a tick on this row logs, when the rules say what this counter counts.
 	 * Null leaves the row a readout — see {@link tickFor}.
 	 */
-	logs: { type: string; metadata: Record<string, MetadataValue> } | null;
+	tickLogs: { type: string; metadata: Record<string, MetadataValue> } | null;
 }
 
 export function targetRows({
@@ -40,6 +43,11 @@ export function targetRows({
 	rules: Rule[];
 	types: EventType[];
 }): TargetRow[] {
+	// One pass to index the streaks, rather than a scan per row.
+	const byStreakTarget = new Map<string, Counter>();
+	for (const c of counters) {
+		if (c.streak) byStreakTarget.set(c.streak.counter, c);
+	}
 	const rows: TargetRow[] = [];
 	for (const counter of counters) {
 		// A streak is a *property* of the counter it folds (CONTEXT §Target
@@ -55,18 +63,27 @@ export function targetRows({
 			counter,
 			target,
 			period: daily !== undefined ? "daily" : "weekly",
-			streak:
-				counters.find((c) => c.streak?.counter === counter.id)?.value ?? null,
+			streak: streakOf(counter.id, byStreakTarget),
 			met: counter.value >= target,
-			logs: tickFor(counter.id, rules, types),
+			tickLogs: tickFor(counter.id, rules, types),
 		});
 	}
 	return rows;
 }
 
+/** The streak folding this counter, with its period, or null if none does. */
+function streakOf(
+	counterId: string,
+	byStreakTarget: Map<string, Counter>,
+): TargetRow["streak"] {
+	const streak = byStreakTarget.get(counterId);
+	if (!streak?.streak) return null;
+	return { length: streak.value, period: streak.streak.period };
+}
+
 /**
- * The event a tick on this counter's row should log, or null when there is
- * nothing honest to log.
+ * What a tick on this counter's row should log, or null when there is nothing
+ * honest to log.
  *
  * The rule that increments a counter says what the counter counts, so it also
  * says what to append — the link #121's scaffolding deliberately did not store
@@ -80,12 +97,18 @@ export function targetRows({
  * rule keyed on `late=true` would have a tick quietly claim the ritual was late.
  * A subject-role qualifier is fine — that governs *whose* event fires the rule,
  * not what is being asserted.
+ *
+ * Two enabled rules citing *different* terms into one counter make the tick
+ * ambiguous, and the row goes read-only rather than picking one: a button that
+ * silently asserts one of two rituals is worse than no button. Rules agreeing on
+ * the same citation are not ambiguous and still tick.
  */
 function tickFor(
 	counterId: string,
 	rules: Rule[],
 	types: EventType[],
-): TargetRow["logs"] {
+): TargetRow["tickLogs"] {
+	const found = new Map<string, NonNullable<TargetRow["tickLogs"]>>();
 	for (const rule of rules) {
 		if (rule.enabled === false) continue;
 		const increments = rule.effects.some(
@@ -95,13 +118,16 @@ function tickFor(
 		const type = types.find((t) => t.id === rule.condition.type);
 		if (!type) continue;
 		const clauses = Object.entries(rule.condition.metadata);
+		// An unconditional rule (the pack's R1) says only "some ritual happened",
+		// which names nothing a tick could cite.
 		if (clauses.length === 0) continue;
 		const allCite = clauses.every(([key]) => {
 			const field = type.metadata[key];
 			return field !== undefined && isCitingRef(field);
 		});
 		if (!allCite) continue;
-		return { type: type.id, metadata: { ...rule.condition.metadata } };
+		const logs = { type: type.id, metadata: { ...rule.condition.metadata } };
+		found.set(JSON.stringify(logs), logs);
 	}
-	return null;
+	return found.size === 1 ? [...found.values()][0] : null;
 }

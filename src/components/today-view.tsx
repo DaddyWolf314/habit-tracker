@@ -37,21 +37,31 @@ export function TodayView() {
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
-	// Rules and types change under the viewer far less than counters do, but they
-	// are what say which rows are tickable, so they ride the same load.
+	// What says which target rows are tickable (#135), so it has to stay current:
+	// see the poll below.
 	const [rules, setRules] = useState<Rule[]>([]);
 	const [types, setTypes] = useState<EventType[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const refresh = useCallback(async () => {
-		const [{ timers }, { prompts }, { counters }] = await Promise.all([
-			listTimers(),
-			listOpenPrompts(),
-			listCounters(),
-		]);
+		const [{ timers }, { prompts }, { counters }, { rules }, { types }] =
+			await Promise.all([
+				listTimers(),
+				listOpenPrompts(),
+				listCounters(),
+				listRules(),
+				listEventTypes(),
+			]);
 		setTimers(timers);
 		setOpenPrompts(prompts);
 		setCounters(counters);
+		// Rules and types ride the poll too, not just the first load: a dom can
+		// disable the rule behind a tick while the sub's Today is open, and a tick
+		// armed off a rule that no longer fires is a button that looks like it
+		// worked. `RuleChangeNotice` sits on this same screen precisely because a
+		// partner's rule edits are live news here.
+		setRules(rules);
+		setTypes(types);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet

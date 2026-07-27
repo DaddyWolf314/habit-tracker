@@ -62,11 +62,14 @@ function TargetLine({
 	const [error, setError] = useState<string | null>(null);
 
 	async function tick() {
-		if (!row.logs) return;
+		if (!row.tickLogs) return;
 		setBusy(true);
 		setError(null);
 		try {
-			await logEvent({ type: row.logs.type, metadata: row.logs.metadata });
+			await logEvent({
+				type: row.tickLogs.type,
+				metadata: row.tickLogs.metadata,
+			});
 			onChange();
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't log that.");
@@ -89,7 +92,11 @@ function TargetLine({
 					</div>
 					{row.streak !== null && (
 						<div className="text-xs text-muted-foreground">
-							{row.streak === 0 ? "no streak yet" : `${row.streak}-day streak`}
+							{row.streak.length === 0
+								? "no streak yet"
+								: `${row.streak.length}-${
+										row.streak.period === "weekly" ? "week" : "day"
+									} streak`}
 						</div>
 					)}
 				</div>
@@ -97,7 +104,7 @@ function TargetLine({
 					{row.counter.value} / {row.target}
 					{row.met && <span className="ml-1">✓</span>}
 				</span>
-				{row.logs && (
+				{row.tickLogs && (
 					<Button size="xs" onClick={tick} disabled={busy}>
 						{busy ? "…" : "Log it"}
 					</Button>
