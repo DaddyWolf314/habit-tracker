@@ -3,11 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { RuleChangeNotice } from "#/components/rule-change-notice.tsx";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
+import { QueueEntry } from "#/components/today/queue-entry.tsx";
 import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
 import { TargetsPanel } from "#/components/today/targets-panel.tsx";
 import {
 	getRoles,
 	listCounters,
+	listEvents,
 	listEventTypes,
 	listOpenPrompts,
 	listRules,
@@ -17,6 +19,7 @@ import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
+import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -41,17 +44,27 @@ export function TodayView() {
 	// see the poll below.
 	const [rules, setRules] = useState<Rule[]>([]);
 	const [types, setTypes] = useState<EventType[]>([]);
+	// The queue entry counts what awaits *this* member's ruling, which is a fold
+	// over the log rather than a stored number (§8.1, #136).
+	const [events, setEvents] = useState<EventView[]>([]);
 	const [error, setError] = useState<string | null>(null);
 
 	const refresh = useCallback(async () => {
-		const [{ timers }, { prompts }, { counters }, { rules }, { types }] =
-			await Promise.all([
-				listTimers(),
-				listOpenPrompts(),
-				listCounters(),
-				listRules(),
-				listEventTypes(),
-			]);
+		const [
+			{ timers },
+			{ prompts },
+			{ counters },
+			{ rules },
+			{ types },
+			{ events },
+		] = await Promise.all([
+			listTimers(),
+			listOpenPrompts(),
+			listCounters(),
+			listRules(),
+			listEventTypes(),
+			listEvents(),
+		]);
 		setTimers(timers);
 		setOpenPrompts(prompts);
 		setCounters(counters);
@@ -62,6 +75,7 @@ export function TodayView() {
 		// partner's rule edits are live news here.
 		setRules(rules);
 		setTypes(types);
+		setEvents(events);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -80,21 +94,30 @@ export function TodayView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [timerRes, roleRes, promptRes, counterRes, ruleRes, typeRes] =
-				await Promise.all([
-					listTimers(),
-					getRoles(),
-					listOpenPrompts(),
-					listCounters(),
-					listRules(),
-					listEventTypes(),
-				]);
+			const [
+				timerRes,
+				roleRes,
+				promptRes,
+				counterRes,
+				ruleRes,
+				typeRes,
+				eventRes,
+			] = await Promise.all([
+				listTimers(),
+				getRoles(),
+				listOpenPrompts(),
+				listCounters(),
+				listRules(),
+				listEventTypes(),
+				listEvents(),
+			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
 			setOpenPrompts(promptRes.prompts);
 			setCounters(counterRes.counters);
 			setRules(ruleRes.rules);
 			setTypes(typeRes.types);
+			setEvents(eventRes.events);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -142,6 +165,13 @@ export function TodayView() {
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
 			<RuleChangeNotice />
+
+			<QueueEntry
+				events={events}
+				types={types}
+				members={members}
+				selfRole={selfRole}
+			/>
 
 			<TargetsPanel
 				counters={counters}

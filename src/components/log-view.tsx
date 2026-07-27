@@ -9,6 +9,7 @@ import { ABOVE_TAB_BAR } from "#/components/tab-bar.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Sheet, SheetContent, SheetTrigger } from "#/components/ui/sheet.tsx";
 import {
+	ackRulings,
 	getRoles,
 	listAgreements,
 	listAnchors,
@@ -143,6 +144,11 @@ export function LogView() {
 			setOpenPrompts(promptRes.prompts);
 			setTimers(timerRes.timers);
 			setAgreements(agreementRes.agreements);
+			// Reading the log is what "seen" means for a ruling: the event updates
+			// in place with the dom's note, so the content behind the count is on
+			// this screen. A failed ack leaves the count up — telling someone twice
+			// beats marking a ruling seen that never reached the server.
+			ackRulings().catch(() => {});
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the log.");
 		}

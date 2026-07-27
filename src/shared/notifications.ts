@@ -1,3 +1,7 @@
+import { awaitedRulings } from "./adjudication.ts";
+import type { EventType } from "./event-types.ts";
+import type { EventView } from "./events.ts";
+import { type Role, subjectRoleOf } from "./roles.ts";
 /**
  * Content-free notifications (handoff §3.5, #42). Discretion is a product
  * requirement: a notification may reveal only a *count*, never anything about
@@ -9,8 +13,18 @@
 
 /** The couple-side signals that feed the unread count. Counts only — no content. */
 export interface NotificationSignals {
-	/** Events currently awaiting an adjudication (the queue). */
+	/**
+	 * Events awaiting **this member's** ruling (#136, §8.1). Not "everything
+	 * pending": counting a sub's own confessions back at them is the anxiety
+	 * mechanic §8.3 declines, delivered as a number.
+	 */
 	pending_events: number;
+	/**
+	 * Rulings landed on this member's own events since they last looked (#136,
+	 * §8.3 — "You have an update"). The sub's half of the queue signal, and the
+	 * reason their count is not simply zero.
+	 */
+	rulings_received: number;
 	/** A partner-assisted recovery is in progress and worth noticing (#41). */
 	recovery_pending: boolean;
 	/**
@@ -38,6 +52,7 @@ export interface NotificationSignals {
 export function unreadCount(signals: NotificationSignals): number {
 	return (
 		signals.pending_events +
+		signals.rulings_received +
 		(signals.recovery_pending ? 1 : 0) +
 		signals.rule_changes +
 		signals.agreement_changes
@@ -154,3 +169,74 @@ export function agreementChangeAction(op: string): string {
 
 /** The `agreement.`-namespaced audit actions, for selecting corpus changes out. */
 export const AGREEMENT_CHANGE_ACTION_PREFIX = "agreement.";
+
+/**
+ * Events awaiting **this member's** ruling (#136, handoff §8.1 — "badge on today
+ * view: '2 awaiting your ruling'").
+ *
+ * Scoped through {@link awaitedRulings}, which already answers "may this role
+ * rule this key" via the type's `adjudicated_by`. That gating is also what
+ * handles a switch with no special case, exactly as the queue itself does — the
+ * question is never "are you the dom", it is "is this yours to rule".
+ *
+ * It replaced a count of *every* pending event, which meant a sub's badge tallied
+ * their own confessions awaiting the dom's ruling: a number that rises when you
+ * self-report and sits there until you are judged. §8.3 asks for the opposite —
+ * "quiet 'awaiting ruling' chip… No countdowns, no anxiety mechanics."
+ */
+export function awaitingMyRuling({
+	events,
+	types,
+	members,
+	role,
+}: {
+	events: EventView[];
+	types: EventType[];
+	members: Array<{ member_id: string; role: Role | null }>;
+	role: Role | null;
+}): number {
+	if (role === null) return 0;
+	const byId = new Map(types.map((t) => [t.id, t]));
+	let count = 0;
+	for (const event of events) {
+		const type = byId.get(event.type);
+		if (!type) continue;
+		const subjectRole = subjectRoleOf(event.subject, members);
+		if (awaitedRulings(event, type, role, subjectRole).length > 0) count++;
+	}
+	return count;
+}
+
+/**
+ * Rulings landed on this member's own events since they last looked (#136,
+ * handoff §8.3 — "On ruling: content-safe notification ('You have an update')").
+ *
+ * This half never existed. When the dom ruled, the sub's count silently *dropped*
+ * — the one moment the spec calls "emotionally load-bearing in LDR play" was the
+ * one moment nothing happened.
+ *
+ * A ruling you made yourself is not news to you, so only the other member's
+ * amendments count. Each correction counts again: superseding a ruling changes
+ * what the sub was told, which is a new thing to hear rather than a tidier
+ * version of the old one.
+ */
+export function rulingsReceivedSince({
+	events,
+	memberId,
+	seenAt,
+}: {
+	events: EventView[];
+	memberId: string;
+	seenAt: number;
+}): number {
+	let count = 0;
+	for (const event of events) {
+		if (event.actor !== memberId) continue;
+		for (const amendment of event.amendments) {
+			if (amendment.kind !== "adjudication") continue;
+			if (amendment.actor === memberId) continue;
+			if (amendment.created_at > seenAt) count++;
+		}
+	}
+	return count;
+}
