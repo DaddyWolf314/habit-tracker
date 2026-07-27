@@ -6,7 +6,9 @@ import {
 	type AgreementVersion,
 	type AgreementWrite,
 	agreementChangeKind,
+	agreementEffectiveAt,
 	agreementRefKeys,
+	authorsKind,
 	type CreateAgreementInput,
 	latestAgreementVersion,
 	type ReviseAgreementInput,
@@ -121,6 +123,12 @@ import {
 	ruleSchema,
 	versionFromDefinition,
 } from "#/shared/rules.ts";
+import {
+	citingKeyOf,
+	isTracked,
+	type ScaffoldPlan,
+	scaffoldPlan,
+} from "#/shared/scaffold.ts";
 import { catchUpFireAt, dueItems, earliestFireAt } from "#/shared/scheduler.ts";
 import {
 	DAY_MS,
@@ -1663,6 +1671,84 @@ export class CoupleDO extends DurableObject<Env> {
 		const kind = this.agreementKinds().find((k) => k.id === id);
 		if (!kind) throw coupleError("NOT_FOUND", "no such kind");
 		return kind;
+	}
+
+	/**
+	 * Tracks a ritual Agreement (#121, stories 34–37): creates its target counter,
+	 * the streak folding it, and the rule pointing its citation at the counter.
+	 *
+	 * One call rather than three from the client, so a half-built recipe cannot
+	 * survive a dropped connection — a counter with no rule counts nothing, and a
+	 * rule with no counter fires into a projection that does not exist. The DO
+	 * serialises per couple, so all three land or none do.
+	 *
+	 * What comes out is **ordinary** (ADR 0006): nothing records that these were
+	 * generated, nothing links them back, and editing or deleting any of them is
+	 * the same act it would be for a hand-made one. Scaffolding is a starting
+	 * point, not a relationship.
+	 *
+	 * Gated to a member who authors the Agreement's kind *and* may author rules —
+	 * this creates automation, and ADR 0002 keeps that to dom/switch.
+	 */
+	async trackAgreement(
+		identityHash: string,
+		agreementId: string,
+	): Promise<ScaffoldPlan> {
+		const me = this.requireAuthor(identityHash);
+		const agreement = this.agreements().find((a) => a.id === agreementId);
+		if (!agreement) throw coupleError("NOT_FOUND", "no such agreement");
+		if (!authorsKind(this.agreementKinds(), agreement.kind, me.role as Role)) {
+			throw coupleError(
+				"FORBIDDEN",
+				"your role doesn't author this kind of agreement",
+			);
+		}
+		const rules = rulesEffectiveAt(this.versionedRules(), Date.now());
+		if (isTracked(agreementId, rules)) {
+			throw coupleError("CONFLICT", "this is already being tracked");
+		}
+		// The type whose citation drives the counter: the one naming this kind of
+		// Agreement. Derived, so a couple's own ritual-shaped type works too.
+		const type = this.eventTypes().find((t) => {
+			const key = citingKeyOf(t);
+			if (!key) return false;
+			const field = t.metadata[key];
+			return (
+				field.kind === "ref" &&
+				(field.agreement_kind === undefined ||
+					field.agreement_kind === agreement.kind)
+			);
+		});
+		const refKey = type ? citingKeyOf(type) : null;
+		if (!type || !refKey) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"no event type cites this kind of agreement, so nothing could count it",
+			);
+		}
+		const version = agreementEffectiveAt(agreement, Date.now());
+		const plan = scaffoldPlan({
+			agreementId,
+			name: version?.name ?? latestAgreementVersion(agreement).name,
+			eventTypeId: type.id,
+			refKey,
+		});
+		const at = Date.now();
+		for (const definition of [plan.counter, plan.streak]) {
+			this.sql.exec(
+				`INSERT INTO counters (id, definition, value, updated_at)
+					VALUES (?, ?, 0, NULL)
+					ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
+				definition.id,
+				JSON.stringify(definition),
+			);
+		}
+		this.writeRuleVersion(
+			{ id: plan.rule.id, origin: "custom", adopted: false },
+			versionFromDefinition(plan.rule, at),
+		);
+		this.recordRuleChange(me, "create", plan.rule.id, at);
+		return plan;
 	}
 
 	/** The couple's event-type schema set (starter seven + any custom types). */

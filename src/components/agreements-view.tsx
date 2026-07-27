@@ -10,8 +10,10 @@ import {
 	getRoles,
 	listAgreementKinds,
 	listAgreements,
+	listRules,
 	retireAgreement,
 	reviseAgreement,
+	trackAgreement,
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import {
@@ -23,6 +25,12 @@ import {
 } from "#/shared/agreements.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { Role } from "#/shared/roles.ts";
+import type { Rule } from "#/shared/rules.ts";
+import {
+	isTracked,
+	type ScaffoldPlan,
+	scaffoldPlan,
+} from "#/shared/scaffold.ts";
 
 const fieldClass =
 	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
@@ -49,18 +57,23 @@ export function AgreementsView() {
 	const [kinds, setKinds] = useState<AgreementKind[]>([]);
 	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
 	const [members, setMembers] = useState<RoleMember[]>([]);
+	// What already tracks a term is derived from the rules, since ADR 0006 keeps
+	// no link — the rule *is* the record that tracking happened.
+	const [rules, setRules] = useState<Rule[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [adding, setAdding] = useState<string | null>(null);
 
 	const load = useCallback(async () => {
-		const [kindRes, agreementRes, roleRes] = await Promise.all([
+		const [kindRes, agreementRes, roleRes, ruleRes] = await Promise.all([
 			listAgreementKinds(),
 			listAgreements(),
 			getRoles(),
+			listRules(),
 		]);
 		setKinds(kindRes.kinds);
 		setAgreements(agreementRes.agreements);
 		setMembers(roleRes.members);
+		setRules(ruleRes.rules);
 	}, []);
 
 	const reload = useCallback(async () => {
@@ -158,6 +171,7 @@ export function AgreementsView() {
 					agreements={live.filter((a) => a.kind === kind.id)}
 					now={now}
 					canAuthor={authorsKind(kinds, kind.id, selfRole)}
+					rules={rules}
 					adding={adding === kind.id}
 					onAdd={() => setAdding(kind.id)}
 					onCancelAdd={() => setAdding(null)}
@@ -202,6 +216,7 @@ function KindSection({
 	agreements,
 	now,
 	canAuthor,
+	rules,
 	adding,
 	onAdd,
 	onCancelAdd,
@@ -212,6 +227,7 @@ function KindSection({
 	agreements: VersionedAgreement[];
 	now: number;
 	canAuthor: boolean;
+	rules: Rule[];
 	adding: boolean;
 	onAdd: () => void;
 	onCancelAdd: () => void;
@@ -256,6 +272,13 @@ function KindSection({
 							agreement={agreement}
 							now={now}
 							canAuthor={canAuthor}
+							// Only a ritual has something to count, and only while nothing
+							// already counts it (#121).
+							trackable={
+								canAuthor &&
+								kind.id === "ritual" &&
+								!isTracked(agreement.id, rules)
+							}
 							onChanged={onChanged}
 							onError={onError}
 						/>
@@ -271,6 +294,7 @@ function AgreementRow({
 	agreement,
 	now,
 	canAuthor,
+	trackable = false,
 	retired = false,
 	onChanged,
 	onError,
@@ -278,6 +302,8 @@ function AgreementRow({
 	agreement: VersionedAgreement;
 	now: number;
 	canAuthor: boolean;
+	/** This term can still be tracked: its author, not retired, not already. */
+	trackable?: boolean;
 	/** Already retired: still its author's to delete, never to revise or re-retire. */
 	retired?: boolean;
 	onChanged: () => void;
@@ -371,6 +397,15 @@ function AgreementRow({
 					}
 					onDone={onChanged}
 					onCancel={() => setEditing(false)}
+					onError={onError}
+				/>
+			)}
+
+			{open && trackable && (
+				<TrackOffer
+					agreement={agreement}
+					name={current?.name ?? latest.name}
+					onDone={onChanged}
 					onError={onError}
 				/>
 			)}
@@ -516,6 +551,97 @@ function AgreementForm({
 					{busy ? "…" : submitLabel}
 				</Button>
 				<Button size="sm" variant="ghost" onClick={onCancel} disabled={busy}>
+					Cancel
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * "Track this" — the one-time scaffold (#121, stories 34–35).
+ *
+ * The plan is rendered *before* anything is created, from the same pure function
+ * the server builds from, so the confirmation cannot describe something other
+ * than what gets made. Three artifacts appearing unannounced in a couple's
+ * counters and rules would be exactly the kind of surprise this app avoids
+ * elsewhere by showing mechanical fallout up front (§8.4's confirm sheet).
+ */
+function TrackOffer({
+	agreement,
+	name,
+	onDone,
+	onError,
+}: {
+	agreement: VersionedAgreement;
+	name: string;
+	onDone: () => void;
+	onError: (message: string) => void;
+}) {
+	const [preview, setPreview] = useState<ScaffoldPlan | null>(null);
+	const [busy, setBusy] = useState(false);
+
+	// The preview is computed, not fetched: the server derives the same plan from
+	// the same function, so a round trip could only add a way for them to differ.
+	function show() {
+		setPreview(
+			scaffoldPlan({
+				agreementId: agreement.id,
+				name,
+				eventTypeId: "ritual_completed",
+				refKey: "ritual_id",
+			}),
+		);
+	}
+
+	async function confirm() {
+		setBusy(true);
+		try {
+			await trackAgreement(agreement.id);
+			setPreview(null);
+			onDone();
+		} catch (err) {
+			onError(err instanceof Error ? err.message : "Couldn't track that.");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	if (!preview) {
+		return (
+			<div className="mt-2 border-t pt-2">
+				<Button size="xs" variant="outline" onClick={show}>
+					Track this
+				</Button>
+				<p className="mt-1 text-xs text-muted-foreground">
+					Counts each time it's done, and keeps a streak.
+				</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="mt-2 space-y-2 border-t pt-2 text-xs">
+			<p className="font-medium">This will add:</p>
+			<ul className="space-y-1 text-muted-foreground">
+				<li>a daily counter, “{preview.counter.name}”, with a target of 1</li>
+				<li>a streak of it, “{preview.streak.name}”</li>
+				<li>a rule counting every “{name}” you log</li>
+			</ul>
+			<p className="text-muted-foreground">
+				They become ordinary counters and an ordinary rule — edit or remove them
+				like any other.
+			</p>
+			<div className="flex gap-2">
+				<Button size="xs" onClick={confirm} disabled={busy}>
+					{busy ? "…" : "Add them"}
+				</Button>
+				<Button
+					size="xs"
+					variant="ghost"
+					onClick={() => setPreview(null)}
+					disabled={busy}
+				>
 					Cancel
 				</Button>
 			</div>

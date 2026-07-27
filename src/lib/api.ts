@@ -33,6 +33,7 @@ import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
 import type { Role } from "#/shared/roles.ts";
 import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
+import type { ScaffoldPlan } from "#/shared/scaffold.ts";
 import type { TimerView } from "#/shared/timers.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
 import { getBearer } from "./identity.ts";
@@ -460,6 +461,17 @@ export function rekindAgreement(
  * Retires an Agreement — the real "remove". Effective-dated, so it leaves the
  * picker while staying readable for every citation already made against it.
  */
+/**
+ * Tracks a ritual Agreement (#121): creates its target counter, streak and rule
+ * in one call. Returns what was made, which is the same plan the preview showed.
+ */
+export function trackAgreement(id: string): Promise<ScaffoldPlan> {
+	return apiFetch<ScaffoldPlan>(
+		`/api/agreements/${encodeURIComponent(id)}/track`,
+		{ method: "POST" },
+	);
+}
+
 export function retireAgreement(
 	id: string,
 	effectiveFrom?: number,

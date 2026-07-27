@@ -16,6 +16,8 @@ vi.mock("#/lib/api.ts", () => ({
 	retireAgreement: vi.fn(() => Promise.resolve({})),
 	reviseAgreement: vi.fn(() => Promise.resolve({})),
 	listAgreementKinds: vi.fn(() => Promise.resolve({ kinds: KINDS })),
+	listRules: vi.fn(() => Promise.resolve({ rules: [] })),
+	trackAgreement: vi.fn(() => Promise.resolve({})),
 	listAgreements: vi.fn(() => Promise.resolve({ agreements: AGREEMENTS })),
 	getRoles: vi.fn(() => Promise.resolve({ members: MEMBERS })),
 }));
@@ -24,8 +26,11 @@ import {
 	ackAgreementChanges,
 	createAgreement,
 	getRoles,
+	listAgreementKinds,
 	listAgreements,
+	listRules,
 	retireAgreement,
+	trackAgreement,
 } from "#/lib/api.ts";
 import type { AgreementKind, VersionedAgreement } from "#/shared/agreements.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -348,5 +353,102 @@ describe("AgreementsView — acknowledging a partner's change", () => {
 		vi.mocked(ackAgreementChanges).mockRejectedValueOnce(new Error("offline"));
 		await renderView();
 		expect(screen.getByText("text me when you land")).not.toBeNull();
+	});
+});
+
+/**
+ * Tracking a ritual (#121, stories 34–36). The dom sees exactly what will be
+ * created before it exists: three artifacts appearing unannounced in a couple's
+ * counters and rules is the surprise this app avoids elsewhere by showing
+ * mechanical fallout up front.
+ */
+describe("AgreementsView — tracking a ritual", () => {
+	const RITUAL_KINDS: AgreementKind[] = [
+		...KINDS,
+		{ id: "ritual", label: "Ritual", author_permission: ["dom", "switch"] },
+	];
+	const KNEEL: VersionedAgreement = {
+		id: "ag_7f3",
+		kind: "ritual",
+		versions: [
+			{
+				effective_from: NOW - 10_000,
+				name: "morning kneel",
+				text: "",
+				retired: false,
+			},
+		],
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		vi.mocked(listAgreementKinds).mockResolvedValue({ kinds: RITUAL_KINDS });
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: [KNEEL] });
+		vi.mocked(listRules).mockResolvedValue({ rules: [] });
+		asRole("dom");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	/** The offer lives in the row's drawer, which opens on the term's name. */
+	async function openRow() {
+		await renderView();
+		fireEvent.click(screen.getByText("morning kneel"));
+	}
+
+	it("offers tracking on a ritual its author can act on", async () => {
+		await openRow();
+		expect(screen.getByRole("button", { name: /track this/i })).not.toBeNull();
+	});
+
+	it("creates nothing until the plan has been shown and confirmed", async () => {
+		await openRow();
+		fireEvent.click(screen.getByRole("button", { name: /track this/i }));
+		await act(async () => {});
+
+		// The preview names all three, and nothing has been created yet.
+		expect(screen.getByText(/this will add/i)).not.toBeNull();
+		expect(screen.getByText(/morning kneel streak/)).not.toBeNull();
+		expect(trackAgreement).not.toHaveBeenCalled();
+	});
+
+	it("tracks it once confirmed", async () => {
+		await openRow();
+		fireEvent.click(screen.getByRole("button", { name: /track this/i }));
+		fireEvent.click(screen.getByRole("button", { name: /add them/i }));
+		await act(async () => {});
+
+		expect(trackAgreement).toHaveBeenCalledWith("ag_7f3");
+	});
+
+	it("stops offering once a rule already counts it", async () => {
+		// Derived from the rules, not a stored flag — so a couple who built the
+		// recipe by hand is recognised too.
+		vi.mocked(listRules).mockResolvedValue({
+			rules: [
+				{
+					id: "track_ag_7f3",
+					enabled: true,
+					condition: {
+						type: "ritual_completed",
+						metadata: { ritual_id: "ag_7f3" },
+					},
+					effects: [
+						{ verb: "increment_counter", counter: "ag_7f3_today", by: 1 },
+					],
+				},
+			],
+		});
+		await openRow();
+		expect(screen.queryByRole("button", { name: /track this/i })).toBeNull();
+	});
+
+	it("offers nothing to a member who does not author rituals", async () => {
+		asRole("sub");
+		await openRow();
+		expect(screen.queryByRole("button", { name: /track this/i })).toBeNull();
 	});
 });
