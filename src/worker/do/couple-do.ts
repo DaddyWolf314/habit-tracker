@@ -1439,7 +1439,13 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<VersionedAgreement> {
 		const me = this.requireLiveMember(identityHash);
 		this.assertAgreementWrite(
-			{ op: "create", kind: input.kind, name: input.name, text: input.text },
+			{
+				op: "create",
+				kind: input.kind,
+				name: input.name,
+				text: input.text,
+				effective_from: input.effective_from,
+			},
 			me,
 		);
 		const id = ulid();
@@ -1476,7 +1482,13 @@ export class CoupleDO extends DurableObject<Env> {
 	): Promise<VersionedAgreement> {
 		const me = this.requireLiveMember(identityHash);
 		this.assertAgreementWrite(
-			{ op: "revise", id, name: input.name, text: input.text },
+			{
+				op: "revise",
+				id,
+				name: input.name,
+				text: input.text,
+				effective_from: input.effective_from,
+			},
 			me,
 		);
 		const at = Date.now();
@@ -3542,6 +3554,7 @@ export class CoupleDO extends DurableObject<Env> {
 	private assertAgreementWrite(write: AgreementWrite, me: MemberRow): void {
 		const result = validateAgreementWrite(write, {
 			role: (me.role as Role | null) ?? null,
+			now: Date.now(),
 			kinds: this.agreementKinds(),
 			agreements: this.agreements(),
 			cited: this.citedAgreementIds(),

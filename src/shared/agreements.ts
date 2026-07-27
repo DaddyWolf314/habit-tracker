@@ -181,8 +181,20 @@ export type ReviseAgreementInput = z.infer<typeof reviseAgreementInputSchema>;
 
 /** Every write the corpus accepts. One shape in, one validation gate. */
 export type AgreementWrite =
-	| { op: "create"; kind: string; name: string; text: string }
-	| { op: "revise"; id: string; name: string; text: string }
+	| {
+			op: "create";
+			kind: string;
+			name: string;
+			text: string;
+			effective_from?: number;
+	  }
+	| {
+			op: "revise";
+			id: string;
+			name: string;
+			text: string;
+			effective_from?: number;
+	  }
 	| { op: "rekind"; id: string; kind: string }
 	| { op: "retire"; id: string }
 	| { op: "delete"; id: string }
@@ -191,6 +203,8 @@ export type AgreementWrite =
 export interface AgreementContext {
 	/** The actor's resolved role; null before mutual confirmation. */
 	role: Role | null;
+	/** Now, so a version cannot be dated into the past. */
+	now: number;
 	kinds: AgreementKind[];
 	agreements: VersionedAgreement[];
 	/** Ids any event has ever cited — the gate on hard delete. */
@@ -227,6 +241,36 @@ const deny = (
  * moving an entry between kinds requires authoring *both* — so neither the layer
  * above a limit nor a sideways move into it opens a path the direct edit closes.
  */
+/**
+ * Whether a proposed `effective_from` is legal for a new version, and why not.
+ *
+ * Forward-only is the guarantee the whole corpus rests on: "editing never
+ * disturbs a resolved past citation" (ADR 0006). A version dated into the past
+ * would do exactly that — an infraction about an act last week would silently
+ * start resolving against text written today, which is the defect this model
+ * exists to prevent, reached from the other direction.
+ *
+ * Dating a version *ahead* is fine and is the point: that is the announced
+ * draft, visible to both and governing nothing yet. It must still land after
+ * every existing version, or a pending draft would resolve past it.
+ */
+function checkEffectiveFrom(
+	proposed: number | undefined,
+	existing: AgreementVersion[],
+	now: number,
+): AgreementValidation {
+	if (proposed === undefined) return { ok: true };
+	if (proposed < now) {
+		return deny("an agreement can't be backdated — it takes force from now on");
+	}
+	for (const version of existing) {
+		if (proposed <= version.effective_from) {
+			return deny("a version already takes force at or after that moment");
+		}
+	}
+	return { ok: true };
+}
+
 export function validateAgreementWrite(
 	write: AgreementWrite,
 	ctx: AgreementContext,
@@ -252,7 +296,7 @@ export function validateAgreementWrite(
 				forbidden: true,
 			});
 		}
-		return { ok: true };
+		return checkEffectiveFrom(write.effective_from, [], ctx.now);
 	}
 
 	const agreement = ctx.agreements.find((a) => a.id === write.id);
@@ -288,6 +332,11 @@ export function validateAgreementWrite(
 			}
 			return { ok: true };
 		case "revise":
+			return checkEffectiveFrom(
+				write.effective_from,
+				agreement.versions,
+				ctx.now,
+			);
 		case "retire":
 			return { ok: true };
 	}

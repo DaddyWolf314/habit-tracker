@@ -29,7 +29,15 @@ import { TabBar, TabBarNav } from "./tab-bar.tsx";
  * survived moving off the old home page.
  */
 
-const PATHS = ["/", "/today", "/log", "/rules", "/settings", "/devices"];
+const PATHS = [
+	"/",
+	"/today",
+	"/log",
+	"/agreements",
+	"/rules",
+	"/settings",
+	"/devices",
+];
 
 function renderAt(path: string, ui: React.ReactNode) {
 	const rootRoute = createRootRoute({ component: () => <>{ui}</> });
@@ -77,7 +85,7 @@ describe("TabBarNav", () => {
 			[...nav.querySelectorAll("a")].map((a) => a.textContent?.trim()),
 			// Rules left the bar in #123: authoring automation is a rare act, and the
 			// bar's own rule is that anything rarer than daily hangs off Settings.
-		).toEqual(["Today", "Log", "Settings"]);
+		).toEqual(["Today", "Log", "Agreements", "Settings"]);
 	});
 
 	it("marks the surface you are on", async () => {

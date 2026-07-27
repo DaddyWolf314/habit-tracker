@@ -465,3 +465,54 @@ describe("latestAgreementVersion — what a retirement must follow", () => {
 		expect(latestAgreementVersion(unsorted).name).toBe("later");
 	});
 });
+
+describe("validateAgreementWrite — forward-only dating (ADR 0006)", () => {
+	it("refuses a version dated into the past", () => {
+		// The guarantee the corpus rests on, reached from the other direction: a
+		// backdated version would make an infraction about last week resolve
+		// against text written today.
+		const r = validateAgreementWrite(
+			{
+				op: "revise",
+				id: "ag_7f3",
+				name: "n",
+				text: "t",
+				effective_from: MAR - 1,
+			},
+			ctx({ now: MAR }),
+		);
+		expect(r).toMatchObject({ ok: false });
+		expect(r.ok === false && r.forbidden).toBeFalsy();
+	});
+
+	it("allows a version dated ahead — that is the announced draft", () => {
+		const r = validateAgreementWrite(
+			{ op: "revise", id: "ag_7f3", name: "n", text: "t", effective_from: JUN },
+			ctx({ now: MAR + 1 }),
+		);
+		expect(r.ok).toBe(true);
+	});
+
+	it("refuses one that would land at or before an existing version", () => {
+		// Including a pending draft: a version resolved past is no version at all.
+		const announced = agreement({
+			versions: [
+				...agreement().versions,
+				{ effective_from: JUN, name: "later", text: "", retired: false },
+			],
+		});
+		const r = validateAgreementWrite(
+			{ op: "revise", id: "ag_7f3", name: "n", text: "t", effective_from: JUN },
+			ctx({ now: MAR + 1, agreements: [announced] }),
+		);
+		expect(r.ok).toBe(false);
+	});
+
+	it("takes an unset date as now", () => {
+		const r = validateAgreementWrite(
+			{ op: "revise", id: "ag_7f3", name: "n", text: "t" },
+			ctx({ now: JUN }),
+		);
+		expect(r.ok).toBe(true);
+	});
+});
