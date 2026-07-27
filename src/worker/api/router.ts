@@ -4,6 +4,10 @@ import { getRoutingDb } from "#/db/index.ts";
 import { credentials, invites, recoveries } from "#/db/schema.ts";
 import { randomToken, sha256Base64url } from "#/lib/crypto.ts";
 import {
+	createAgreementInputSchema,
+	reviseAgreementInputSchema,
+} from "#/shared/agreements.ts";
+import {
 	adjustCounterInputSchema,
 	createCounterInputSchema,
 	resetCounterInputSchema,
@@ -17,6 +21,7 @@ import {
 	revokeDeviceInputSchema,
 } from "#/shared/identity.ts";
 import { introspectInputSchema } from "#/shared/introspection.ts";
+import { permissionListSchema } from "#/shared/roles.ts";
 import { extendTimerInputSchema } from "#/shared/timers.ts";
 import {
 	type AuthContext,
@@ -373,6 +378,111 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				return json(rule, 201);
 			});
 		}
+		// ── #121 / ADR 0006: the Agreement corpus ───────────────────────────────
+		// Reads are open to both members — an Agreement is always shared, because a
+		// term binds two people. Every write goes through the DO's single
+		// authorization bridge, so authorship lives in one unit-tested place.
+		if (path === "/api/agreement-kinds" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listAgreementKinds(auth.identityHash)
+					.then((kinds) => json({ kinds })),
+			);
+		}
+		if (path === "/api/agreements" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listAgreements(auth.identityHash)
+					.then((agreements) => json({ agreements })),
+			);
+		}
+		if (path === "/api/agreements" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, createAgreementInputSchema);
+				if ("response" in parsed) return parsed.response;
+				const agreement = await stub.createAgreement(
+					auth.identityHash,
+					parsed.data,
+				);
+				return json(agreement, 201);
+			});
+		}
+		const agreementKindMatch = path.match(/^\/api\/agreement-kinds\/([^/]+)$/);
+		if (agreementKindMatch && method === "PATCH") {
+			const id = decodeURIComponent(agreementKindMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(
+					request,
+					z.object({ author_permission: permissionListSchema }),
+				);
+				if ("response" in parsed) return parsed.response;
+				const kind = await stub.updateAgreementKind(
+					auth.identityHash,
+					id,
+					parsed.data.author_permission,
+				);
+				return json(kind);
+			});
+		}
+		const agreementMatch = path.match(/^\/api\/agreements\/([^/]+)$/);
+		if (agreementMatch) {
+			const id = decodeURIComponent(agreementMatch[1]);
+			if (method === "PUT") {
+				return await withAuth(request, env, async ({ auth, stub }) => {
+					const parsed = await readJson(request, reviseAgreementInputSchema);
+					if ("response" in parsed) return parsed.response;
+					const agreement = await stub.reviseAgreement(
+						auth.identityHash,
+						id,
+						parsed.data,
+					);
+					return json(agreement);
+				});
+			}
+			// Retiring is the real "remove" — effective-dated, keeping every version
+			// readable. A DELETE is only ever accepted for a never-cited Agreement.
+			if (method === "DELETE") {
+				return await withAuth(request, env, ({ auth, stub }) =>
+					stub.deleteAgreement(auth.identityHash, id).then(() => json({ id })),
+				);
+			}
+		}
+		const agreementRetireMatch = path.match(
+			/^\/api\/agreements\/([^/]+)\/retire$/,
+		);
+		if (agreementRetireMatch && method === "POST") {
+			const id = decodeURIComponent(agreementRetireMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(
+					request,
+					z.object({ effective_from: z.number().int().optional() }),
+				);
+				if ("response" in parsed) return parsed.response;
+				const agreement = await stub.retireAgreement(
+					auth.identityHash,
+					id,
+					parsed.data.effective_from,
+				);
+				return json(agreement);
+			});
+		}
+		const agreementKindChangeMatch = path.match(
+			/^\/api\/agreements\/([^/]+)\/kind$/,
+		);
+		if (agreementKindChangeMatch && method === "PUT") {
+			const id = decodeURIComponent(agreementKindChangeMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, z.object({ kind: idSchema }));
+				if ("response" in parsed) return parsed.response;
+				const agreement = await stub.rekindAgreement(
+					auth.identityHash,
+					id,
+					parsed.data.kind,
+				);
+				return json(agreement);
+			});
+		}
+
 		// ── #64: rules screen — view, edit, enable/disable, delete ──────────────
 		if (path === "/api/rules/history" && method === "GET") {
 			return await withAuth(request, env, ({ auth, stub }) =>

@@ -1,3 +1,9 @@
+import type {
+	AgreementKind,
+	CreateAgreementInput,
+	ReviseAgreementInput,
+	VersionedAgreement,
+} from "#/shared/agreements.ts";
 import type { AmendmentInput } from "#/shared/amendments.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
 import type {
@@ -25,6 +31,7 @@ import type {
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
+import type { Role } from "#/shared/roles.ts";
 import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
 import type { TimerView } from "#/shared/timers.ts";
 import type { CounterTrace, TraceRow } from "#/shared/trace.ts";
@@ -376,6 +383,84 @@ export function deleteRule(id: string): Promise<{ purged: boolean }> {
 	return apiFetch<{ purged: boolean }>(`/api/rules/${encodeURIComponent(id)}`, {
 		method: "DELETE",
 	});
+}
+
+/**
+ * The Agreement corpus (#121, ADR 0006). Reads are open to both members — an
+ * Agreement is always shared, because a term binds two people — while every write
+ * is authorized server-side by the kind's author list, so a refusal here is a 403
+ * and not something the client should try to pre-empt.
+ */
+export function listAgreements(): Promise<{
+	agreements: VersionedAgreement[];
+}> {
+	return apiFetch<{ agreements: VersionedAgreement[] }>("/api/agreements");
+}
+
+/** The kinds and who authors each — the sub side alone writes limits. */
+export function listAgreementKinds(): Promise<{ kinds: AgreementKind[] }> {
+	return apiFetch<{ kinds: AgreementKind[] }>("/api/agreement-kinds");
+}
+
+export function createAgreement(
+	input: CreateAgreementInput,
+): Promise<VersionedAgreement> {
+	return apiFetch<VersionedAgreement>("/api/agreements", {
+		method: "POST",
+		body: input,
+	});
+}
+
+/** Appends a version; never overwrites, so past citations keep resolving. */
+export function reviseAgreement(
+	id: string,
+	input: ReviseAgreementInput,
+): Promise<VersionedAgreement> {
+	return apiFetch<VersionedAgreement>(
+		`/api/agreements/${encodeURIComponent(id)}`,
+		{ method: "PUT", body: input },
+	);
+}
+
+export function rekindAgreement(
+	id: string,
+	kind: string,
+): Promise<VersionedAgreement> {
+	return apiFetch<VersionedAgreement>(
+		`/api/agreements/${encodeURIComponent(id)}/kind`,
+		{ method: "PUT", body: { kind } },
+	);
+}
+
+/**
+ * Retires an Agreement — the real "remove". Effective-dated, so it leaves the
+ * picker while staying readable for every citation already made against it.
+ */
+export function retireAgreement(
+	id: string,
+	effectiveFrom?: number,
+): Promise<VersionedAgreement> {
+	return apiFetch<VersionedAgreement>(
+		`/api/agreements/${encodeURIComponent(id)}/retire`,
+		{ method: "POST", body: { effective_from: effectiveFrom } },
+	);
+}
+
+/** Hard delete, accepted only for an Agreement nothing has ever cited. */
+export function deleteAgreement(id: string): Promise<{ id: string }> {
+	return apiFetch<{ id: string }>(`/api/agreements/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
+}
+
+export function updateAgreementKind(
+	id: string,
+	authorPermission: Role[],
+): Promise<AgreementKind> {
+	return apiFetch<AgreementKind>(
+		`/api/agreement-kinds/${encodeURIComponent(id)}`,
+		{ method: "PATCH", body: { author_permission: authorPermission } },
+	);
 }
 
 export function listCounters(): Promise<{ counters: Counter[] }> {
