@@ -16,7 +16,8 @@ in and should not.
 - **Rule** — `when type = X [AND metadata equality] → effects`. Routes values; it
   never computes them (equality-only condition language). A stable rule id carries
   one or more effective-dated **rule versions**; authoring is dom/switch-only.
-  _Avoid_: conflating with the **Protocol** an `infraction` cites.
+  _Avoid_: conflating with the **Agreement** an `infraction` cites — machine
+  automation, not a term the couple agreed (ADR 0006).
 - **Effect** — one op a fired rule routes: counter increment/decrement/reset,
   anchor reset, timer open/close, notify.
 - **Rule version** — an effective-dated revision of a rule's condition and effects.
@@ -32,10 +33,32 @@ in and should not.
   it against upstream: a pack version bump no longer overwrites its definition (only
   surfaces an upstream-changed notice), while un-adopted pack rules still track the
   pack. _Avoid_: "forked", "overridden".
-- **Protocol** — a couple's behavioral agreement the sub is held to and can break,
-  referenced by an `infraction`'s `rule_ref`. A human agreement (unstructured today),
-  *not* an engine **Rule** (condition→effect automation); the two share the word
-  "rule" and must not be conflated. _Avoid_: "rule" for a Protocol.
+- **Agreement** — a term the couple has agreed, held in a per-couple corpus and
+  cited by events (an `infraction`'s `rule_ref`, a `ritual_completed`'s
+  `ritual_id`). A human agreement, *not* an engine **Rule**; the two shared the
+  word "rule" and must not be conflated (ADR 0006). Always shared — never carries
+  the journaling visibility axis. _Avoid_: "rule" for an Agreement; "policy",
+  "contract".
+- **Agreement kind** — a per-couple definition classifying an Agreement
+  (`protocol`, `ritual`, `limit`, `safeword`, or the couple's own), carrying the
+  role list that may author entries of that kind. Authorship follows the kind:
+  limits are the sub's alone. Neither a kind's author list nor an Agreement's kind
+  may be set to one the actor does not already hold. _Avoid_: "category", "type"
+  (an **event type** is a different thing); treating kind as display-only.
+- **Protocol** — the Agreement kind for a standing expectation the sub is held to
+  and can break. One kind among several, not the name of the corpus. _Avoid_:
+  "Protocol" for the whole corpus (a limit binds the dom, so the old
+  "sub is held to it" definition was never true of one).
+- **Agreement version** — an effective-dated revision carrying the entry's **name
+  and prose together**, so a rename is never retroactive. `kind` sits on the
+  identity and never versions. An Agreement is *in force* or *retired*; a version
+  dated ahead is the announced draft, and there is no private draft state.
+  _Avoid_: "draft" as a status; "delete" (retire, unless nothing ever cited it).
+- **Review nudge** — an Agreement's optional review cadence, firing through the
+  DO's schedule table as a prompt to revisit the term together. It **never lapses**
+  an Agreement: an unanswered nudge leaves the term in force, because a lapse would
+  remove a term neither partner removed. _Avoid_: "renewal" as if reaffirmation
+  were required; "expiry".
 - **Counter / Timer / Anchor** — the three **projection** flavors: a materialized
   tally, a stopwatch/countdown, and an elapsed-since timestamp. Each is a **cache**
   rebuildable by replaying the log.
@@ -83,9 +106,10 @@ in and should not.
   alarms and countdowns without logging failures). The *safeword* philosophy
   expressed in the mechanics. _Avoid_: "safeword" as the feature/identifier name —
   it names the philosophy, not the mechanism.
-- **Consent history** — the append-only record of agreement entries (role
-  confirmations and the like); the first entry is the mutual role confirmation.
-  Distinct from the log-as-consent-record framing (see Trace).
+- **Consent history** — the append-only record of **consent entries**: the mutual
+  role confirmation (the first entry) and every change to an **Agreement**.
+  Distinct from the log-as-consent-record framing (see Trace). _Avoid_: "agreement
+  history" — an Agreement is the term itself, this is the record of it changing.
 
 ## Event schema & adjudication (handoff §5, §8)
 
@@ -118,7 +142,7 @@ in and should not.
   is what separates it from a **Ref**. The boundary against `note` is length and
   intent, not type. _Avoid_: "fields", "attributes", "props".
 - **Ref** — a metadata value naming something outside the event: a task, a
-  session, a prompt, a Protocol. Where a ref *pairs* two events, rules match it by
+  session, a prompt, an Agreement. Where a ref *pairs* two events, rules match it by
   strict equality and nothing else, so a ref one character off names nothing and
   pairs with nothing — the event logs fine and the consequence silently never
   arrives. _Avoid_: "pointer", "foreign key", "link".
@@ -129,18 +153,29 @@ in and should not.
   it: `task_completed`, `session_ended`, `journal_entry`. Every ref that pairs
   events is originating or echoing, and the schema flag says which. _Avoid_:
   "copy", "reference back".
-- **Unstructured ref** — a ref naming something the app holds no row for: an
-  `infraction`'s `rule_ref` (a Protocol) or a `ritual_completed`'s `ritual_id`.
-  Never minted, never matched, and free text *by nature* rather than by omission
-  — there is no modelled thing to offer. If one ever gains a definition it
-  becomes an originating/echoing pair like the rest.
-- **Ref candidate** — an id an echoing ref may still name: an open timer, or one
-  that expired recently enough to stay in grace. Echoing late still pairs the
-  event for history even though it no longer closes anything; a resolved timer
-  (completed, canceled, auto-closed) is never a candidate. Which refs *have*
-  candidates is derived from the rules — a rule closing a timer on a metadata key
-  is what makes that key an echoing ref. _Avoid_: "live" (the repo's informal
-  word for polling and ticking), "suggestion", "autocomplete".
+- **Citing ref** — the third flavor: a ref naming a **definition** rather than an
+  id minted by an event (`infraction`'s `rule_ref`, `ritual_completed`'s
+  `ritual_id` — both naming an **Agreement**). Nothing mints it at log time, and
+  it resolves to the version in force at the event's **`occurred_at`** — what the
+  person was bound by when they acted. This is *not* the rule-version clock, which
+  is log-time (ADR 0002): the system carries two resolution clocks on purpose,
+  because a rule version governs when the machine acted and an Agreement version
+  governs what was agreed (ADR 0006). _Avoid_: "echoing" for a citing ref — its
+  candidates and its clock both differ.
+- **Unstructured ref** — a ref naming something the app holds no row for. None
+  ship today: `rule_ref` and `ritual_id` became citing refs once Agreements gave
+  them something to name. Free text *by nature* rather than by omission — never
+  minted, never matched. A ref that gains a definition becomes citing (or an
+  originating/echoing pair) like the rest.
+- **Ref candidate** — an id a ref may still name; what qualifies depends on the
+  flavor. For an **echoing** ref: an open timer, or one that expired recently
+  enough to stay in grace — echoing late still pairs the event for history even
+  though it no longer closes anything, and a resolved timer (completed, canceled,
+  auto-closed) is never a candidate. For a **citing** ref: the Agreements in
+  force — a retired Agreement is offered for no new citation, yet every past
+  citation of it still resolves and every rule matching it still fires on replay.
+  _Avoid_: "live" (the repo's informal word for polling and ticking),
+  "suggestion", "autocomplete".
 - **Valence** — `positive | negative | neutral` on a type or counter; drives
   display and the deferred scoring layer. Overridable per rule effect.
 - **Composite state** — an event's current metadata: original overlaid by
