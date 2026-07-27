@@ -8,10 +8,15 @@ import {
 	describeAmendment,
 	isOwnPending,
 } from "#/shared/adjudication.ts";
+import {
+	describeCitation,
+	type VersionedAgreement,
+} from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import { readableMetadata } from "#/shared/refs.ts";
+import { isCitingRef, readableMetadata } from "#/shared/refs.ts";
+import type { MetadataValue } from "#/shared/roles.ts";
 import type { TraceRow } from "#/shared/trace.ts";
 import {
 	describeTraceRow,
@@ -41,17 +46,23 @@ export function EventStream({
 	events,
 	types,
 	members,
+	agreements = [],
 	selfId = null,
 	onAmended,
 }: {
 	events: EventView[];
 	types: EventType[];
 	members: RoleMember[];
+	/** The corpus, so a citation reads as a name rather than an id (#121). */
+	agreements?: VersionedAgreement[];
 	/** The viewer's member id, so they can note/retract their own pending events. */
 	selfId?: string | null;
 	onAmended?: () => void;
 }) {
 	const typeMap = new Map(types.map((t) => [t.id, t]));
+	// One read for the whole list: "(now: …)" only ever compares against the
+	// current name, and nothing here is a clock.
+	const now = Date.now();
 
 	return (
 		<section className="rounded-lg border p-4">
@@ -64,6 +75,8 @@ export function EventStream({
 				)}
 				{events.map((event) => (
 					<EventRow
+						agreements={agreements}
+						now={now}
 						key={event.id}
 						event={event}
 						type={typeMap.get(event.type)}
@@ -78,12 +91,17 @@ export function EventStream({
 }
 
 function EventRow({
+	agreements,
+	now,
 	event,
 	type,
 	members,
 	selfId,
 	onAmended,
 }: {
+	/** The corpus, so a citation reads as a name rather than an id (#121). */
+	agreements: VersionedAgreement[];
+	now: number;
 	event: EventView;
 	/** The event's type schema, or undefined for a type the couple has since dropped. */
 	type: EventType | undefined;
@@ -165,7 +183,15 @@ function EventRow({
 									key={key}
 									className="rounded bg-muted px-1.5 py-0.5 text-xs"
 								>
-									{key}: {formatMetaValue(value)}
+									{type?.metadata[key]?.label ?? key}:{" "}
+									{readMetaValue(
+										type,
+										key,
+										value,
+										event.occurred_at,
+										agreements,
+										now,
+									)}
 								</span>
 							))}
 						</div>
@@ -391,4 +417,37 @@ function RulingReveal({ line }: { line: AmendmentLine }) {
 			)}
 		</div>
 	);
+}
+
+/**
+ * One metadata value as a person should read it.
+ *
+ * A **citing ref** holds an Agreement id, and ADR 0005 already named the cost of
+ * that shape: "a ref stops being readable… every surface that displays a
+ * `task_id` must display the name instead." Tasks solved it with a `task_name`
+ * beside the id; a citation can't, because the name lives in the corpus and
+ * versions over time — so it is resolved here, at the moment the act happened
+ * (#121, story 23).
+ *
+ * Falls back to the raw value when the id names nothing the couple holds: a
+ * free-text citation logged before the pack change, or a term hard-deleted while
+ * uncited. An opaque id is a worse answer than a name and a better one than a
+ * blank.
+ */
+function readMetaValue(
+	type: EventType | undefined,
+	key: string,
+	value: MetadataValue,
+	occurredAt: number,
+	agreements: VersionedAgreement[],
+	now: number,
+): string {
+	const field = type?.metadata[key];
+	if (field && isCitingRef(field) && typeof value === "string") {
+		return (
+			describeCitation(agreements, value, occurredAt, now) ??
+			formatMetaValue(value)
+		);
+	}
+	return formatMetaValue(value);
 }

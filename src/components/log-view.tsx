@@ -204,6 +204,7 @@ export function LogView() {
 			<EventStream
 				events={events}
 				types={types}
+				agreements={agreements}
 				members={members}
 				selfId={self?.member_id ?? null}
 				onAmended={refreshLog}

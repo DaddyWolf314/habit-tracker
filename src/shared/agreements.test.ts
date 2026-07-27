@@ -7,6 +7,7 @@ import {
 	agreementRefKeys,
 	agreementsInForce,
 	authorsKind,
+	describeCitation,
 	latestAgreementVersion,
 	type VersionedAgreement,
 	validateAgreementWrite,
@@ -514,5 +515,61 @@ describe("validateAgreementWrite — forward-only dating (ADR 0006)", () => {
 			ctx({ now: JUN }),
 		);
 		expect(r.ok).toBe(true);
+	});
+});
+
+describe("describeCitation — how a citation reads (story 23)", () => {
+	const renamed = agreement({
+		versions: [
+			{ effective_from: MAR, name: "morning kneel", text: "", retired: false },
+			{ effective_from: JUN, name: "dawn ritual", text: "", retired: false },
+		],
+	});
+
+	it("reads the name in force when the act happened", () => {
+		// Rendering today's name would quietly rewrite what the person agreed to —
+		// the retroactivity the occurred_at clock exists to prevent, moved from
+		// resolution into display.
+		expect(describeCitation([renamed], "ag_7f3", MAR + 1, JUN + 1)).toBe(
+			"morning kneel (now: dawn ritual)",
+		);
+	});
+
+	it("says nothing extra when the name never changed", () => {
+		expect(describeCitation([agreement()], "ag_7f3", MAR + 1, JUN)).toBe(
+			"text me when you land",
+		);
+	});
+
+	it("shows one name for an act after the rename", () => {
+		expect(describeCitation([renamed], "ag_7f3", JUN + 1, JUN + 2)).toBe(
+			"dawn ritual",
+		);
+	});
+
+	it("still resolves a citation of a retired term", () => {
+		// Retiring drops it from the picker; it must not drop out of the log.
+		const retired = agreement({
+			versions: [
+				...agreement().versions,
+				{
+					effective_from: JUN,
+					name: "text me when you land",
+					text: "",
+					retired: true,
+				},
+			],
+		});
+		expect(describeCitation([retired], "ag_7f3", MAR + 1, JUN + 1)).toBe(
+			"text me when you land",
+		);
+	});
+
+	it("returns nothing for an id the couple doesn't hold", () => {
+		// A free-text citation logged before the pack change, or a hard-deleted
+		// term. The caller shows the raw value — an opaque id beats a blank.
+		expect(
+			describeCitation([agreement()], "morning_kneel", MAR, JUN),
+		).toBeNull();
 	});
 });
