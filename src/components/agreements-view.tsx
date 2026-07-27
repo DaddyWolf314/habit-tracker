@@ -80,7 +80,17 @@ export function AgreementsView() {
 
 	const selfRole = (members.find((m) => m.is_self)?.role ??
 		null) as Role | null;
-	const now = Date.now();
+
+	// Held in state and ticked, like the countdown panels: this screen's whole
+	// announced-draft affordance turns on a version crossing its `effective_from`,
+	// and a render-time read would leave "changes soon" up until some unrelated
+	// state change happened to repaint. A minute is plenty — nothing here is a
+	// clock, it is a boundary that gets crossed once.
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		const id = setInterval(() => setNow(Date.now()), 60_000);
+		return () => clearInterval(id);
+	}, []);
 
 	// Retired terms stay readable — a citation made while one stood still resolves
 	// against it — but they are not what binds the couple now, so they sit apart
@@ -157,7 +167,8 @@ export function AgreementsView() {
 				<section className="rounded-lg border p-4">
 					<h2 className="text-lg font-semibold">No longer in force</h2>
 					<p className="mt-1 text-xs text-muted-foreground">
-						Kept because the log still points at them.
+						Kept readable: anything the log cited while these stood still
+						resolves against them.
 					</p>
 					<ul className="mt-3 space-y-2">
 						{retired.map((agreement) => (
@@ -165,7 +176,8 @@ export function AgreementsView() {
 								<AgreementRow
 									agreement={agreement}
 									now={now}
-									canAuthor={false}
+									canAuthor={authorsKind(kinds, agreement.kind, selfRole)}
+									retired
 									onChanged={reload}
 									onError={setError}
 								/>
@@ -218,8 +230,8 @@ function KindSection({
 			{adding && (
 				<AgreementForm
 					submitLabel={`Add ${kind.label.toLowerCase()}`}
-					onSubmit={(name, text) =>
-						createAgreement({ kind: kind.id, name, text })
+					onSubmit={(name, text, effective_from) =>
+						createAgreement({ kind: kind.id, name, text, effective_from })
 					}
 					onDone={onChanged}
 					onCancel={onCancelAdd}
@@ -253,12 +265,15 @@ function AgreementRow({
 	agreement,
 	now,
 	canAuthor,
+	retired = false,
 	onChanged,
 	onError,
 }: {
 	agreement: VersionedAgreement;
 	now: number;
 	canAuthor: boolean;
+	/** Already retired: still its author's to delete, never to revise or re-retire. */
+	retired?: boolean;
 	onChanged: () => void;
 	onError: (message: string) => void;
 }) {
@@ -302,7 +317,7 @@ function AgreementRow({
 						</span>
 					)}
 				</button>
-				{canAuthor && !editing && armed === null && (
+				{canAuthor && !retired && !editing && armed === null && (
 					<div className="flex shrink-0 gap-2">
 						<Button size="xs" variant="ghost" onClick={() => setEditing(true)}>
 							Edit
@@ -345,8 +360,8 @@ function AgreementRow({
 					initialName={current?.name ?? latest.name}
 					initialText={current?.text ?? latest.text}
 					submitLabel="Save change"
-					onSubmit={(name, text) =>
-						reviseAgreement(agreement.id, { name, text })
+					onSubmit={(name, text, effective_from) =>
+						reviseAgreement(agreement.id, { name, text, effective_from })
 					}
 					onDone={onChanged}
 					onCancel={() => setEditing(false)}
@@ -378,12 +393,14 @@ function AgreementRow({
 							className="mt-2"
 							onClick={() => setArmed("delete")}
 						>
-							Delete instead
+							{retired ? "Delete for good" : "Delete instead"}
 						</Button>
 					)}
 					{canAuthor && (
 						<p className="mt-1 text-xs text-muted-foreground">
-							Deleting is only possible while nothing in the log has cited this.
+							Deleting only works while nothing in the log has cited this —
+							otherwise retiring is as far as it goes, so the record keeps what
+							you were held to.
 						</p>
 					)}
 				</div>
@@ -392,7 +409,22 @@ function AgreementRow({
 	);
 }
 
-/** The shared create/revise form — a name and the term itself. */
+/**
+ * Local midnight on a `YYYY-MM-DD` from a date input, or undefined for blank.
+ *
+ * Local, not UTC: a term takes force on the couple's day, and parsing the string
+ * directly would land it at UTC midnight — hours early or late depending on where
+ * they are, which is exactly the kind of quiet wrongness a dated term must not
+ * have.
+ */
+function startOfLocalDay(value: string): number | undefined {
+	if (!value) return undefined;
+	const [y, m, d] = value.split("-").map(Number);
+	if (!y || !m || !d) return undefined;
+	return new Date(y, m - 1, d).getTime();
+}
+
+/** The shared create/revise form — a name, the term itself, and when it starts. */
 function AgreementForm({
 	initialName = "",
 	initialText = "",
@@ -405,13 +437,18 @@ function AgreementForm({
 	initialName?: string;
 	initialText?: string;
 	submitLabel: string;
-	onSubmit: (name: string, text: string) => Promise<unknown>;
+	onSubmit: (
+		name: string,
+		text: string,
+		effectiveFrom: number | undefined,
+	) => Promise<unknown>;
 	onDone: () => void;
 	onCancel: () => void;
 	onError: (message: string) => void;
 }) {
 	const [name, setName] = useState(initialName);
 	const [text, setText] = useState(initialText);
+	const [startsOn, setStartsOn] = useState("");
 	const [busy, setBusy] = useState(false);
 
 	async function submit() {
@@ -421,7 +458,7 @@ function AgreementForm({
 		}
 		setBusy(true);
 		try {
-			await onSubmit(name.trim(), text.trim());
+			await onSubmit(name.trim(), text.trim(), startOfLocalDay(startsOn));
 			onDone();
 		} catch (err) {
 			onError(err instanceof Error ? err.message : "That didn't work.");
@@ -449,6 +486,22 @@ function AgreementForm({
 					className="mt-1"
 					value={text}
 					onChange={(e) => setText(e.target.value)}
+				/>
+			</label>
+			{/* Dating a term ahead is how a change is announced rather than sprung:
+			    your partner sees it coming instead of discovering it the moment it
+			    binds. It is also the only "draft" this corpus has, on purpose — a
+			    private drafting space inside a consent record would be the one thing
+			    it shouldn't have. Backdating is refused server-side. */}
+			<label className="block">
+				<span className="text-xs text-muted-foreground">
+					Starts on (leave blank to start now)
+				</span>
+				<input
+					className={`${fieldClass} mt-1`}
+					type="date"
+					value={startsOn}
+					onChange={(e) => setStartsOn(e.target.value)}
 				/>
 			</label>
 			<div className="flex gap-2">

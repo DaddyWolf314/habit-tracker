@@ -216,3 +216,106 @@ describe("AgreementsView", () => {
 		expect(screen.getByText(/changes soon/i)).not.toBeNull();
 	});
 });
+
+/**
+ * Announcing a change rather than springing it (#121, stories 20/21). A future
+ * `effective_from` is the only draft this corpus has, on purpose: a private
+ * drafting space inside a consent record would be the one thing it shouldn't
+ * have, so the way to not-yet-bind someone is to tell them when it starts.
+ */
+describe("AgreementsView — dating a change ahead", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
+		asRole("dom");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("sends the chosen day as local midnight, not UTC", async () => {
+		// A term takes force on the couple's day. Parsing the input string
+		// directly would land it at UTC midnight — hours early or late depending
+		// on where they are.
+		await renderView();
+		fireEvent.click(screen.getByRole("button", { name: /add protocol/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: /short name/i }), {
+			target: { value: "no phone at dinner" },
+		});
+		fireEvent.change(screen.getByLabelText(/starts on/i), {
+			target: { value: "2026-09-01" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add protocol" }));
+		await act(async () => {});
+
+		expect(createAgreement).toHaveBeenCalledWith(
+			expect.objectContaining({
+				effective_from: new Date(2026, 8, 1).getTime(),
+			}),
+		);
+	});
+
+	it("leaves the date out entirely when blank, so it starts now", async () => {
+		await renderView();
+		fireEvent.click(screen.getByRole("button", { name: /add protocol/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: /short name/i }), {
+			target: { value: "no phone at dinner" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add protocol" }));
+		await act(async () => {});
+
+		expect(createAgreement).toHaveBeenCalledWith(
+			expect.objectContaining({ effective_from: undefined }),
+		);
+	});
+});
+
+describe("AgreementsView — a retired term", () => {
+	const retiredAgreements = [
+		{
+			...AGREEMENTS[0],
+			versions: [
+				...AGREEMENTS[0].versions,
+				{
+					effective_from: NOW - 5_000,
+					name: "text me when you land",
+					text: "",
+					retired: true,
+				},
+			],
+		},
+	];
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: retiredAgreements,
+		});
+		asRole("dom");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("cannot be revised or retired again", async () => {
+		await renderView();
+		expect(screen.queryByRole("button", { name: "Retire" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+	});
+
+	it("is still its author's to delete", async () => {
+		// Retire-then-clean-up is the likeliest real path to a deletable entry, so
+		// shutting the author out of a retired term would make story 27 unreachable
+		// in practice. Whether it *is* deletable is the server's call — nothing the
+		// client holds says whether the log ever cited it.
+		await renderView();
+		fireEvent.click(screen.getByText("text me when you land"));
+		expect(
+			screen.getByRole("button", { name: /delete for good/i }),
+		).not.toBeNull();
+	});
+});
