@@ -348,8 +348,18 @@ count above belong to the same requirement.
 - **Lock now** — covering the app on purpose, one tap in the bottom bar, for the
   moment the phone gets handed over. It reaches every tab on the device, since
   they were all handed over together. _Avoid_: "log out", "sign out".
-- **Auto-lock** — the optional delay after which time **away** covers the app by
-  itself. **Away** is time spent out of view (backgrounded, screen off, tab
-  hidden), measured by timestamp on return rather than by any timer — a window
-  open in front of you is not away. _Avoid_: "idle" and "inactive" (nothing
-  watches input); "session timeout", "expiry".
+- **Auto-lock** — the optional delay after which the app covers itself. One delay
+  serves both ways it gets left, **away** and **untouched**: they are different
+  waits, but a second control would ask the couple to reason about a distinction
+  the lock screen never shows them. _Avoid_: "session timeout", "expiry".
+- **Away** — time spent out of view (backgrounded, screen off, tab hidden),
+  measured by timestamp on return rather than by any timer, since a hidden tab's
+  timers are throttled or frozen. A window open in front of you is not away —
+  that is **untouched**.
+- **Untouched** — time the app spent in view with nobody touching it: no tap,
+  key, or scroll. The desk case, and the one thing here that does need a running
+  timer, because nothing announces an absence of input the way `visibilitychange`
+  announces a departure. Measured across the whole device rather than per tab,
+  since a lock covers every tab — the window you are *not* typing in must not
+  lock the one you are. Hidden time is **away**, not untouched. _Avoid_: "idle"
+  and "inactive".

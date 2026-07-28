@@ -19,10 +19,11 @@ import { useLockWatch, usePinLock } from "#/lib/use-pin.ts";
  * it is a no-op when no PIN is configured. This is not a security boundary — see
  * `lib/pin.ts` — it just keeps a casual glance out.
  *
- * It is also where `useLockWatch` is mounted (#97) — the app-wide watch for time
- * away and for a lock performed in another tab — because this is the one
- * component alive for the whole app, so a phone left face-down comes back
- * covered rather than open.
+ * It is also where `useLockWatch` is mounted (#97, #145) — the app-wide watch
+ * for time away, time untouched, and a lock performed in another tab — because
+ * this is the one component alive for the whole app, so a phone left face-down
+ * comes back covered rather than open, and a laptop walked away from covers
+ * itself where it sits.
  */
 export function PinGate({ children }: { children: React.ReactNode }) {
 	const { ready, locked } = usePinLock();
@@ -68,17 +69,20 @@ export function PinGate({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * The delays on offer (#97). Every one is phrased "away", because that is what
- * is measured — time the app spent out of view, not time you sat reading it.
- * A minute is short on purpose: the phone-handed-over case wants the shortest
- * delay the couple will tolerate, and "Lock now" is right there for the rest.
+ * The delays on offer (#97, #145). They used to be phrased "away", back when
+ * that was all the delay measured; one delay now covers both ways the app gets
+ * left, so the labels name the wait and the line under the select says what
+ * starts it — in one clause, because the whole point of one delay is that nobody
+ * has to think about which kind of leaving they did. A minute is short on
+ * purpose: the phone-handed-over case wants the shortest delay the couple will
+ * tolerate, and "Lock now" is right there for the rest.
  */
 const AUTO_LOCK_OPTIONS = [
 	{ minutes: AUTO_LOCK_OFF, label: "Never — only when I lock it" },
-	{ minutes: 1, label: "After 1 minute away" },
-	{ minutes: 5, label: "After 5 minutes away" },
-	{ minutes: 15, label: "After 15 minutes away" },
-	{ minutes: 60, label: "After 1 hour away" },
+	{ minutes: 1, label: "After 1 minute" },
+	{ minutes: 5, label: "After 5 minutes" },
+	{ minutes: 15, label: "After 15 minutes" },
+	{ minutes: 60, label: "After 1 hour" },
 ] as const;
 
 const fieldClass =
@@ -118,7 +122,7 @@ export function PinSettings() {
 			<h3 className="font-medium">PIN lock</h3>
 			<p className="text-sm text-muted-foreground">
 				{pinSet
-					? "A PIN is set. Lock it any time from the bar at the bottom, and it can lock itself once the app has been out of sight for a while."
+					? "A PIN is set. Lock it any time from the bar at the bottom, and it can lock itself once the app has been left alone for a while."
 					: "Set a PIN (4+ digits) to lock the app on this device."}
 			</p>
 			<form onSubmit={save} className="flex gap-2">
@@ -161,6 +165,11 @@ export function PinSettings() {
 							</option>
 						))}
 					</select>
+					{autoLockMinutes !== AUTO_LOCK_OFF ? (
+						<p className="mt-1 text-xs text-muted-foreground">
+							Counted from the last time anyone used it.
+						</p>
+					) : null}
 				</div>
 			) : null}
 		</section>

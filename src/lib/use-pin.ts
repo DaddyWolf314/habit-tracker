@@ -6,7 +6,10 @@ import {
 	isLocked,
 	isPinSet,
 	lockIfAwayTooLong,
+	lockIfUntouchedTooLong,
 	markAway,
+	markTouched,
+	msLeftOfAutoLock,
 	subscribeLock,
 } from "./pin.ts";
 
@@ -56,10 +59,19 @@ export function usePinLock(): {
 }
 
 /**
- * Everything that can lock this device while the app is open, in one place (#97):
- * time spent away, and a lock performed in another tab. Mount it once — the PIN
- * gate does, being the one component alive for the whole app — and read the
- * result through {@link usePinLock}.
+ * Everything that can lock this device while the app is open, in one place (#97,
+ * #145): time spent away, time spent untouched, and a lock performed in another
+ * tab. Mount it once — the PIN gate does, being the one component alive for the
+ * whole app — and read the result through {@link usePinLock}.
+ */
+export function useLockWatch(): void {
+	useAwayWatch();
+	useUntouchedWatch();
+	useLockBroadcastWatch();
+}
+
+/**
+ * Locks when the app comes back from longer than the delay out of view (#97).
  *
  * Three listeners rather than one, because no single event covers the way phones
  * actually leave:
@@ -71,7 +83,7 @@ export function usePinLock(): {
  *   discards comes back through a fresh load, and `sessionStorage` remembers it
  *   as unlocked. Without this, hours away would reopen the app uncovered.
  */
-export function useLockWatch(): void {
+function useAwayWatch(): void {
 	useEffect(() => {
 		const away = () => markAway();
 		const back = () => lockIfAwayTooLong();
@@ -82,12 +94,115 @@ export function useLockWatch(): void {
 		document.addEventListener("visibilitychange", onVisibilityChange);
 		window.addEventListener("pagehide", away);
 		window.addEventListener("pageshow", back);
-		window.addEventListener("storage", applyLockBroadcast);
 		return () => {
 			document.removeEventListener("visibilitychange", onVisibilityChange);
 			window.removeEventListener("pagehide", away);
 			window.removeEventListener("pageshow", back);
-			window.removeEventListener("storage", applyLockBroadcast);
 		};
 	}, []);
+}
+
+/** Applies a lock performed in another tab on this device (#97). */
+function useLockBroadcastWatch(): void {
+	useEffect(() => {
+		window.addEventListener("storage", applyLockBroadcast);
+		return () => window.removeEventListener("storage", applyLockBroadcast);
+	}, []);
+}
+
+/**
+ * What says somebody is still there. Listened for on the way down (capture)
+ * rather than up, because a `scroll` inside any element of the app never bubbles
+ * as far as the window — and scrolling a list is exactly the reading someone
+ * does without touching anything else.
+ *
+ * `visibilitychange` counts too, and is handled separately: it fires at the
+ * document, and it also decides whether this tab keeps a timer at all.
+ */
+const TOUCH_EVENTS = ["pointerdown", "keydown", "scroll"] as const;
+
+/**
+ * How often a touch is allowed to reach storage, so the other tabs on the device
+ * know somebody is here (#145). Comfortably under the shortest delay on offer
+ * (one minute) so a tab in use always says so in time, and far enough apart that
+ * a scroll costs a variable assignment rather than a write.
+ */
+const TOUCH_SHARE_INTERVAL_MS = 15_000;
+
+/**
+ * Locks after the delay passes with nobody touching a tab that never left (#145).
+ *
+ * Unlike the away path this needs a real timer: nothing announces "nobody has
+ * touched this in ten minutes" the way `visibilitychange` announces a departure.
+ * Three things keep that cheap:
+ *
+ * - The touch handlers only assign to a variable, and tell the rest of the
+ *   device at most once every {@link TOUCH_SHARE_INTERVAL_MS}. Writing storage
+ *   on every pointer move or scroll frame is a cost worth avoiding on a phone.
+ * - One timeout at a time, re-armed for whatever is left of the delay when it
+ *   finds a more recent touch. A tab in use wakes about once per delay, not on
+ *   any polling interval.
+ * - A hidden tab keeps no timer at all: that time is the away rule's to judge,
+ *   on return, so there is nothing here for the browser to throttle.
+ *
+ * It runs only while there is something to cover — a PIN, a delay, and an
+ * unlocked tab — so nothing is scheduled on the devices that never asked for it.
+ */
+function useUntouchedWatch(): void {
+	const { locked, pinSet, autoLockMinutes } = usePinLock();
+
+	useEffect(() => {
+		if (locked || !pinSet || autoLockMinutes === AUTO_LOCK_OFF) return;
+		const delay = autoLockMinutes * 60_000;
+		let lastTouchedAt = Date.now();
+		let lastSharedAt = 0;
+		let timer: ReturnType<typeof setTimeout>;
+
+		const arm = (ms: number) => {
+			clearTimeout(timer);
+			timer = setTimeout(checkDeadline, ms);
+		};
+
+		const touch = () => {
+			lastTouchedAt = Date.now();
+			if (lastTouchedAt - lastSharedAt < TOUCH_SHARE_INTERVAL_MS) return;
+			lastSharedAt = lastTouchedAt;
+			markTouched(lastTouchedAt);
+		};
+
+		const checkDeadline = () => {
+			// Only ever reached while hidden if the tab was already hidden when this
+			// mounted; `onVisibility` arms a fresh wait when it comes back.
+			if (document.visibilityState === "hidden") return;
+
+			const remaining = msLeftOfAutoLock(lastTouchedAt, autoLockMinutes);
+			if (remaining > 0) return arm(remaining);
+			if (lockIfUntouchedTooLong(lastTouchedAt)) return;
+
+			// It declined: another tab on the device is in use, or the delay or the
+			// PIN went away in a tab whose storage write this one never hears about.
+			// Start the wait over rather than stop watching for the life of the tab.
+			lastTouchedAt = Date.now();
+			arm(delay);
+		};
+
+		const onVisibility = () => {
+			touch();
+			if (document.visibilityState === "hidden") clearTimeout(timer);
+			else arm(delay);
+		};
+
+		arm(delay);
+		for (const event of TOUCH_EVENTS) {
+			window.addEventListener(event, touch, { capture: true, passive: true });
+		}
+		document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			clearTimeout(timer);
+			for (const event of TOUCH_EVENTS) {
+				window.removeEventListener(event, touch, { capture: true });
+			}
+			document.removeEventListener("visibilitychange", onVisibility);
+		};
+	}, [locked, pinSet, autoLockMinutes]);
 }

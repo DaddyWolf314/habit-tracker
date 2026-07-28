@@ -11,6 +11,7 @@ import {
 	getAutoLockMinutes,
 	lock,
 	markAway,
+	markTouched,
 	setAutoLockMinutes,
 	setPin,
 } from "#/lib/pin.ts";
@@ -37,6 +38,7 @@ afterEach(() => {
 	localStorage.clear();
 	sessionStorage.clear();
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 	setVisibility("visible");
 });
 
@@ -64,6 +66,20 @@ function comeBack() {
 
 function locked() {
 	return screen.queryByLabelText("PIN") !== null;
+}
+
+/** Somebody is still there: the cheapest of the events the watch listens for. */
+function touch() {
+	act(() => {
+		window.dispatchEvent(new Event("pointerdown"));
+	});
+}
+
+/** Lets `ms` pass with nobody touching anything, timers and clock together. */
+function sitStill(ms: number) {
+	act(() => {
+		vi.advanceTimersByTime(ms);
+	});
 }
 
 describe("PinGate", () => {
@@ -138,6 +154,96 @@ describe("PinGate", () => {
 
 		expect(await screen.findByLabelText("PIN")).not.toBeNull();
 		expect(screen.queryByText("secret content")).toBeNull();
+	});
+
+	/**
+	 * The desk case (#145). The away rule never reached it: a tab you walked away
+	 * from without switching off is still the foreground tab, still in view, and
+	 * so never counted as away at all.
+	 */
+	it("locks a tab left sitting in view untouched past the delay", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		vi.useFakeTimers();
+		render(<PinGate>secret content</PinGate>);
+		expect(locked()).toBe(false);
+
+		sitStill(6 * MINUTE);
+
+		expect(locked()).toBe(true);
+		expect(screen.queryByText("secret content")).toBeNull();
+	});
+
+	it("starts the wait over every time somebody touches it", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		vi.useFakeTimers();
+		render(<PinGate>secret content</PinGate>);
+
+		sitStill(4 * MINUTE);
+		touch();
+		sitStill(4 * MINUTE);
+
+		// Eight minutes in, on a five-minute delay, and still open — because the
+		// delay measures the last touch, not the time the tab has been up.
+		expect(locked()).toBe(false);
+
+		sitStill(2 * MINUTE);
+
+		expect(locked()).toBe(true);
+	});
+
+	it("never locks an untouched tab while the delay is off", async () => {
+		await setPin("1234");
+		vi.useFakeTimers();
+		render(<PinGate>secret content</PinGate>);
+
+		sitStill(600 * MINUTE);
+
+		expect(locked()).toBe(false);
+	});
+
+	/**
+	 * Hidden time belongs to the away rule, which reads it on return. If the
+	 * untouched timer locked while hidden too, a second tab someone is actively
+	 * typing in would go dark with it — the lock reaches every tab on the device.
+	 */
+	it("leaves hidden time to the away check rather than locking behind it", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		vi.useFakeTimers();
+		render(<PinGate>secret content</PinGate>);
+
+		goAway();
+		sitStill(6 * MINUTE);
+		expect(locked()).toBe(false);
+
+		comeBack();
+
+		expect(locked()).toBe(true);
+	});
+
+	/**
+	 * A lock reaches every tab, so a tab nobody has touched must not lock on top
+	 * of a window somebody is typing in — two windows side by side are both
+	 * "visible", and neither hears the other's input. Having declined, though, it
+	 * has to keep watching: the wait starts over rather than ending for good.
+	 */
+	it("waits for the window in use, then locks once that goes quiet too", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		vi.useFakeTimers();
+		render(<PinGate>secret content</PinGate>);
+
+		sitStill(4 * MINUTE);
+		act(() => markTouched());
+		sitStill(2 * MINUTE);
+
+		expect(locked()).toBe(false);
+
+		sitStill(5 * MINUTE);
+
+		expect(locked()).toBe(true);
 	});
 
 	it("covers this tab when another tab locks the device", async () => {

@@ -9,10 +9,10 @@ import { sha256Base64url } from "./crypto.ts";
  *
  * "Locked" is per browser session: setting/verifying a PIN unlocks the current
  * session, and the lock re-engages on the next fresh load while a PIN is set —
- * or sooner, when someone locks deliberately or the app was away past the
- * auto-lock delay (#97). Waiting on a fresh load was the whole gap: the moment
- * you actually want the cover is the moment you hand the phone over, and that
- * moment never reloads anything.
+ * or sooner, when someone locks deliberately (#97) or the auto-lock delay passes
+ * with the app either away or untouched (#97, #145). Waiting on a fresh load was
+ * the whole gap: the moment you actually want the cover is the moment you hand
+ * the phone over, and that moment never reloads anything.
  */
 
 // Neutral, cover-name storage keys (#42): a casual glance at this device's
@@ -23,6 +23,13 @@ const PIN_HASH_KEY = "habits.pin_hash";
 const UNLOCKED_KEY = "habits.pin_unlocked";
 const AUTO_LOCK_KEY = "habits.pin_auto_lock_min";
 const AWAY_AT_KEY = "habits.pin_away_at";
+/**
+ * The last moment any tab on this device was touched (#145). Device-wide, unlike
+ * the away mark, because two windows side by side are both "visible" and neither
+ * hears the other's input — without this the one you are not typing in would
+ * reach its deadline and lock the one you are.
+ */
+const TOUCHED_AT_KEY = "habits.pin_touched_at";
 /**
  * A counter every deliberate lock bumps, purely so the other tabs on this device
  * hear about it — "unlocked" is per tab (sessionStorage), so without a shared
@@ -64,6 +71,7 @@ export function clearPin(): void {
 	localStorage.removeItem(PIN_HASH_KEY);
 	localStorage.removeItem(AUTO_LOCK_KEY);
 	localStorage.removeItem(LOCK_SEQ_KEY);
+	localStorage.removeItem(TOUCHED_AT_KEY);
 	sessionStorage.removeItem(UNLOCKED_KEY);
 	sessionStorage.removeItem(AWAY_AT_KEY);
 	notify();
@@ -139,7 +147,13 @@ export function subscribeLock(listener: () => void): () => void {
 
 /**
  * The auto-lock delay in minutes, or {@link AUTO_LOCK_OFF} when the app should
- * stay unlocked however long it sits in the background. Off unless chosen.
+ * stay unlocked however long it sits. Off unless chosen.
+ *
+ * One delay covers both ways the app is left (#145): time **away** and time
+ * **untouched**. They are genuinely different waits — a phone in a pocket is not
+ * a laptop on a desk — but a second control would ask the couple to reason about
+ * a distinction the lock screen never shows them, for a feature whose whole
+ * appeal is that nobody has to think about it.
  */
 export function getAutoLockMinutes(): number {
 	const stored = Number(localStorage.getItem(AUTO_LOCK_KEY));
@@ -154,6 +168,23 @@ export function setAutoLockMinutes(minutes: number): void {
 }
 
 /**
+ * How much of the auto-lock delay is left, counting from `since`. Zero means the
+ * wait is up. Both lock rules read the delay through this, so "how long is a
+ * five-minute wait" has one answer and the timer that schedules on it can't
+ * disagree with the check that acts on it.
+ *
+ * A clock that jumped backwards reads as time left rather than time elapsed —
+ * deliberately, since a negative gap is not a wait anyone sat through.
+ */
+export function msLeftOfAutoLock(
+	since: number,
+	minutes: number,
+	at: number = Date.now(),
+): number {
+	return Math.max(0, since + minutes * 60_000 - at);
+}
+
+/**
  * Records that the app went out of sight, for {@link lockIfAwayTooLong} to read
  * when it comes back. Deliberately a timestamp rather than a timer: a hidden tab
  * gets its timers throttled or frozen outright, so the only reading anyone can
@@ -165,13 +196,35 @@ export function markAway(at: number = Date.now()): void {
 }
 
 /**
+ * Records that somebody touched this device, for every tab to see (#145).
+ *
+ * The one thing about the untouched wait that does reach storage, and only
+ * because nothing else can: input arrives at one tab, and the tabs that didn't
+ * receive it are the ones at risk of locking on top of it. Callers throttle —
+ * this is a heartbeat while the app is in use, not a record of each touch.
+ */
+export function markTouched(at: number = Date.now()): void {
+	if (!isPinSet() || getAutoLockMinutes() === AUTO_LOCK_OFF) return;
+	localStorage.setItem(TOUCHED_AT_KEY, String(at));
+}
+
+/** The last touch any tab on this device reported; 0 when none has. */
+function touchedAt(): number {
+	const stored = Number(localStorage.getItem(TOUCHED_AT_KEY));
+	return Number.isFinite(stored) ? stored : 0;
+}
+
+/**
  * Locks if the app was out of sight for longer than the auto-lock delay; call it
  * when the app comes back into view. Returns whether it locked. The away mark is
  * consumed either way, so one trip away can only lock once.
  *
- * A phone that sleeps or an app that gets switched away is what this covers — a
- * window left open in front of you stays unlocked, since a tab you are looking
- * at was never the exposure.
+ * A phone that sleeps or an app that gets switched away is what this covers; a
+ * window left open in front of you is the other half, and belongs to
+ * {@link lockIfUntouchedTooLong}.
+ *
+ * No `isPinSet` guard, unlike the untouched rule: an away mark only exists
+ * because {@link markAway} wrote one, and it won't write without a PIN.
  */
 export function lockIfAwayTooLong(at: number = Date.now()): boolean {
 	const away = sessionStorage.getItem(AWAY_AT_KEY);
@@ -179,9 +232,35 @@ export function lockIfAwayTooLong(at: number = Date.now()): boolean {
 
 	const minutes = getAutoLockMinutes();
 	if (away === null || minutes === AUTO_LOCK_OFF || isLocked()) return false;
-	// A clock that jumped backwards reads as a negative gap; leave it alone
-	// rather than lock on a number that means nothing.
-	if (at - Number(away) < minutes * 60_000) return false;
+	if (msLeftOfAutoLock(Number(away), minutes, at) > 0) return false;
+
+	lock();
+	return true;
+}
+
+/**
+ * Locks if nobody has touched the app since `lastTouchedAt` and the auto-lock
+ * delay has passed — the desk case (#145). Returns whether it locked.
+ *
+ * The away rule could never reach this one: a laptop you walked away from
+ * without switching apps is still showing the foreground tab, so nothing ever
+ * announces a departure and the app sits there uncovered. The same delay is
+ * read here against the last touch instead.
+ *
+ * `lastTouchedAt` is the calling tab's own reading, held in memory rather than
+ * kept here, because keeping it would mean writing storage on every pointer
+ * move. The device-wide mark {@link markTouched} leaves is the other half, and
+ * the later of the two wins: a lock covers every tab, so the tab nobody has
+ * touched must not lock on top of the tab somebody is using.
+ */
+export function lockIfUntouchedTooLong(
+	lastTouchedAt: number,
+	at: number = Date.now(),
+): boolean {
+	const minutes = getAutoLockMinutes();
+	if (!isPinSet() || minutes === AUTO_LOCK_OFF || isLocked()) return false;
+	const since = Math.max(lastTouchedAt, touchedAt());
+	if (msLeftOfAutoLock(since, minutes, at) > 0) return false;
 
 	lock();
 	return true;
