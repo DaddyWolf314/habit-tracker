@@ -6,6 +6,7 @@ import type {
 } from "#/shared/agreements.ts";
 import type { AmendmentInput } from "#/shared/amendments.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
+import type { ConversationFlagView } from "#/shared/conversations.ts";
 import type {
 	Counter,
 	CreateCounterBody,
@@ -292,6 +293,17 @@ export function listEventTypes(): Promise<{ types: EventType[] }> {
 /** How many events await the caller's ruling (#136) — Today's queue entry. */
 export function queueCount(): Promise<{ awaiting: number }> {
 	return apiFetch<{ awaiting: number }>("/api/queue/count");
+}
+
+/**
+ * The check-ins asking to talk that nobody has answered yet (#88, ADR 0007).
+ * Folded server-side, like the queue count beside it, so Today never holds the
+ * log to find a metadata flag.
+ */
+export function listConversationFlags(): Promise<{
+	flags: ConversationFlagView[];
+}> {
+	return apiFetch<{ flags: ConversationFlagView[] }>("/api/conversation-flags");
 }
 
 export function ackRulings(): Promise<{ ok: boolean }> {

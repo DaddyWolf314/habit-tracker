@@ -11,9 +11,8 @@ import type { EventType } from "./event-types.ts";
  * A pending `orgasm`-shaped type: `permitted` is dom-adjudicated and awaited,
  * `kind` is a sub-set enum nobody may adjudicate. Mirrors the starter seven.
  */
-const type: Pick<EventType, "metadata" | "awaiting" | "journaling"> = {
+const type: Pick<EventType, "metadata" | "awaiting"> = {
 	awaiting: ["permitted"],
-	journaling: false,
 	metadata: {
 		permitted: {
 			kind: "boolean",
@@ -43,10 +42,9 @@ function ctx(over: Partial<AmendmentContext> = {}): AmendmentContext {
 	};
 }
 
-/** A journaling-capable entry type, for the `response` cases. */
-const journalType: Pick<EventType, "metadata" | "awaiting" | "journaling"> = {
+/** A plain journal-entry type — nothing awaited, for the `response` cases. */
+const journalType: Pick<EventType, "metadata" | "awaiting"> = {
 	awaiting: [],
-	journaling: true,
 	metadata: {},
 };
 
@@ -262,7 +260,7 @@ describe("retracted — sub-authored, only while pending, terminal", () => {
 	});
 });
 
-describe("response — the dom's gift to a journal entry (ADR 0001)", () => {
+describe("response — the dom's gift (ADR 0001, broadened by ADR 0007)", () => {
 	const respond: AmendmentInput = {
 		kind: "response",
 		target_event_id: "e1",
@@ -310,12 +308,14 @@ describe("response — the dom's gift to a journal entry (ADR 0001)", () => {
 		expect(result.forbidden).toBe(true);
 	});
 
-	it("rejects a response on a non-journaling event type", () => {
-		// The plain `note`/accountability types are always shared and un-hideable;
-		// a response belongs only to the journaling surface.
-		const result = validateAmendment(respond, journalCtx({ eventType: type }));
-		expect(result.ok).toBe(false);
-		if (result.ok) throw new Error("unreachable");
-		expect(result.error).toContain("journal");
+	it("accepts a response on a shared non-journaling event (ADR 0007)", () => {
+		// The gate is the visibility, not the type. ADR 0001 refused this to protect
+		// sealed and secret prose, and an accountability type has neither — it is
+		// always `shared`. This is what lets a response close a conversation flag.
+		expect(validateAmendment(respond, journalCtx({ eventType: type }))).toEqual(
+			{
+				ok: true,
+			},
+		);
 	});
 });

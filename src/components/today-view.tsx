@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { RuleChangeNotice } from "#/components/rule-change-notice.tsx";
 import { AnchorsPanel } from "#/components/today/anchors-panel.tsx";
+import { ConversationFlagsPanel } from "#/components/today/conversation-flags-panel.tsx";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
 import { QueueEntry } from "#/components/today/queue-entry.tsx";
@@ -10,6 +11,7 @@ import { TargetsPanel } from "#/components/today/targets-panel.tsx";
 import {
 	getRoles,
 	listAnchors,
+	listConversationFlags,
 	listCounters,
 	listEventTypes,
 	listOpenPrompts,
@@ -20,6 +22,7 @@ import {
 import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
+import type { ConversationFlagView } from "#/shared/conversations.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -43,6 +46,9 @@ export function TodayView() {
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
 	const [anchors, setAnchors] = useState<AnchorView[]>([]);
+	// Folded server-side too (#88): a conversation flag is one metadata key, and
+	// deriving it here would mean holding the whole log to find it.
+	const [flags, setFlags] = useState<ConversationFlagView[]>([]);
 	// What says which target rows are tickable (#135), so it has to stay current:
 	// see the poll below.
 	const [rules, setRules] = useState<Rule[]>([]);
@@ -60,6 +66,7 @@ export function TodayView() {
 			{ types },
 			{ awaiting },
 			{ anchors },
+			{ flags },
 		] = await Promise.all([
 			listTimers(),
 			listOpenPrompts(),
@@ -68,6 +75,7 @@ export function TodayView() {
 			listEventTypes(),
 			queueCount(),
 			listAnchors(),
+			listConversationFlags(),
 		]);
 		setTimers(timers);
 		setOpenPrompts(prompts);
@@ -81,6 +89,7 @@ export function TodayView() {
 		setTypes(types);
 		setAwaiting(awaiting);
 		setAnchors(anchors);
+		setFlags(flags);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -108,6 +117,7 @@ export function TodayView() {
 				typeRes,
 				eventRes,
 				anchorRes,
+				flagRes,
 			] = await Promise.all([
 				listTimers(),
 				getRoles(),
@@ -117,6 +127,7 @@ export function TodayView() {
 				listEventTypes(),
 				queueCount(),
 				listAnchors(),
+				listConversationFlags(),
 			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
@@ -126,6 +137,7 @@ export function TodayView() {
 			setTypes(typeRes.types);
 			setAwaiting(eventRes.awaiting);
 			setAnchors(anchorRes.anchors);
+			setFlags(flagRes.flags);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -175,6 +187,14 @@ export function TodayView() {
 			<RuleChangeNotice />
 
 			<QueueEntry count={awaiting} />
+
+			{/* Above the glance panels: someone asking to talk outranks a day count,
+			    and unlike everything below it, this one waits on a person. */}
+			<ConversationFlagsPanel
+				flags={flags}
+				selfId={self?.member_id ?? null}
+				onChange={refreshAfterMutation}
+			/>
 
 			<AnchorsPanel anchors={anchors} />
 
