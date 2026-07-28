@@ -245,6 +245,15 @@ describe("the sub's quality picker", () => {
 		).toBeDefined();
 	});
 
+	// The option text taught the blank path only. Picking a quality resolves the
+	// awaiting key outright — no pending, no queue — and the sub was left to find
+	// that out from its absence.
+	it("says what a pick costs, not just what a blank does", () => {
+		openMarkDone();
+		expect(screen.getByText(/stands as the record/i)).toBeDefined();
+		expect(screen.getByText(/won't be waiting on their ruling/i)).toBeDefined();
+	});
+
 	// The copy is display-layer: what crosses the wire is still the pack's enum.
 	it("logs the stored value the pack defines, not the copy", async () => {
 		openMarkDone();

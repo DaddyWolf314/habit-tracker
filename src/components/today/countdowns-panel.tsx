@@ -642,6 +642,15 @@ function MarkDoneForm({
 						</option>
 					))}
 				</select>
+				{/* Both paths, not just the blank one (#154). Setting `quality` fills
+				    the type's only `awaiting` key, so the completion is never pending
+				    and never reaches the dom's ruling — a blank is what puts it there.
+				    The option text taught the blank path and left the sub to discover
+				    that picking one settles it. */}
+				<p className="mt-1 text-xs text-muted-foreground">
+					Whichever you pick stands as the record — your dom can change it
+					later, but it won't be waiting on their ruling.
+				</p>
 			</div>
 			<Textarea
 				placeholder="Anything you want to say about this?"
