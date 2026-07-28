@@ -390,6 +390,21 @@ export function updateRule(
 	});
 }
 
+/**
+ * Renames a rule (dom/switch only) — an effective-dated edit like any other, so
+ * the revision history keeps saying what it was called before (#150, ADR 0009).
+ *
+ * Name-only rather than a full `updateRule`, because the rules the picker refuses
+ * to edit ("advanced — view only" timer wiring) still have to be renameable, and
+ * round-tripping effects the screen cannot render is how they would get mangled.
+ */
+export function renameRule(id: string, name: string): Promise<VersionedRule> {
+	return apiFetch<VersionedRule>(`/api/rules/${encodeURIComponent(id)}/name`, {
+		method: "PUT",
+		body: { name },
+	});
+}
+
 /** Enables or disables a rule (dom/switch only) — an effective-dated toggle. */
 export function setRuleEnabled(
 	id: string,

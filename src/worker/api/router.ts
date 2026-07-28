@@ -561,6 +561,20 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				);
 			}
 		}
+		// A name-only write (#150), so a rule whose effects the picker cannot render
+		// — the "advanced — view only" timer rules — is still renameable without the
+		// client having to echo a definition it can't display back through itself.
+		const ruleNameMatch = path.match(/^\/api\/rules\/([^/]+)\/name$/);
+		if (ruleNameMatch && method === "PUT") {
+			const id = decodeURIComponent(ruleNameMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const body = (await request.json().catch(() => null)) as {
+					name?: unknown;
+				} | null;
+				const rule = await stub.renameRule(auth.identityHash, id, body?.name);
+				return json(rule);
+			});
+		}
 		const ruleEnabledMatch = path.match(/^\/api\/rules\/([^/]+)\/enabled$/);
 		if (ruleEnabledMatch && method === "PUT") {
 			const id = decodeURIComponent(ruleEnabledMatch[1]);

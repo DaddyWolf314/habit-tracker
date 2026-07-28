@@ -1492,6 +1492,52 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * Renames a rule (#150), gated to dom/switch like every other authoring op.
+	 *
+	 * Shaped like {@link setRuleEnabled} rather than routed through
+	 * {@link updateRule}, and the reason is the rule this exists to serve: timer
+	 * rules are "advanced — view only" (#64), so the client has no editor that can
+	 * *represent* their effects, only a name box. Echoing a definition the screen
+	 * cannot render back through the client to change one string means any drift
+	 * between the two schema versions silently rewrites `match_on` or
+	 * `route_duration_to` on the way past. Reading the current definition here and
+	 * changing only the name makes that impossible rather than unlikely.
+	 *
+	 * A rename is an ordinary effective-dated edit: it appends a version (ADR 0009),
+	 * so the revision list and every change notice already written keep saying what
+	 * the rule was called at the time. Recorded as an `edit`, which is what it is —
+	 * the version history beside the notice shows both names.
+	 *
+	 * It adopts a pack rule, like any other edit. That is a real cost — the couple
+	 * stops receiving pack behaviour fixes automatically and starts being *offered*
+	 * them through the upstream-changed notice (ADR 0002) — and it is the safe
+	 * direction: a renamed rule that stayed un-adopted would have its name silently
+	 * overwritten by the pack's the next time the pack changed that rule's
+	 * behaviour, since reconciliation appends the shipped definition wholesale.
+	 */
+	async renameRule(
+		identityHash: string,
+		id: string,
+		name: unknown,
+	): Promise<VersionedRule> {
+		const me = this.requireAuthor(identityHash);
+		const existing = this.requireRule(id);
+		if (typeof name !== "string" || !name.trim()) {
+			throw coupleError("BAD_REQUEST", "a rule needs a name");
+		}
+		const trimmed = name.trim();
+		const current = latestVersion(existing);
+		if (current.name === trimmed) return existing; // no-op, no audit noise
+		const effectiveFrom = Date.now();
+		this.writeRuleVersion(
+			this.editedIdentity(existing),
+			versionFromDefinition({ ...current, name: trimmed }, effectiveFrom),
+		);
+		this.recordRuleChange(me, "edit", id, effectiveFrom);
+		return this.requireRule(id);
+	}
+
+	/**
 	 * Removes a rule (#64), gated to dom/switch. A true hard purge is allowed only
 	 * for a custom rule that has never fired (zero trace references) — nothing in
 	 * the log depends on it. Any pack rule, or any rule that has ever fired,

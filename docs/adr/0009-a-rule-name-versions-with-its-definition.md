@@ -105,6 +105,21 @@ id it derives from is immutable.
   for ever with nothing to catch it.
 - **The editor's name box is offered on an edit, not only on a create.** A rule
   that cannot be renamed would leave the id as the de-facto name again.
+- **What a rule is called and what it does are separately editable.** The
+  structured picker cannot represent timer wiring, so those rules are
+  "advanced — view only" (#64) and never reach the editor. Left there, #150's
+  symptom would have survived intact on exactly the rules nobody could fix. They
+  get a name-only control instead, against a `renameRule` op that reads the
+  definition from storage — a screen that cannot render `match_on` must never be
+  the thing that sends it back, or drift between the client's schema and the
+  server's rewrites the effects on the way past. The gate is unchanged in
+  substance; it now withholds the *effects* rather than the whole rule.
+- **A rename adopts a pack rule**, like any other edit. The cost is real — the
+  couple stops receiving pack behaviour fixes automatically and starts being
+  *offered* them through the upstream-changed notice — and it is the safe
+  direction. A renamed rule that stayed un-adopted would have its name silently
+  overwritten the next time the pack changed that rule's behaviour, because
+  reconciliation appends the shipped definition wholesale.
 - **The id still comes from the name on create, and only on create.** Renaming
   never re-slugs the id — that would orphan every trace row citing it.
 - **`RuleChangeNotice` carries a resolved `name`.** The server reads the version

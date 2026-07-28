@@ -24,13 +24,19 @@ vi.mock("#/lib/api.ts", () => ({
 	listCounters: vi.fn(() => Promise.resolve({ counters: [] })),
 	listEventTypes: vi.fn(() => Promise.resolve({ types: TYPES })),
 	listRuleHistory: vi.fn(() => Promise.resolve({ rules: [RULE] })),
+	renameRule: vi.fn(() => Promise.resolve({})),
 	setRuleEnabled: vi.fn(() => Promise.resolve({})),
 	updateRule: vi.fn(() => Promise.resolve({})),
 }));
 
 vi.mock("#/lib/identity.ts", () => ({ hasIdentity: () => true }));
 
-import { deleteRule, listRuleHistory, updateRule } from "#/lib/api.ts";
+import {
+	deleteRule,
+	listRuleHistory,
+	renameRule,
+	updateRule,
+} from "#/lib/api.ts";
 import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { VersionedRule } from "#/shared/rules.ts";
@@ -310,5 +316,91 @@ describe("a rule's name", () => {
 		await renderRules();
 		expect(screen.getByRole("heading", { name: "Rules" })).not.toBeNull();
 		expect(screen.getAllByText("R1").length).toBeGreaterThan(0);
+	});
+});
+
+/**
+ * Timer wiring is "advanced — view only" (#64): the structured picker has no way
+ * to represent `open_timer`/`close_timer`, so those rules never reach the editor.
+ * That left them stuck with their ids as names, which is the whole of #150 — so
+ * the *name* axis is separated from the *effects* axis and only the latter stays
+ * read-only.
+ */
+describe("renaming an advanced rule", () => {
+	afterEach(cleanup);
+
+	/** R15 — opens the session stopwatch. Nothing the picker can draw. */
+	const ADVANCED: VersionedRule = {
+		id: "R15",
+		origin: "pack",
+		adopted: false,
+		versions: [
+			{
+				effective_from: 0,
+				name: "Session starts the stopwatch",
+				condition: { type: "ritual_completed", metadata: {} },
+				effects: [
+					{
+						verb: "open_timer",
+						timer: "session_stopwatch",
+						match_on: { session_id: "session_id" },
+						tag_from: "activity",
+					},
+				],
+				enabled: true,
+			},
+		],
+	};
+
+	async function renderAdvanced() {
+		vi.mocked(renameRule).mockClear();
+		vi.mocked(updateRule).mockClear();
+		vi.mocked(listRuleHistory).mockResolvedValueOnce({ rules: [ADVANCED] });
+		await renderRules();
+	}
+
+	it("offers Rename where it withholds Edit", async () => {
+		await renderAdvanced();
+		expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Rename" })).not.toBeNull();
+	});
+
+	// The name box opens seeded, so the author corrects a name rather than
+	// retyping one — and a blank submission is refused rather than clearing it.
+	it("seeds the box with the current name and refuses a blank one", async () => {
+		await renderAdvanced();
+		click("Rename");
+		const box = screen.getByLabelText("Name") as HTMLInputElement;
+		expect(box.value).toBe("Session starts the stopwatch");
+		fireEvent.change(box, { target: { value: "  " } });
+		expect(
+			(screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+	});
+
+	// A name and only a name goes over the wire. The screen cannot render this
+	// rule's effects, so it must never be the thing that sends them back.
+	it("sends the name alone, never a definition it cannot render", async () => {
+		await renderAdvanced();
+		click("Rename");
+		fireEvent.change(screen.getByLabelText("Name"), {
+			target: { value: "Stopwatch starts" },
+		});
+		click("Save name");
+		await act(async () => {});
+		expect(vi.mocked(renameRule)).toHaveBeenCalledWith(
+			"R15",
+			"Stopwatch starts",
+		);
+		expect(vi.mocked(updateRule)).not.toHaveBeenCalled();
+	});
+
+	it("cancelling closes the box without renaming", async () => {
+		await renderAdvanced();
+		click("Rename");
+		click("Cancel");
+		expect(vi.mocked(renameRule)).not.toHaveBeenCalled();
+		expect(screen.queryByLabelText("Name")).toBeNull();
 	});
 });

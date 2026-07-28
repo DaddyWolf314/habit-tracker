@@ -11,6 +11,7 @@ import {
 	listCounters,
 	listEventTypes,
 	listRuleHistory,
+	renameRule,
 	setRuleEnabled,
 	updateRule,
 } from "#/lib/api.ts";
@@ -34,6 +35,7 @@ import {
 	currentRule,
 	type Effect,
 	latestVersion,
+	type Rule,
 	type RuleDefinition,
 	ruleFromVersion,
 	ruleName,
@@ -195,6 +197,10 @@ function RuleCard({
 	// house two-tap inline confirm (dissolve, retraction, counter delete) rather
 	// than a browser dialog, which would block the whole surface.
 	const [confirmingRemove, setConfirmingRemove] = useState(false);
+	// A rule the picker won't edit can still be renamed (#150) — an inline box on
+	// the card rather than the full editor, which has no way to render the timer
+	// wiring that put the rule out of its reach in the first place.
+	const [renaming, setRenaming] = useState(false);
 	const flat = currentRule(rule);
 	const described = describeRule(flat, type);
 	const editable = isPickerEditable(flat);
@@ -259,9 +265,23 @@ function RuleCard({
 								Edit
 							</Button>
 						) : (
-							<span className="text-muted-foreground">
-								advanced — view only
-							</span>
+							<>
+								{/* Still view-only for what it *does* — the picker cannot
+								    represent timer wiring (#64). What it is *called* is a
+								    different axis, and leaving it unrenameable would have left
+								    exactly the ids #150 was filed about on the timer rules. */}
+								<span className="text-muted-foreground">
+									advanced — effects view only
+								</span>
+								<Button
+									size="xs"
+									variant="outline"
+									disabled={busy || renaming}
+									onClick={() => setRenaming(true)}
+								>
+									Rename
+								</Button>
+							</>
 						)}
 						<Button
 							size="xs"
@@ -303,6 +323,20 @@ function RuleCard({
 				)}
 			</div>
 
+			{renaming && (
+				<RuleRenameForm
+					rule={flat}
+					busy={busy}
+					onSubmit={(name) =>
+						run(async () => {
+							await renameRule(rule.id, name);
+							setRenaming(false);
+						})
+					}
+					onCancel={() => setRenaming(false)}
+				/>
+			)}
+
 			{showHistory && (
 				<ol
 					id={historyId}
@@ -336,6 +370,61 @@ function RuleCard({
 				</ol>
 			)}
 		</section>
+	);
+}
+
+/**
+ * The name-only editor for a rule the picker won't touch (#150).
+ *
+ * Deliberately not the full {@link RuleEditor} with its other fields hidden: that
+ * editor builds a whole definition from its drafts, and a rule it cannot
+ * represent would come out the other side with its timer effects flattened into
+ * nothing. This submits a name and only a name, against a server op that reads
+ * the definition from storage rather than accepting one from here.
+ */
+function RuleRenameForm({
+	rule,
+	busy,
+	onSubmit,
+	onCancel,
+}: {
+	rule: Rule;
+	busy: boolean;
+	onSubmit: (name: string) => void;
+	onCancel: () => void;
+}) {
+	const fieldId = useId();
+	// Seeded through the same fallback the heading uses, so a rule that has never
+	// been named opens with its de-slug to correct rather than a blank box.
+	const [draft, setDraft] = useState(() => ruleName(rule));
+	const trimmed = draft.trim();
+
+	return (
+		<form
+			className="mt-3 flex flex-wrap items-end gap-2 border-t pt-3"
+			onSubmit={(e) => {
+				e.preventDefault();
+				if (trimmed) onSubmit(trimmed);
+			}}
+		>
+			<div className="min-w-0 flex-1">
+				<label htmlFor={fieldId} className="text-xs text-muted-foreground">
+					Name
+				</label>
+				<input
+					id={fieldId}
+					className={`${fieldClass} mt-1`}
+					value={draft}
+					onChange={(e) => setDraft(e.target.value)}
+				/>
+			</div>
+			<Button size="sm" type="submit" disabled={busy || !trimmed}>
+				{busy ? "…" : "Save name"}
+			</Button>
+			<Button size="sm" type="button" variant="ghost" onClick={onCancel}>
+				Cancel
+			</Button>
+		</form>
 	);
 }
 
