@@ -98,12 +98,34 @@ function taskNameOf(t: TimerView): string | null {
 }
 
 /**
- * The `quality` grades a `task_completed` can carry (pack `event-types.json`).
- * The sub may leave it blank: `quality` is an `awaiting` key adjudicated by the
- * dom (ADR 0003), so an un-graded completion lands pending for the dom to rule on
- * — the mini-form never forces a grade.
+ * How each `quality` reads *in this form* (#154). Claim-shaped, because of who
+ * is speaking: here the sub says how they think they did. "Exceeded" as a lone
+ * word is a verdict, and a verdict on your own work is exactly what leaving the
+ * field blank exists to avoid — `quality` is an `awaiting` key adjudicated by
+ * the dom (ADR 0003), so a blank lands the completion pending their ruling.
+ *
+ * Local to this form on purpose, but note what that costs today: the dom's queue
+ * (`queue-panel.tsx`) and the generic composer both still render the stored
+ * token through their shared enum control, so a sub who picks "Went beyond what
+ * was asked" sees `exceeded` when it reaches the queue. That is a gap, not a
+ * register decision — humanizing a *generic* enum control needs per-option
+ * labels in the pack, which is a schema change and out of #154's display-layer
+ * scope. Tracked in #155; if that lands, this map may become redundant, but
+ * don't delete it before then.
+ *
+ * The options are derived from these keys so the set is written once. `quality`
+ * is a closed enum in the pack, so this matches exhaustively and needs no
+ * fallback — a test pins these keys to the pack's `options` to keep that true.
  */
-const QUALITY_OPTIONS = ["exceeded", "met", "partial"] as const;
+const QUALITY_LABELS = {
+	exceeded: "Went beyond what was asked",
+	met: "Did what was asked",
+	partial: "Got part of the way",
+} as const;
+
+const QUALITY_OPTIONS = Object.keys(QUALITY_LABELS) as Array<
+	keyof typeof QUALITY_LABELS
+>;
 
 /**
  * Whether a row is a task countdown the caller can close by completing it. Only
@@ -562,7 +584,7 @@ function AssignForm({
  * so a typo can never leave the countdown silently open — and rule R4 closes the
  * countdown on the `task_id` match (ADR 0004). `quality` is optional: it is an
  * `awaiting` key adjudicated by the dom (ADR 0003), so leaving it blank lands the
- * completion pending the dom's grade rather than self-assigning one. The event is
+ * completion pending the dom's ruling rather than self-assigning one. The event is
  * about the sub who did the task, so `subject` is their own member id.
  */
 function MarkDoneForm({
@@ -613,10 +635,10 @@ function MarkDoneForm({
 					value={quality}
 					onChange={(e) => setQuality(e.target.value)}
 				>
-					<option value="">— (leave for your dom to grade)</option>
+					<option value="">— (leave it for your dom to rule on)</option>
 					{QUALITY_OPTIONS.map((q) => (
 						<option key={q} value={q}>
-							{q}
+							{QUALITY_LABELS[q]}
 						</option>
 					))}
 				</select>

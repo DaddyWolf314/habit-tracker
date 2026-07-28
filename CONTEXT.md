@@ -88,7 +88,7 @@ in and should not.
   for `auto_closed`, and the plain word for the rest (#149). `timerViewSchema.status`
   is an open string, so an unmapped disposition de-slugs rather than printing raw.
   _Avoid_: "outcome" (a countdown's disposition says how it ended, not how it went —
-  a `completed` one may still be graded `partial`).
+  a `completed` one may still be ruled `partial`).
 - **Overdue** — how a passed deadline reads to a person, on any surface.
   `expired` is the *status* a swept countdown carries; whether the sweep has
   landed yet turns on alarm timing and polling, not on anything the author did,
@@ -216,6 +216,12 @@ in and should not.
   role's ruling. A view, **not a holding pen** — pending events are already in the
   log and have already fired their unconditional rules. _Avoid_: "inbox",
   "approval queue".
+- **Quality** — how well a task was done (`exceeded | met | partial`), the pack's
+  canonical **awaiting** key on `task_completed`. The sub *claims* it when marking
+  a task done; the dom *rules* on it afterwards. Where the sub states their own
+  quality, the copy is a claim rather than a verdict (#154) — pronouncing a verdict
+  on your own work is what leaving the field blank exists to avoid. _Avoid_:
+  "grade", "score", "rating" (see **Adjudication**).
 - **Notification** — the single content-free unread *count* a member polls, shown
   as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): pending-
   adjudication events plus a targeted recovery notice, composed in one place
