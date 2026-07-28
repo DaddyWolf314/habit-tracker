@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { StatusSummary } from "#/components/status-summary.tsx";
 import { Button } from "#/components/ui/button.tsx";
@@ -397,6 +397,7 @@ export function Ceremony({
 	onDone: () => void;
 }) {
 	const [step, setStep] = useState<"show" | "check">("show");
+	const savedId = useId();
 	const [saved, setSaved] = useState(false);
 	// Precompute stable keys: words can repeat, so position is part of identity.
 	const words = mnemonic.split(" ").map((word, i) => ({
@@ -434,8 +435,9 @@ export function Ceremony({
 					</li>
 				))}
 			</ol>
-			<label className="flex items-center gap-2 text-sm">
+			<label htmlFor={savedId} className="flex items-center gap-2 text-sm">
 				<input
+					id={savedId}
 					type="checkbox"
 					checked={saved}
 					onChange={(e) => setSaved(e.target.checked)}
@@ -476,6 +478,7 @@ function PhraseCheck({
 }) {
 	const wordCount = mnemonic.split(" ").length;
 	const [positions] = useState(() => pickCheckPositions(wordCount));
+	const ids = useId();
 	const [answers, setAnswers] = useState<Record<number, string>>({});
 	const [missed, setMissed] = useState(false);
 
@@ -496,11 +499,16 @@ function PhraseCheck({
 			</p>
 			<div className="flex max-w-md flex-col gap-3">
 				{positions.map((position) => (
-					<label key={position} className="flex items-center gap-3 text-sm">
+					<label
+						key={position}
+						htmlFor={`${ids}-word-${position}`}
+						className="flex items-center gap-3 text-sm"
+					>
 						<span className="w-20 text-right text-muted-foreground tabular-nums">
 							Word {position}
 						</span>
 						<input
+							id={`${ids}-word-${position}`}
 							className="w-48 rounded-md border bg-background p-2 text-sm"
 							autoComplete="off"
 							autoCapitalize="none"
@@ -602,6 +610,7 @@ export function RolesPanel({
 	onActivated: () => void | Promise<void>;
 }) {
 	const [state, setState] = useState<RoleConfirmationState | null>(null);
+	const roleIds = useId();
 	const [selfRole, setSelfRole] = useState<Role>("dom");
 	const [partnerRole, setPartnerRole] = useState<Role>("sub");
 	const [busy, setBusy] = useState(false);
@@ -712,9 +721,10 @@ export function RolesPanel({
 				</div>
 			) : (
 				<div className="mt-3 flex flex-wrap items-end gap-3">
-					<label className="text-sm">
+					<label htmlFor={`${roleIds}-self`} className="text-sm">
 						<span className="block text-muted-foreground">You</span>
 						<select
+							id={`${roleIds}-self`}
 							className="mt-1 rounded-md border bg-background p-2 text-sm"
 							value={selfRole}
 							onChange={(e) => setSelfRole(e.target.value as Role)}
@@ -726,9 +736,10 @@ export function RolesPanel({
 							))}
 						</select>
 					</label>
-					<label className="text-sm">
+					<label htmlFor={`${roleIds}-partner`} className="text-sm">
 						<span className="block text-muted-foreground">Your partner</span>
 						<select
+							id={`${roleIds}-partner`}
 							className="mt-1 rounded-md border bg-background p-2 text-sm"
 							value={partnerRole}
 							onChange={(e) => setPartnerRole(e.target.value as Role)}

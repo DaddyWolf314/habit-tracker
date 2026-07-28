@@ -164,19 +164,23 @@ describe("removing a rule", () => {
 describe("a rule condition on a citing ref", () => {
 	afterEach(cleanup);
 
-	// The editor's selects carry no accessible names (their captions are spans),
-	// so they are addressed positionally: type, then the optional subject filter,
-	// then each condition's key and value.
+	// Every control in the editor now carries an accessible name (#148), so the
+	// rows are addressed by name rather than by position — a reordered form no
+	// longer silently retargets these.
 	async function openConditionOn(typeId: string) {
 		await renderRules();
 		fireEvent.click(screen.getByRole("button", { name: "New rule" }));
-		fireEvent.change(screen.getAllByRole("combobox")[0], {
-			target: { value: typeId },
-		});
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "When this happens" }),
+			{ target: { value: typeId } },
+		);
 		fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
-		fireEvent.change(screen.getAllByRole("combobox")[2], {
-			target: { value: "ritual_id" },
-		});
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Condition 1 key" }),
+			{
+				target: { value: "ritual_id" },
+			},
+		);
 	}
 
 	it("offers the corpus rather than a text box", async () => {
@@ -196,5 +200,26 @@ describe("a rule condition on a citing ref", () => {
 
 		const labels = screen.getAllByRole("option").map((o) => o.textContent);
 		expect(labels).not.toContain("ask before you come");
+	});
+});
+
+/**
+ * The revision list is a disclosure (#148): the button's own text is a count,
+ * so without `aria-expanded` nothing tells a screen reader it toggles anything.
+ */
+describe("the revision-history disclosure", () => {
+	afterEach(cleanup);
+
+	it("flips aria-expanded and names the list it reveals", async () => {
+		await renderRules();
+		const toggle = screen.getByRole("button", { name: /revision/ });
+		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+
+		const listId = toggle.getAttribute("aria-controls") ?? "";
+		expect(document.getElementById(listId)).toBeNull();
+
+		fireEvent.click(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(document.getElementById(listId)).not.toBeNull();
 	});
 });

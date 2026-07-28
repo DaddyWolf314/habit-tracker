@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -124,6 +124,8 @@ function PromptAnswerForm({
 }) {
 	const [note, setNote] = useState("");
 	const [visibility, setVisibility] = useState<Visibility | "">("");
+	// One form per outstanding prompt, so the id has to be per-instance (#148).
+	const visibilityId = useId();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -161,11 +163,11 @@ function PromptAnswerForm({
 				onChange={(e) => setNote(e.target.value)}
 			/>
 			<div>
-				{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-				<label className="text-xs text-muted-foreground">
+				<label htmlFor={visibilityId} className="text-xs text-muted-foreground">
 					{VISIBILITY_LABEL}
 				</label>
 				<VisibilitySelect
+					id={visibilityId}
 					className={`${fieldClass} mt-1`}
 					value={visibility}
 					onChange={setVisibility}

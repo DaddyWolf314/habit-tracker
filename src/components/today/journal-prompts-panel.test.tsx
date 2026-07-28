@@ -46,8 +46,8 @@ function startAnswering() {
 	fireEvent.click(screen.getByRole("button", { name: /answer/i }));
 }
 
-/** The visibility select inside the open answer form. */
-const picker = () => screen.getByRole("combobox");
+/** The visibility select inside the open answer form, by its label (#148). */
+const picker = () => screen.getByRole("combobox", { name: /visibility/i });
 
 /** Fills the prose, which is required before the form will submit at all. */
 function writeAnswer(text = "it was fine") {

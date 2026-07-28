@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
@@ -325,6 +325,9 @@ function AgreementRow({
 	const [editing, setEditing] = useState(false);
 	const [armed, setArmed] = useState<"retire" | "delete" | null>(null);
 	const [busy, setBusy] = useState(false);
+	// Per-row: the corpus renders many of these, and `aria-controls` has to name
+	// this row's history rather than some other row's (#148).
+	const historyId = useId();
 
 	// What it says *now*; an announced change dated ahead governs nothing yet, so
 	// the row reads the version in force rather than the latest one written.
@@ -352,6 +355,8 @@ function AgreementRow({
 				<button
 					type="button"
 					className="min-w-0 flex-1 text-left"
+					aria-expanded={open}
+					aria-controls={historyId}
 					onClick={() => setOpen((o) => !o)}
 				>
 					<span className="font-medium">{current?.name ?? latest.name}</span>
@@ -424,7 +429,7 @@ function AgreementRow({
 			)}
 
 			{open && (
-				<div className="mt-2 border-t pt-2">
+				<div id={historyId} className="mt-2 border-t pt-2">
 					<h3 className="text-xs font-medium text-muted-foreground">History</h3>
 					<ul className="mt-1 space-y-1 text-xs text-muted-foreground">
 						{[...agreement.versions]
@@ -504,6 +509,9 @@ function AgreementForm({
 	const [text, setText] = useState(initialText);
 	const [startsOn, setStartsOn] = useState("");
 	const [busy, setBusy] = useState(false);
+	// The form renders once per agreement row being edited, so the ids have to be
+	// per-instance or two open editors would collide on them (#148).
+	const ids = useId();
 
 	async function submit() {
 		if (!name.trim()) {
@@ -523,21 +531,22 @@ function AgreementForm({
 
 	return (
 		<div className="mt-3 space-y-2">
-			<label className="block">
+			<label className="block" htmlFor={`${ids}-name`}>
 				<span className="text-xs text-muted-foreground">Short name</span>
 				<input
+					id={`${ids}-name`}
 					className={`${fieldClass} mt-1`}
 					value={name}
 					placeholder="e.g. text me when you land"
 					onChange={(e) => setName(e.target.value)}
 				/>
 			</label>
-			{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the Textarea */}
-			<label className="block">
+			<label className="block" htmlFor={`${ids}-text`}>
 				<span className="text-xs text-muted-foreground">
 					What you've agreed
 				</span>
 				<Textarea
+					id={`${ids}-text`}
 					className="mt-1"
 					value={text}
 					onChange={(e) => setText(e.target.value)}
@@ -548,11 +557,12 @@ function AgreementForm({
 			    binds. It is also the only "draft" this corpus has, on purpose — a
 			    private drafting space inside a consent record would be the one thing
 			    it shouldn't have. Backdating is refused server-side. */}
-			<label className="block">
+			<label className="block" htmlFor={`${ids}-starts-on`}>
 				<span className="text-xs text-muted-foreground">
 					Starts on (leave blank to start now)
 				</span>
 				<input
+					id={`${ids}-starts-on`}
 					className={`${fieldClass} mt-1`}
 					type="date"
 					value={startsOn}

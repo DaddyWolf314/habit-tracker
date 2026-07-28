@@ -222,3 +222,29 @@ describe("citations on the event card", () => {
 		expect(screen.getByText("Agreement: ag_1")).not.toBeNull();
 	});
 });
+
+/**
+ * The drill-in is a disclosure, so it has to say whether it is open (#148) —
+ * without `aria-expanded` a screen reader gets a button that silently grows a
+ * chain below it.
+ */
+describe("the chain drill-in reports its state", () => {
+	afterEach(cleanup);
+
+	it("flips aria-expanded and names the region it reveals", async () => {
+		renderStream([event({ type: "task_completed" })]);
+		const toggle = screen.getAllByRole("button", { expanded: false })[0];
+		expect(toggle.getAttribute("aria-controls")).not.toBeNull();
+		expect(
+			document.getElementById(toggle.getAttribute("aria-controls") ?? ""),
+		).toBeNull();
+
+		await act(async () => {
+			fireEvent.click(toggle);
+		});
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(
+			document.getElementById(toggle.getAttribute("aria-controls") ?? ""),
+		).not.toBeNull();
+	});
+});

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
@@ -345,6 +345,9 @@ function AssignForm({
 	partnerId: string | null;
 	onAssigned: () => void;
 }) {
+	// Prefix for this form's field ids, so the labels below can name their
+	// controls explicitly (#148).
+	const ids = useId();
 	const [kind, setKind] = useState<AssignKind>("task");
 	const [taskName, setTaskName] = useState("");
 	const [amount, setAmount] = useState("");
@@ -449,9 +452,11 @@ function AssignForm({
 						value={amount}
 						onChange={(e) => setAmount(e.target.value)}
 					/>
-					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-					<label className="sr-only">Unit</label>
+					<label htmlFor={`${ids}-unit`} className="sr-only">
+						Unit
+					</label>
 					<select
+						id={`${ids}-unit`}
 						// `cn` and not a template string: `fieldClass` carries `w-full`,
 						// which plain concatenation lets win over `w-28` — the unit picker
 						// then eats the row and collapses the flex-1 Duration input beside
@@ -471,11 +476,14 @@ function AssignForm({
 			)}
 			{kind === "journal" && (
 				<div>
-					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-					<label className="text-xs text-muted-foreground">
+					<label
+						htmlFor={`${ids}-floor`}
+						className="text-xs text-muted-foreground"
+					>
 						Minimum visibility to count
 					</label>
 					<select
+						id={`${ids}-floor`}
 						className={`${fieldClass} mt-1`}
 						value={floor}
 						onChange={(e) => setFloor(e.target.value as Floor | "")}
@@ -521,6 +529,8 @@ function MarkDoneForm({
 	onCancel: () => void;
 	onDone: () => void;
 }) {
+	// One of these per task row, so the id has to be per-instance (#148).
+	const qualityId = useId();
 	const [quality, setQuality] = useState("");
 	const [note, setNote] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -547,11 +557,11 @@ function MarkDoneForm({
 	return (
 		<div className="mt-2 space-y-2">
 			<div>
-				{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-				<label className="text-xs text-muted-foreground">
+				<label htmlFor={qualityId} className="text-xs text-muted-foreground">
 					Quality (optional)
 				</label>
 				<select
+					id={qualityId}
 					className={`${fieldClass} mt-1`}
 					value={quality}
 					onChange={(e) => setQuality(e.target.value)}

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -112,6 +112,9 @@ function EventRow({
 	const [trace, setTrace] = useState<TraceRow[] | null>(null);
 	const [open, setOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	// Per-row: the stream renders one of these per event, so `aria-controls` has
+	// to name this row's drill-in rather than some other row's (#148).
+	const chainId = useId();
 
 	async function toggle() {
 		if (open) {
@@ -148,6 +151,8 @@ function EventRow({
 			<button
 				type="button"
 				className="flex w-full items-start justify-between gap-3 text-left"
+				aria-expanded={open}
+				aria-controls={chainId}
 				onClick={toggle}
 			>
 				<div className="min-w-0">
@@ -217,7 +222,10 @@ function EventRow({
 			{ownRuling && <RulingReveal line={describeAmendment(ownRuling)} />}
 
 			{open && (
-				<div className="mt-2 space-y-3 rounded-md border bg-muted/40 p-3">
+				<div
+					id={chainId}
+					className="mt-2 space-y-3 rounded-md border bg-muted/40 p-3"
+				>
 					<div>
 						<p className="text-xs font-medium text-muted-foreground">Chain</p>
 						<ol className="mt-1 space-y-1 text-xs text-muted-foreground">
