@@ -4,6 +4,7 @@ import {
 	latestVersion,
 	type Rule,
 	ruleFromVersion,
+	ruleName,
 	ruleSchema,
 	ruleVersionSchema,
 	versionedRuleSchema,
@@ -71,6 +72,39 @@ describe("ruleVersionSchema (one effective-dated revision)", () => {
 				effects: [increment],
 			}).success,
 		).toBe(false);
+	});
+
+	// The name rides on the version, not the identity row (#150, ADR 0009), which
+	// is what keeps a rename off the history rows and change notices that already
+	// said what the rule used to be called.
+	it("carries the name the rule had while this revision was in force", () => {
+		const renamed = versionedRuleSchema.parse({
+			id: "custom-late",
+			origin: "custom",
+			versions: [
+				{
+					effective_from: 0,
+					name: "Late ritual",
+					condition: { type: "ritual_completed", metadata: { late: true } },
+					effects: [increment],
+				},
+				{
+					effective_from: 100,
+					name: "Tardy ritual",
+					condition: { type: "ritual_completed", metadata: { late: true } },
+					effects: [increment],
+				},
+			],
+		});
+		expect(renamed.versions.map((v) => v.name)).toEqual([
+			"Late ritual",
+			"Tardy ritual",
+		]);
+		// The rename is forward-only: the older revision still reads as it did.
+		expect(ruleFromVersion(renamed.id, renamed.versions[0]).name).toBe(
+			"Late ritual",
+		);
+		expect(currentRule(renamed).name).toBe("Tardy ritual");
 	});
 
 	it("captures a disable as an effective-dated revision, not a deletion", () => {
@@ -233,5 +267,37 @@ describe("latestVersion / currentRule (the one 'current definition' seam)", () =
 			effects: [{ verb: "increment_counter", counter: "demerits", by: 2 }],
 			enabled: false,
 		});
+	});
+});
+
+/**
+ * What a rule is called on screen (#150). The de-slug is the last rung, not the
+ * strategy: #150 rejected de-slugging as the permanent answer because a stable id
+ * and the behaviour it describes drift apart and the id can never be corrected.
+ * It survives here for the cases where there is genuinely nothing else — a
+ * revision written before names existed, a notice about a rule since purged.
+ */
+describe("ruleName", () => {
+	it("prefers the authored name", () => {
+		expect(
+			ruleName({ id: "custom-late-check-in", name: "Late check-in" }),
+		).toBe("Late check-in");
+	});
+
+	it("de-slugs the id when there is no name, dropping the custom- prefix", () => {
+		expect(ruleName({ id: "custom-late-check-in" })).toBe("late check in");
+		expect(ruleName({ id: "track_ritual_id" })).toBe("track ritual id");
+	});
+
+	// A name the author cleared to whitespace is not a name — falling through
+	// keeps a blank heading off the screen.
+	it("treats a blank name as absent", () => {
+		expect(ruleName({ id: "custom-x", name: "   " })).toBe("x");
+	});
+
+	// A pack id has nothing to de-slug into. Showing "R7" is the honest failure:
+	// the pack seeds the real name, and until it has, the id is all there is.
+	it("leaves a pack id alone rather than inventing words", () => {
+		expect(ruleName({ id: "R7" })).toBe("R7");
 	});
 });

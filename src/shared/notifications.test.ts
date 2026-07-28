@@ -116,21 +116,37 @@ describe("ruleChangeNotice (#64, user stories 33 + 35) — in-app content, per k
 	// something did.
 	it("composes a distinct partner-facing sentence for each change kind", () => {
 		const at = 1;
-		expect(ruleChangeNotice({ kind: "create", rule_id: "custom-x", at })).toBe(
-			'Your partner added the rule "custom-x".',
+		const name = "Late ritual";
+		expect(
+			ruleChangeNotice({ kind: "create", rule_id: "custom-x", at, name }),
+		).toBe('Your partner added the rule "Late ritual".');
+		expect(ruleChangeNotice({ kind: "edit", rule_id: "R2", at, name })).toBe(
+			'Your partner changed the rule "Late ritual".',
 		);
-		expect(ruleChangeNotice({ kind: "edit", rule_id: "R2", at })).toBe(
-			'Your partner changed the rule "R2".',
+		expect(ruleChangeNotice({ kind: "enable", rule_id: "R2", at, name })).toBe(
+			'Your partner turned the rule "Late ritual" on.',
 		);
-		expect(ruleChangeNotice({ kind: "enable", rule_id: "R2", at })).toBe(
-			'Your partner turned the rule "R2" on.',
+		expect(ruleChangeNotice({ kind: "disable", rule_id: "R2", at, name })).toBe(
+			'Your partner turned the rule "Late ritual" off.',
 		);
-		expect(ruleChangeNotice({ kind: "disable", rule_id: "R2", at })).toBe(
-			'Your partner turned the rule "R2" off.',
-		);
-		expect(ruleChangeNotice({ kind: "purge", rule_id: "custom-x", at })).toBe(
-			'Your partner removed the rule "custom-x".',
-		);
+		expect(
+			ruleChangeNotice({ kind: "purge", rule_id: "custom-x", at, name }),
+		).toBe('Your partner removed the rule "Late ritual".');
+	});
+
+	// The name is resolved server-side from the version in force when the change
+	// was made (#150), so the sentence keeps saying what the rule was called then.
+	// Not every notice has one: a purge leaves no version to resolve against, and
+	// a rule last touched before v11 carries no name — so the id de-slugs rather
+	// than the sentence going blank.
+	it("de-slugs the id when the change has no name on record", () => {
+		expect(
+			ruleChangeNotice({
+				kind: "purge",
+				rule_id: "custom-late-check-in",
+				at: 1,
+			}),
+		).toBe('Your partner removed the rule "late check in".');
 	});
 
 	it("attributes an upstream default change to the app, not the partner", () => {
@@ -138,10 +154,11 @@ describe("ruleChangeNotice (#64, user stories 33 + 35) — in-app content, per k
 			kind: "upstream_changed",
 			rule_id: "R2",
 			at: 1,
+			name: "Late ritual",
 		});
 		expect(notice).not.toContain("partner");
 		expect(notice).toBe(
-			'The default for the rule "R2" changed in an app update — your edited version still applies.',
+			'The default for the rule "Late ritual" changed in an app update — your edited version still applies.',
 		);
 	});
 });

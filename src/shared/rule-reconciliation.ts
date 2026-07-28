@@ -95,6 +95,20 @@ function installedFromPackRule(
  * flag. Ignores id and effective_from (which are not part of "what the rule
  * does"). Structural and key-order-independent, so a re-serialized metadata
  * record or effect list doesn't read as a spurious upstream change.
+ *
+ * **`name` is ignored too** (#150, ADR 0009), and that is the decision rather
+ * than an oversight. This function answers one question — "does the shipped rule
+ * do something different from what the couple has?" — and it is the question that
+ * gates overwriting a definition and raising a "new default available" notice. A
+ * rename changes nothing about what fires, so counting it would flag adopted
+ * rules over a reworded heading and train the couple to dismiss the one notice
+ * ADR 0002 leans on as its consent substitute.
+ *
+ * The consequence, stated because it is a choice: a pack release that *only*
+ * renames a rule does not reach couples who already have it. Their rule keeps the
+ * name in force when their version was written — which is the same
+ * non-retroactive-rename property the model gives their own edits, applied to the
+ * pack. A pack rule whose behaviour moves carries the new name along with it.
  */
 function sameDefinition(a: Rule, b: Rule): boolean {
 	return (

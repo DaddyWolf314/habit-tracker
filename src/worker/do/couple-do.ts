@@ -34,6 +34,7 @@ import type {
 	CreateCounterInput,
 	UpdateCounterInput,
 } from "#/shared/counters.ts";
+import { versionInForceAt } from "#/shared/effective-dating.ts";
 import {
 	applyCounterOp,
 	type EffectOp,
@@ -302,6 +303,8 @@ interface RuleVersionRow {
 	effective_from: number;
 	definition: string;
 	enabled: number;
+	/** What the couple called the rule when this revision took force (#150); null before v11. */
+	name: string | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -1296,6 +1299,11 @@ export class CoupleDO extends DurableObject<Env> {
 				);
 			}
 		}
+		// Names for the pack's own rules (#150). Runs over every pack rule rather
+		// than over the reconciliation buckets, because the rules that need it most
+		// are the ones no bucket contains: an un-adopted rule the bump didn't change
+		// produces no entry at all, and it still has to stop being called "R7".
+		this.backfillPackRuleNames();
 		// Anchors are pure state (an id + reset timestamp); seed each unset, and on a
 		// version bump leave an existing anchor's `since` untouched — only the anchor
 		// *set* is policy, and its live timestamp is a projection to preserve.
@@ -1351,11 +1359,27 @@ export class CoupleDO extends DurableObject<Env> {
 				seen,
 			)
 			.toArray();
+		// The name the rule carried *at the moment of the change* (#150, ADR 0009),
+		// not the one it carries now: a later rename must not rewrite a sentence the
+		// partner already read. Resolving through the rule's own effective-dated
+		// versions is what makes that automatic — the name travels with the revision,
+		// so there is nothing to snapshot into the audit row.
+		const rules = this.versionedRules();
 		return rows.flatMap((row) => {
 			const kind = ruleChangeKindFromAction(row.action);
-			return kind && row.target
-				? [{ kind, rule_id: row.target, at: row.at }]
-				: [];
+			if (!kind || !row.target) return [];
+			const target = row.target;
+			const versions = rules.find((rule) => rule.id === target)?.versions ?? [];
+			// A purge leaves nothing behind to resolve against; the renderer de-slugs.
+			const name = versionInForceAt(versions, row.at)?.name;
+			return [
+				{
+					kind,
+					rule_id: target,
+					at: row.at,
+					...(name === undefined ? {} : { name }),
+				},
+			];
 		});
 	}
 
@@ -3570,7 +3594,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const versionsByRule = new Map<string, RuleVersion[]>();
 		for (const row of this.sql
 			.exec<RuleVersionRow>(
-				`SELECT rule_id, effective_from, definition, enabled FROM rule_versions
+				`SELECT rule_id, effective_from, definition, enabled, name FROM rule_versions
 					ORDER BY rule_id, effective_from`,
 			)
 			.toArray()) {
@@ -3578,6 +3602,10 @@ export class CoupleDO extends DurableObject<Env> {
 			const list = versionsByRule.get(row.rule_id) ?? [];
 			list.push({
 				effective_from: row.effective_from,
+				// A column, not a field of the definition JSON — the name is what this
+				// revision was *called*, and keeping it out of the serialized body means
+				// the pack-name backfill can fill it in without rewriting a definition.
+				...(row.name === null ? {} : { name: row.name }),
 				condition: def.condition,
 				effects: def.effects,
 				enabled: row.enabled === 1,
@@ -3659,16 +3687,42 @@ export class CoupleDO extends DurableObject<Env> {
 			identity.adopted ? 1 : 0,
 		);
 		this.sql.exec(
-			`INSERT INTO rule_versions (rule_id, effective_from, definition, enabled)
-				VALUES (?, ?, ?, ?)
+			`INSERT INTO rule_versions (rule_id, effective_from, definition, enabled, name)
+				VALUES (?, ?, ?, ?, ?)
 				ON CONFLICT(rule_id, effective_from) DO UPDATE SET
 					definition = excluded.definition,
-					enabled = excluded.enabled`,
+					enabled = excluded.enabled,
+					name = excluded.name`,
 			identity.id,
 			version.effective_from,
 			definition,
 			enabled,
+			version.name ?? null,
 		);
+	}
+
+	/**
+	 * Gives the pack's own rules the pack's names (#150), for every revision that
+	 * has none. The v11 migration deliberately left them null: the shipped pack is
+	 * the only thing that knows R7 is "Infraction resets the clock", and a copy of
+	 * those strings frozen into a migration would drift from `rules.json` the first
+	 * time the pack reworded one.
+	 *
+	 * A repair, not an edit — it appends no version and touches no definition, so
+	 * nothing about what the rule *does* moves and no change notice fires. It skips
+	 * any revision that already carries a name, which is what keeps a couple's own
+	 * rename of a pack rule from being overwritten on the next bump.
+	 */
+	private backfillPackRuleNames(): void {
+		for (const rule of DEFAULT_RULES) {
+			if (!rule.name) continue;
+			this.sql.exec(
+				`UPDATE rule_versions SET name = ?
+					WHERE rule_id = ? AND (name IS NULL OR TRIM(name) = '')`,
+				rule.name,
+				rule.id,
+			);
+		}
 	}
 
 	/**

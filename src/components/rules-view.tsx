@@ -36,6 +36,7 @@ import {
 	latestVersion,
 	type RuleDefinition,
 	ruleFromVersion,
+	ruleName,
 	type VersionedRule,
 } from "#/shared/rules.ts";
 import { anchorLabel, DEFAULT_ANCHORS } from "#/templates/index.ts";
@@ -214,7 +215,11 @@ function RuleCard({
 		<section className="rounded-lg border p-4">
 			<div className="flex items-start justify-between gap-3">
 				<div className="min-w-0">
-					<p className="font-medium">{described.when}</p>
+					{/* The name the couple gave it (#150), over the plain-language
+					    reading of what it actually does — the two answer different
+					    questions, and the name alone can drift from the behaviour. */}
+					<p className="font-medium">{ruleName(flat)}</p>
+					<p className="mt-0.5 text-sm">{described.when}</p>
 					<ul className="mt-1 text-sm text-muted-foreground">
 						{described.effects.map((phrase, i) => (
 							// biome-ignore lint/suspicious/noArrayIndexKey: phrases are positional
@@ -308,7 +313,8 @@ function RuleCard({
 						.map((v) => {
 							// The full description per version — condition and effects — so a
 							// condition-only edit is visible in the history (#64, story 8).
-							const d = describeRule(ruleFromVersion(rule.id, v), type);
+							const flatVersion = ruleFromVersion(rule.id, v);
+							const d = describeRule(flatVersion, type);
 							return (
 								<li key={v.effective_from}>
 									<span className="font-mono">
@@ -317,6 +323,11 @@ function RuleCard({
 											: new Date(v.effective_from).toLocaleString()}
 									</span>
 									{" — "}
+									{/* Each row says what the rule was called *then* (#150,
+									    ADR 0009). Rendering today's name here would quietly
+									    rewrite the history this list exists to show. */}
+									<span className="font-medium">{ruleName(flatVersion)}</span>
+									{": "}
 									{v.enabled ? "" : "(off) "}
 									{d.when} → {d.effects.join(", ")}
 								</li>
@@ -404,7 +415,12 @@ function RuleEditor({
 	// Prefix for this editor's field ids, so the labels below can name their
 	// controls explicitly (#148).
 	const ids = useId();
-	const [name, setName] = useState("");
+	// Seeded through the fallback (#150), so a rule that predates naming — or a
+	// pack rule seeded before v11 — opens with the de-slug already in the box,
+	// which the author corrects rather than invents from a blank.
+	const [name, setName] = useState(
+		existing ? ruleName(currentRule(existing)) : "",
+	);
 	const [typeId, setTypeId] = useState(seed?.condition.type ?? "");
 	// Subject-role qualifier (ADR 0003): "" means unqualified — the rule matches
 	// regardless of who the event is about. Kept across type changes (the clause
@@ -470,6 +486,14 @@ function RuleEditor({
 	}, [type, subjectRole, conditions]);
 
 	const build = (): { id: string; def: RuleDefinition } | null => {
+		// First failure wins, and these are checked in the order the fields are read
+		// down the form — a blank name is reported before "pick an event type", or
+		// the author is sent back to a control they already filled in.
+		const trimmed = name.trim();
+		if (!trimmed) {
+			setError("Give the rule a name.");
+			return null;
+		}
 		if (!type) {
 			setError("Pick an event type first.");
 			return null;
@@ -498,6 +522,7 @@ function RuleEditor({
 			return null;
 		}
 		const def: RuleDefinition = {
+			name: trimmed,
 			condition: {
 				type: typeId,
 				...(subjectRole ? { subject_role: subjectRole } : {}),
@@ -506,9 +531,12 @@ function RuleEditor({
 			effects: built,
 			enabled: seed?.enabled ?? true,
 		};
-		const id = existing ? existing.id : slugify(name);
+		// Only a create derives the id from the name. A rename appends a version
+		// carrying the new name (ADR 0009) and leaves the id alone — ids are stable
+		// by design, and re-slugging one would orphan every trace row citing it.
+		const id = existing ? existing.id : slugify(trimmed);
 		if (!id) {
-			setError("Give the rule a short name.");
+			setError("That name has no letters or numbers to build an id from.");
 			return null;
 		}
 		return { id, def };
@@ -546,14 +574,14 @@ function RuleEditor({
 	// phrasing path (describeRule), so "what will fire" reads identically to the
 	// rules screen and the trace's "what fired" — subject clause included.
 	if (stage === "confirm" && confirmed) {
-		const described = describeRule(
-			{ id: confirmed.id, ...confirmed.def },
-			type,
-		);
+		const draft = { id: confirmed.id, ...confirmed.def };
+		const described = describeRule(draft, type);
 		return (
 			<section className="rounded-lg border border-primary/40 p-4">
+				{/* The *drafted* name, not the stored one: this sheet describes what is
+				    about to be committed, and a rename is part of it (#150). */}
 				<h2 className="text-lg font-semibold">
-					{existing ? `Edit ${existing.id}` : "New rule"}
+					{existing ? `Edit ${ruleName(draft)}` : "New rule"}
 				</h2>
 				<div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3">
 					<p className="text-xs font-medium text-muted-foreground">
@@ -586,27 +614,37 @@ function RuleEditor({
 
 	return (
 		<section className="rounded-lg border border-primary/40 p-4">
+			{/* The heading reads the *stored* name (#150) — "Edit custom-late-check-in"
+			    was the symptom the issue was filed about. The draft name lives in the
+			    field below, so a heading tracking it would rewrite itself mid-typing. */}
 			<h2 className="text-lg font-semibold">
-				{existing ? `Edit ${existing.id}` : "New rule"}
+				{existing ? `Edit ${ruleName(currentRule(existing))}` : "New rule"}
 			</h2>
 
-			{!existing && (
-				<div className="mt-3">
-					<label
-						htmlFor={`${ids}-name`}
-						className="text-xs text-muted-foreground"
-					>
-						Short name
-					</label>
-					<input
-						id={`${ids}-name`}
-						className={`${fieldClass} mt-1`}
-						value={name}
-						placeholder="e.g. late check-in demerit"
-						onChange={(e) => setName(e.target.value)}
-					/>
-				</div>
-			)}
+			{/* Shown on an edit as well as a create: renaming is the point of #150, and
+			    it appends a version like any other change, so past history rows and
+			    change notices keep saying what the rule was called then (ADR 0009). */}
+			<div className="mt-3">
+				<label
+					htmlFor={`${ids}-name`}
+					className="text-xs text-muted-foreground"
+				>
+					Name
+				</label>
+				<input
+					id={`${ids}-name`}
+					className={`${fieldClass} mt-1`}
+					value={name}
+					placeholder="e.g. late check-in demerit"
+					onChange={(e) => setName(e.target.value)}
+				/>
+				{!existing && (
+					<p className="mt-1 text-xs text-muted-foreground">
+						This also sets the rule's id, which never changes — the name can be
+						edited later.
+					</p>
+				)}
+			</div>
 
 			<div className="mt-3">
 				<label

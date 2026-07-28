@@ -244,16 +244,32 @@ describe("ruleToExportRow", () => {
 	it("serializes the condition and effects", () => {
 		const rule: Rule = {
 			id: "custom-1",
+			name: "Chore done",
 			condition: { type: "chore_done", metadata: {} },
 			effects: [{ verb: "increment_counter", counter: "chores", by: 1 }],
 			enabled: true,
 		};
 		expect(ruleToExportRow(rule)).toEqual({
 			id: "custom-1",
+			name: "Chore done",
 			condition: JSON.stringify(rule.condition),
 			effects: JSON.stringify(rule.effects),
 			enabled: true,
 		});
+	});
+
+	// The export carries what is on record (#150). A rule nobody has named exports
+	// a null, not the de-slugged id the screens fall back to — the fallback is a
+	// display convenience, and writing it into the couple's data would claim they
+	// authored a name they never typed.
+	it("exports a null name rather than de-slugging the id", () => {
+		const rule: Rule = {
+			id: "custom-1",
+			condition: { type: "chore_done", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "chores", by: 1 }],
+			enabled: true,
+		};
+		expect(ruleToExportRow(rule).name).toBeNull();
 	});
 });
 

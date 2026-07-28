@@ -82,6 +82,10 @@ export function amendmentToExportRow(amendment: Amendment): ExportRow {
 export function ruleToExportRow(rule: Rule): ExportRow {
 	return {
 		id: rule.id,
+		// What the couple calls it (#150) — authored content, so it leaves with the
+		// rest of their data. Null for a rule nobody has named; the export carries
+		// what is on record, and does not de-slug an id into a name they never wrote.
+		name: rule.name ?? null,
 		condition: JSON.stringify(rule.condition),
 		effects: JSON.stringify(rule.effects),
 		enabled: rule.enabled,
