@@ -328,3 +328,28 @@ The module owns the taxonomy end to end: pure **builders** the write side calls
 /`decodeTraceRow` codec, and the `describeTraceRow`/`summarizeEffectOp` decoders
 the UI renders through. Effect **phrasing** is shared so "what will fire" (the
 dom's confirm sheet) and "what fired" (the chain view) read identically.
+
+## Discretion (handoff §3.5, #42)
+
+What keeps the app's *presence* from giving the relationship away, on a device
+someone else may pick up. All of it is device-local and none of it is a security
+boundary — the relationship data is protected by the bearer credential, not by
+any of this. The **cover name** (`APP_NAME`) and the content-free **Notification**
+count above belong to the same requirement.
+
+- **PIN lock** — the device-local cover: a PIN whose hash alone is stored, gating
+  the whole app behind a neutral lock screen. Deliberately not cryptography — it
+  stops a casual glance, not someone who controls the device. _Avoid_: "password",
+  "authentication", or any phrasing that implies it protects data.
+- **Locked / unlocked** — the state of *one tab*, held for the browser session.
+  Setting or entering the PIN unlocks; a fresh load, a **Lock now**, or a passed
+  **auto-lock** delay covers it again. _Avoid_: "signed out" (the bearer
+  credential is untouched — locking is not logging out).
+- **Lock now** — covering the app on purpose, one tap in the bottom bar, for the
+  moment the phone gets handed over. It reaches every tab on the device, since
+  they were all handed over together. _Avoid_: "log out", "sign out".
+- **Auto-lock** — the optional delay after which time **away** covers the app by
+  itself. **Away** is time spent out of view (backgrounded, screen off, tab
+  hidden), measured by timestamp on return rather than by any timer — a window
+  open in front of you is not away. _Avoid_: "idle" and "inactive" (nothing
+  watches input); "session timeout", "expiry".

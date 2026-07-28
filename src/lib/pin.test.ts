@@ -1,12 +1,47 @@
-import { describe, expect, it } from "vitest";
-import { hashPin, pinMatches } from "./pin.ts";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	applyLockBroadcast,
+	clearPin,
+	getAutoLockMinutes,
+	hashPin,
+	isLocked,
+	lock,
+	lockIfAwayTooLong,
+	markAway,
+	pinMatches,
+	setAutoLockMinutes,
+	setPin,
+	subscribeLock,
+	unlock,
+	verifyPin,
+} from "./pin.ts";
 
 /**
  * The PIN lock is a discretion feature (handoff §3.5, #42), not a cryptographic
  * boundary against someone who already controls the device — it keeps a casual
  * over-the-shoulder glance out. The stored value is only ever a hash of the PIN;
  * the plaintext PIN is never persisted.
+ *
+ * Runs under jsdom because the lock's state lives in local/session storage: what
+ * is worth covering here is not the hash but *when the app is covered* — the
+ * deliberate lock (#97) and the away-timeout that re-engages it — so the tests
+ * drive the real storage rather than a stand-in for it.
  */
+
+const MINUTE = 60_000;
+
+/**
+ * The cover-named key (#42) one tab's lock announces itself through. Spelled out
+ * here because a `storage` event is the only way to play a second tab, and
+ * pinning the literal keeps the neutral name honest.
+ */
+const LOCK_SEQ_KEY = "habits.pin_lock_seq";
+
+afterEach(() => {
+	localStorage.clear();
+	sessionStorage.clear();
+});
 
 describe("hashPin", () => {
 	it("is deterministic for the same PIN", async () => {
@@ -33,5 +68,176 @@ describe("pinMatches", () => {
 
 	it("rejects any PIN when none is set (null store)", async () => {
 		expect(await pinMatches(null, "2468")).toBe(false);
+	});
+});
+
+describe("lock", () => {
+	it("covers a session that had already been unlocked", async () => {
+		await setPin("1234");
+		expect(isLocked()).toBe(false);
+
+		lock();
+
+		expect(isLocked()).toBe(true);
+		expect(await verifyPin("1234")).toBe(true);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("does nothing when no PIN is set — there is nothing to lock", () => {
+		lock();
+		expect(isLocked()).toBe(false);
+	});
+
+	it("reaches this device's other tabs", async () => {
+		await setPin("1234");
+
+		lock();
+
+		// "Unlocked" is per tab, so the only thing a second tab can hear is the
+		// shared key changing — a lock that didn't bump it would leave that tab
+		// sitting there readable.
+		expect(localStorage.getItem(LOCK_SEQ_KEY)).not.toBeNull();
+	});
+});
+
+describe("applyLockBroadcast", () => {
+	it("covers this tab when another one announces a lock", async () => {
+		await setPin("1234");
+
+		applyLockBroadcast(
+			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: "1" }),
+		);
+
+		expect(isLocked()).toBe(true);
+	});
+
+	it("never echoes the lock it received", async () => {
+		await setPin("1234");
+		const before = localStorage.getItem(LOCK_SEQ_KEY);
+
+		applyLockBroadcast(
+			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: "1" }),
+		);
+
+		expect(localStorage.getItem(LOCK_SEQ_KEY)).toBe(before);
+	});
+
+	it("ignores every other key on the device", async () => {
+		await setPin("1234");
+
+		applyLockBroadcast(
+			new StorageEvent("storage", {
+				key: "habits.something_else",
+				newValue: "1",
+			}),
+		);
+
+		expect(isLocked()).toBe(false);
+	});
+});
+
+describe("subscribeLock", () => {
+	it("tells subscribers on lock and unlock, so the gate re-covers without a reload", async () => {
+		await setPin("1234");
+		const listener = vi.fn();
+		const unsubscribe = subscribeLock(listener);
+
+		lock();
+		expect(listener).toHaveBeenCalledTimes(1);
+		unlock();
+		expect(listener).toHaveBeenCalledTimes(2);
+
+		unsubscribe();
+		lock();
+		expect(listener).toHaveBeenCalledTimes(2);
+	});
+
+	it("tells subscribers when the PIN itself comes or goes", async () => {
+		const listener = vi.fn();
+		const unsubscribe = subscribeLock(listener);
+
+		await setPin("1234");
+		expect(listener).toHaveBeenCalled();
+		listener.mockClear();
+
+		clearPin();
+		expect(listener).toHaveBeenCalled();
+		unsubscribe();
+	});
+});
+
+describe("auto-lock", () => {
+	it("is off until it is chosen", () => {
+		expect(getAutoLockMinutes()).toBe(0);
+	});
+
+	it("remembers the chosen delay on this device", () => {
+		setAutoLockMinutes(15);
+		expect(getAutoLockMinutes()).toBe(15);
+		setAutoLockMinutes(0);
+		expect(getAutoLockMinutes()).toBe(0);
+	});
+
+	it("goes away with the PIN it belongs to", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(15);
+
+		clearPin();
+
+		expect(getAutoLockMinutes()).toBe(0);
+	});
+
+	it("locks on return when the app was away longer than the delay", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		markAway(0);
+		expect(lockIfAwayTooLong(6 * MINUTE)).toBe(true);
+		expect(isLocked()).toBe(true);
+	});
+
+	it("leaves a short glance away alone", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		markAway(0);
+		expect(lockIfAwayTooLong(4 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("never locks while the delay is off, however long the app was away", async () => {
+		await setPin("1234");
+
+		markAway(0);
+		expect(lockIfAwayTooLong(600 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("consumes the away mark, so a later return doesn't re-lock on it", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		markAway(0);
+		expect(lockIfAwayTooLong(6 * MINUTE)).toBe(true);
+		await verifyPin("1234");
+
+		expect(lockIfAwayTooLong(600 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("does not mark a device with no PIN as away", () => {
+		setAutoLockMinutes(5);
+		markAway(0);
+		expect(lockIfAwayTooLong(600 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("survives a clock that jumped backwards", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		markAway(10 * MINUTE);
+		expect(lockIfAwayTooLong(1 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
 	});
 });
