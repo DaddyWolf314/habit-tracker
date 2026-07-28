@@ -22,7 +22,7 @@ import type { Role } from "./roles.ts";
 /** The slice of state an amendment is judged against. */
 export interface AmendmentContext {
 	event: Pick<Event, "metadata" | "actor" | "visibility">;
-	eventType: Pick<EventType, "metadata" | "awaiting" | "journaling">;
+	eventType: Pick<EventType, "metadata" | "awaiting">;
 	/** The role of the member submitting the amendment. */
 	actorRole: Role | null;
 	/** The member id submitting the amendment (server-authenticated). */
@@ -87,22 +87,28 @@ export function validateAmendment(
 }
 
 /**
- * A `response` is the partner's warm reaction to a journal entry (ADR 0001):
+ * A `response` is the partner's warm reaction to something the other logged
+ * (ADR 0001, broadened by ADR 0007):
  *  - it is authored by the *non-author* of the entry (a response to your own
  *    entry is meaningless — that is what `note_appended` is for);
- *  - it is only for journaling entries (the visibility axis only exists there);
- *  - it is allowed on `shared` and `sealed` entries but never on `secret` ones —
- *    the dom must not even be able to learn a secret entry exists, so the read
- *    model omits it and any response referencing it is refused up front.
+ *  - it is allowed on `shared` content and on `sealed` journal entries, but never
+ *    on `secret` ones — the dom must not even be able to learn a secret entry
+ *    exists, so the read model omits it and any response referencing it is
+ *    refused up front.
  * It carries no rule effects and never touches composite metadata (see
  * `compositeMetadata`, which folds only adjudications), so nothing else here does.
+ *
+ * The gate used to be "is this a journaling type", and ADR 0001 gave a specific
+ * reason: "the visibility axis only exists there". So the restriction was always
+ * about guarding sealed and secret prose, and asking after the visibility directly
+ * is that same guard stated honestly — it refuses exactly what it was aimed at and
+ * nothing more. What it stops refusing is a `check_in`, which is not
+ * journaling-capable and therefore always `shared`: there is no visibility to leak,
+ * and a response to one is what closes a conversation flag (ADR 0007).
  */
 function validateResponse(ctx: AmendmentContext): AmendmentValidation {
 	if (ctx.actorMemberId === ctx.event.actor) {
 		return fail("only your partner may respond to your entry", true);
-	}
-	if (!ctx.eventType.journaling) {
-		return fail("only a journal entry can be responded to");
 	}
 	if (ctx.event.visibility === "secret") {
 		return fail("a secret entry cannot be responded to", true);

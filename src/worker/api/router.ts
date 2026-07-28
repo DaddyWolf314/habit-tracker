@@ -509,6 +509,14 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				stub.queueCount(auth.identityHash).then((r) => json(r)),
 			);
 		}
+		// #88 / ADR 0007: the open conversation flags, folded server-side for the
+		// same reason the count above is — the alternative is shipping the whole
+		// log to Today every poll to read one metadata key.
+		if (path === "/api/conversation-flags" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.conversationFlags(auth.identityHash).then((r) => json(r)),
+			);
+		}
 		// #136: the sub's half of the queue signal. Acknowledged from the log,
 		// where a ruling's content is; explicit, so a GET never mutates.
 		if (path === "/api/rulings/seen" && method === "POST") {

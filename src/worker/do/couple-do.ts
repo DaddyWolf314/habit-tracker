@@ -24,6 +24,10 @@ import {
 	anchorElapsedMs,
 	resetAnchor,
 } from "#/shared/anchors.ts";
+import {
+	type ConversationFlagView,
+	openConversationFlags,
+} from "#/shared/conversations.ts";
 import type {
 	Counter,
 	CounterDefinition,
@@ -977,6 +981,31 @@ export class CoupleDO extends DurableObject<Env> {
 				role: (me.role as Role | null) ?? null,
 			}),
 		};
+	}
+
+	/**
+	 * The conversation flags still open for this couple (#88, ADR 0007) — the
+	 * check-ins carrying `flag=wants_conversation` that nobody has replied to yet.
+	 *
+	 * Both members get the same list, not a viewer-filtered one: the partner needs
+	 * to see an ask they owe an answer to, and the asker needs to see their own ask
+	 * still standing. A flag the author could not see would be the app quietly
+	 * holding a request to talk on their behalf. The caller compares `actor` against
+	 * themselves to pick the affordance.
+	 *
+	 * Its own endpoint for the reason `queueCount` has one: deriving this on the
+	 * client means shipping the whole unpaged log to the home screen four times a
+	 * minute to find one metadata flag, which is precisely the cost #88 recorded.
+	 * The DO already holds the log in memory, so folding it here is free.
+	 */
+	async conversationFlags(
+		identityHash: string,
+	): Promise<{ flags: ConversationFlagView[] }> {
+		this.requireMember(identityHash);
+		// Unlimited: a flag never expires (ADR 0007), so one raised long enough ago
+		// to fall off the list view's page must still surface.
+		const events = await this.listEvents(identityHash, null);
+		return { flags: openConversationFlags(events) };
 	}
 
 	async notificationCount(identityHash: string): Promise<{ unread: number }> {

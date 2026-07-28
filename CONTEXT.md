@@ -297,7 +297,8 @@ primitive — it is a *category of event types* plus a question/answer pairing.
   **Response**, derived from the log like **Pending** rather than stored. It never
   expires — the app cannot observe a conversation, so only a person may end one
   (ADR 0007). _Avoid_: "notification" (that is the content-free count); treating
-  it as dismissable.
+  it as dismissable. **Conversations** is the UI's word for the open ones read
+  together — Today's panel heading (#88), never a fourth amendment kind.
 
 ## Trace (handoff §4.6)
 
