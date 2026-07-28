@@ -1,8 +1,15 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import { APP_NAME } from "#/lib/app-config.ts";
-import { clearPin, isLocked, isPinSet, setPin, verifyPin } from "#/lib/pin.ts";
+import {
+	AUTO_LOCK_OFF,
+	clearPin,
+	setAutoLockMinutes,
+	setPin,
+	verifyPin,
+} from "#/lib/pin.ts";
+import { useLockWatch, usePinLock } from "#/lib/use-pin.ts";
 
 /**
  * PIN-lock gate (handoff §3.5, #42) — a discretion feature. When a PIN is set and
@@ -11,17 +18,17 @@ import { clearPin, isLocked, isPinSet, setPin, verifyPin } from "#/lib/pin.ts";
  * It renders nothing until mounted so locked content never flashes on load, and
  * it is a no-op when no PIN is configured. This is not a security boundary — see
  * `lib/pin.ts` — it just keeps a casual glance out.
+ *
+ * It is also where `useLockWatch` is mounted (#97) — the app-wide watch for time
+ * away and for a lock performed in another tab — because this is the one
+ * component alive for the whole app, so a phone left face-down comes back
+ * covered rather than open.
  */
 export function PinGate({ children }: { children: React.ReactNode }) {
-	const [ready, setReady] = useState(false);
-	const [locked, setLocked] = useState(false);
+	const { ready, locked } = usePinLock();
+	useLockWatch();
 	const [pin, setPinValue] = useState("");
 	const [error, setError] = useState(false);
-
-	useEffect(() => {
-		setLocked(isLocked());
-		setReady(true);
-	}, []);
 
 	// Avoid a flash of protected content before the lock check runs client-side.
 	if (!ready) return null;
@@ -30,7 +37,6 @@ export function PinGate({ children }: { children: React.ReactNode }) {
 	const submit = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (await verifyPin(pin)) {
-			setLocked(false);
 			setPinValue("");
 			setError(false);
 		} else {
@@ -62,30 +68,48 @@ export function PinGate({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Set, change, or remove the PIN lock. A small settings control (#42); the lock
- * takes effect on the next fresh load of the app.
+ * The delays on offer (#97). Every one is phrased "away", because that is what
+ * is measured — time the app spent out of view, not time you sat reading it.
+ * A minute is short on purpose: the phone-handed-over case wants the shortest
+ * delay the couple will tolerate, and "Lock now" is right there for the rest.
+ */
+const AUTO_LOCK_OPTIONS = [
+	{ minutes: AUTO_LOCK_OFF, label: "Never — only when I lock it" },
+	{ minutes: 1, label: "After 1 minute away" },
+	{ minutes: 5, label: "After 5 minutes away" },
+	{ minutes: 15, label: "After 15 minutes away" },
+	{ minutes: 60, label: "After 1 hour away" },
+] as const;
+
+const fieldClass =
+	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
+
+/**
+ * Set, change, or remove the PIN lock, and say when it re-engages (#42, #97).
+ * The lock used to wait for the next fresh load, which meant the one control
+ * here was "set it and hope you close the tab"; the delay chosen here is what
+ * covers the app without anyone remembering to. Locking on purpose is not
+ * repeated here — that lives in the bottom bar, within reach of this screen too,
+ * and a control with two homes is a label waiting to drift between them.
  */
 export function PinSettings() {
-	const [hasPin, setHasPin] = useState(false);
+	// The delay is read through the hook rather than mirrored in state: removing a
+	// PIN takes its delay with it, and a mirror would still be showing the old
+	// choice to whoever sets a PIN again on the same visit.
+	const { pinSet, autoLockMinutes } = usePinLock();
 	const [pin, setPinValue] = useState("");
 	const [saved, setSaved] = useState(false);
-
-	useEffect(() => {
-		setHasPin(isPinSet());
-	}, []);
 
 	const save = async (e: React.FormEvent) => {
 		e.preventDefault();
 		if (pin.length < 4) return;
 		await setPin(pin);
-		setHasPin(true);
 		setPinValue("");
 		setSaved(true);
 	};
 
 	const remove = () => {
 		clearPin();
-		setHasPin(false);
 		setSaved(false);
 	};
 
@@ -93,30 +117,51 @@ export function PinSettings() {
 		<section className="space-y-2">
 			<h3 className="font-medium">PIN lock</h3>
 			<p className="text-sm text-muted-foreground">
-				{hasPin
-					? "A PIN is set. It locks the app on next open."
+				{pinSet
+					? "A PIN is set. Lock it any time from the bar at the bottom, and it can lock itself once the app has been out of sight for a while."
 					: "Set a PIN (4+ digits) to lock the app on this device."}
 			</p>
 			<form onSubmit={save} className="flex gap-2">
 				<Input
 					type="password"
 					inputMode="numeric"
-					aria-label={hasPin ? "New PIN" : "PIN"}
+					aria-label={pinSet ? "New PIN" : "PIN"}
 					value={pin}
 					onChange={(e) => setPinValue(e.target.value)}
-					placeholder={hasPin ? "New PIN" : "PIN"}
+					placeholder={pinSet ? "New PIN" : "PIN"}
 				/>
 				<Button type="submit" disabled={pin.length < 4}>
-					{hasPin ? "Change" : "Set"}
+					{pinSet ? "Change" : "Set"}
 				</Button>
-				{hasPin ? (
+				{pinSet ? (
 					<Button type="button" variant="outline" onClick={remove}>
 						Remove
 					</Button>
 				) : null}
 			</form>
-			{saved ? (
-				<p className="text-sm text-green-600">Saved. Locks on next open.</p>
+			{saved ? <p className="text-sm text-green-600">Saved.</p> : null}
+
+			{pinSet ? (
+				<div className="pt-2">
+					<label
+						htmlFor="pin-auto-lock"
+						className="text-xs text-muted-foreground"
+					>
+						Lock automatically
+					</label>
+					<select
+						id="pin-auto-lock"
+						className={`${fieldClass} mt-1`}
+						value={autoLockMinutes}
+						onChange={(e) => setAutoLockMinutes(Number(e.target.value))}
+					>
+						{AUTO_LOCK_OPTIONS.map(({ minutes, label }) => (
+							<option key={minutes} value={minutes}>
+								{label}
+							</option>
+						))}
+					</select>
+				</div>
 			) : null}
 		</section>
 	);

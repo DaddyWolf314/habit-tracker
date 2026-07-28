@@ -6,7 +6,13 @@ import {
 	createRouter,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
@@ -17,6 +23,7 @@ vi.mock("#/lib/identity.ts", () => ({ hasIdentity: vi.fn(() => true) }));
 
 import { getNotifications, getSession } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
+import { isLocked, setPin } from "#/lib/pin.ts";
 import type { Session } from "#/shared/identity.ts";
 import { TabBar, TabBarNav } from "./tab-bar.tsx";
 
@@ -76,7 +83,11 @@ function session(overrides: Partial<Session> = {}): Session {
 }
 
 describe("TabBarNav", () => {
-	afterEach(cleanup);
+	afterEach(() => {
+		cleanup();
+		localStorage.clear();
+		sessionStorage.clear();
+	});
 
 	it("offers the daily surfaces as one persistent nav", async () => {
 		renderAt("/today", <TabBarNav />);
@@ -86,6 +97,33 @@ describe("TabBarNav", () => {
 			// Rules left the bar in #123: authoring automation is a rare act, and the
 			// bar's own rule is that anything rarer than daily hangs off Settings.
 		).toEqual(["Today", "Log", "Agreements", "Settings"]);
+	});
+
+	it("carries Lock now only on a device with a PIN", async () => {
+		renderAt("/today", <TabBarNav />);
+		await screen.findByRole("navigation", { name: "Main" });
+		// Nothing to lock, so nothing to offer (#97).
+		expect(screen.queryByRole("button", { name: "Lock now" })).toBeNull();
+
+		cleanup();
+		await setPin("1234");
+		renderAt("/today", <TabBarNav />);
+		fireEvent.click(await screen.findByRole("button", { name: "Lock now" }));
+
+		expect(isLocked()).toBe(true);
+	});
+
+	it("keeps Lock now when there are no tabs to show", async () => {
+		await setPin("1234");
+		renderAt("/", <TabBarNav showTabs={false} />);
+
+		// Mid-pairing there is nowhere to navigate, but the phone can still be
+		// handed over — so the strip stays for the lock alone, without leaving an
+		// empty navigation landmark behind it (#97).
+		expect(
+			await screen.findByRole("button", { name: "Lock now" }),
+		).not.toBeNull();
+		expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
 	});
 
 	it("marks the surface you are on", async () => {
@@ -130,6 +168,8 @@ describe("TabBar", () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
+		localStorage.clear();
+		sessionStorage.clear();
 	});
 
 	it("stays hidden until the dynamic is active", async () => {
@@ -138,6 +178,22 @@ describe("TabBar", () => {
 		);
 		renderAt("/", <TabBar />);
 		await waitFor(() => expect(getSession).toHaveBeenCalled());
+		expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Lock now" })).toBeNull();
+	});
+
+	it("still offers the lock mid-pairing, on a device with a PIN", async () => {
+		await setPin("1234");
+		vi.mocked(getSession).mockResolvedValue(
+			session({ status: "pairing", member_count: 1, roles_active: false }),
+		);
+		renderAt("/", <TabBar />);
+
+		// The tabs would be dead ends before both partners confirm, but "visible
+		// whenever a PIN is set" (#97) doesn't wait on the dynamic going live.
+		expect(
+			await screen.findByRole("button", { name: "Lock now" }),
+		).not.toBeNull();
 		expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
 	});
 
