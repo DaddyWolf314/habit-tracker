@@ -1,5 +1,6 @@
 import { type ReactNode, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import {
 	VISIBILITY_LABEL,
@@ -24,9 +25,6 @@ import {
 } from "#/shared/roles.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { formatRemaining, type TimerView } from "#/shared/timers.ts";
-
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 const labelClass = "text-xs text-muted-foreground";
 

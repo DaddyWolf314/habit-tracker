@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, queueFor } from "#/shared/adjudication.ts";
@@ -27,9 +28,6 @@ import {
 	memberLabel,
 	summarizeEffectOp,
 } from "./formatting.ts";
-
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /**
  * The adjudication queue, dom side (handoff §4.2, §8, §9 surface 3). Every

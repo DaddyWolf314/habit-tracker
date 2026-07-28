@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import { Input } from "#/components/ui/input.tsx";
 import { APP_NAME } from "#/lib/app-config.ts";
 import {
@@ -84,9 +85,6 @@ const AUTO_LOCK_OPTIONS = [
 	{ minutes: 15, label: "After 15 minutes" },
 	{ minutes: 60, label: "After 1 hour" },
 ] as const;
-
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /**
  * Set, change, or remove the PIN lock, and say when it re-engages (#42, #97).
