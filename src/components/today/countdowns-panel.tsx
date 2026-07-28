@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import { Input } from "#/components/ui/input.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import {
@@ -10,6 +11,7 @@ import {
 	pauseTimer,
 	resumeTimer,
 } from "#/lib/api.ts";
+import { cn } from "#/lib/utils.ts";
 import { FLOOR_KEY, type Floor } from "#/shared/journaling.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
@@ -23,10 +25,6 @@ import {
 	type TimerView,
 	toCountdown,
 } from "#/shared/timers.ts";
-
-/** Shared field styling, matching the sibling panels (journal-prompts, log). */
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /** Human label for a countdown definition (task_countdown → "Task"). */
 const TIMER_LABELS: Record<string, string> = {
@@ -454,7 +452,12 @@ function AssignForm({
 					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
 					<label className="sr-only">Unit</label>
 					<select
-						className={`${fieldClass} w-28`}
+						// `cn` and not a template string: `fieldClass` carries `w-full`,
+						// which plain concatenation lets win over `w-28` — the unit picker
+						// then eats the row and collapses the flex-1 Duration input beside
+						// it. Pre-dates #147; the other call sites append `mt-1` and don't
+						// collide, so this is the only one that needs merging.
+						className={cn(fieldClass, "w-28")}
 						value={unit}
 						onChange={(e) => setUnit(e.target.value as DurationUnit)}
 					>

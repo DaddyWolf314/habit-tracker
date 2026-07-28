@@ -20,15 +20,21 @@ const buttonVariants = cva(
 					"hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
 				link: "text-primary underline-offset-4 hover:underline",
 			},
+			// Heights are tap targets first, type scale second (#147). This is a
+			// phone-first app, so `size` grades padding and type while every step
+			// stays thumb-sized: `default` is the 44px reference, and the smaller
+			// steps sit under it only as far as a dense secondary action can bear.
+			// Raising these is deliberately a one-file change — call sites keep
+			// choosing by density, and nobody re-derives a floor per component.
 			size: {
-				default: "h-9 px-4 py-2 has-[>svg]:px-3",
-				xs: "h-6 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
-				sm: "h-8 gap-1.5 rounded-md px-3 has-[>svg]:px-2.5",
-				lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
-				icon: "size-9",
-				"icon-xs": "size-6 rounded-md [&_svg:not([class*='size-'])]:size-3",
-				"icon-sm": "size-8",
-				"icon-lg": "size-10",
+				default: "h-11 px-4 py-2 has-[>svg]:px-3",
+				xs: "h-9 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",
+				sm: "h-10 gap-1.5 rounded-md px-3 has-[>svg]:px-2.5",
+				lg: "h-12 rounded-md px-6 has-[>svg]:px-4",
+				icon: "size-11",
+				"icon-xs": "size-9 rounded-md [&_svg:not([class*='size-'])]:size-3",
+				"icon-sm": "size-10",
+				"icon-lg": "size-12",
 			},
 		},
 		defaultVariants: {

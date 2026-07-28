@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import {
 	createRule,
 	deleteRule,
@@ -38,9 +39,6 @@ import {
 	type VersionedRule,
 } from "#/shared/rules.ts";
 import { anchorLabel, DEFAULT_ANCHORS } from "#/templates/index.ts";
-
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /**
  * The Rules screen (#64, ADR 0002), reached from Settings since #123. Every

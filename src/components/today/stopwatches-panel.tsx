@@ -1,12 +1,9 @@
 import { useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import { logEvent } from "#/lib/api.ts";
 import type { MetadataValue } from "#/shared/roles.ts";
 import { formatElapsed, type TimerView } from "#/shared/timers.ts";
-
-/** Shared field styling, matching the sibling panels (countdowns, journal-prompts). */
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /**
  * The activities a session can track (pack `event-types.json` — `session_started`'s

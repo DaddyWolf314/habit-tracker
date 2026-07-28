@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import {
 	VISIBILITY_LABEL,
@@ -9,9 +10,6 @@ import { logEvent } from "#/lib/api.ts";
 import { type OpenPromptView, PROMPT_ID_KEY } from "#/shared/journaling.ts";
 import type { Visibility } from "#/shared/roles.ts";
 import { formatRemaining } from "#/shared/timers.ts";
-
-const fieldClass =
-	"w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-sm";
 
 /** The urgency badge for one open prompt: overdue / paused / time left. */
 function urgency(p: OpenPromptView, now: number): string {
