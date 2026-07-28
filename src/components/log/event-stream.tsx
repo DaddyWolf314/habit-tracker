@@ -20,6 +20,7 @@ import type { MetadataValue } from "#/shared/roles.ts";
 import type { TraceRow } from "#/shared/trace.ts";
 import {
 	describeTraceRow,
+	displayMetaValue,
 	formatMetaValue,
 	formatTime,
 	memberLabel,
@@ -452,6 +453,9 @@ function RulingReveal({ line }: { line: AmendmentLine }) {
  * free-text citation logged before the pack change, or a term hard-deleted while
  * uncited. An opaque id is a worse answer than a name and a better one than a
  * blank.
+ *
+ * Everything that is not a citation reads through {@link displayMetaValue}, which
+ * is where an enum picks up the display copy its control offered (#155).
  */
 function readMetaValue(
 	type: EventType | undefined,
@@ -468,5 +472,5 @@ function readMetaValue(
 			formatMetaValue(value)
 		);
 	}
-	return formatMetaValue(value);
+	return displayMetaValue(field, value);
 }

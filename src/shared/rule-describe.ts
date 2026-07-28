@@ -1,5 +1,6 @@
 import { resolveEffect } from "./engine.ts";
-import type { EventType } from "./event-types.ts";
+import type { EventType, MetadataField } from "./event-types.ts";
+import { optionLabel } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
 import type { Effect, Rule, RuleCondition } from "./rules.ts";
 import { humanize, summarizeEffectOp } from "./trace.ts";
@@ -22,8 +23,17 @@ import { humanize, summarizeEffectOp } from "./trace.ts";
  * reads fine for the counter/anchor/timer ids the pack uses.
  */
 
-function valueText(value: MetadataValue): string {
+function valueText(
+	field: MetadataField | undefined,
+	value: MetadataValue,
+): string {
 	if (typeof value === "boolean") return value ? "yes" : "no";
+	// The docstring above has promised "an enum value shows its human option"
+	// since #64; until the pack carried per-option copy (#155) a de-slug was the
+	// most this could do.
+	if (field?.kind === "enum" && typeof value === "string") {
+		return optionLabel(field, value);
+	}
 	return humanize(String(value));
 }
 
@@ -39,8 +49,9 @@ export function describeCondition(
 ): string {
 	const typeLabel = type?.label ?? humanize(condition.type);
 	const clauses = Object.entries(condition.metadata).map(([key, value]) => {
-		const fieldLabel = type?.metadata[key]?.label ?? humanize(key);
-		return `${fieldLabel} is ${valueText(value)}`;
+		const field = type?.metadata[key];
+		const fieldLabel = field?.label ?? humanize(key);
+		return `${fieldLabel} is ${valueText(field, value)}`;
 	});
 	const about = condition.subject_role
 		? ` about the ${condition.subject_role}`

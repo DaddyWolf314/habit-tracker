@@ -537,6 +537,60 @@ describe("citing refs in the shipped pack", () => {
 	});
 });
 
+/**
+ * Option display copy in the pack (#155, ADR 0008). The generic controls fall
+ * back to a de-slug for anything the copy misses, which is right for a couple's
+ * own enum and wrong here: partial pack copy would look exactly like an
+ * oversight, and the surface that gets it would quietly disagree with the ones
+ * that don't. So the pack's obligation is total.
+ */
+describe("option labels in the shipped pack", () => {
+	const packEnums = STARTER_EVENT_TYPES.flatMap((type) =>
+		Object.entries(type.metadata).flatMap(([key, field]) =>
+			field.kind === "enum" ? [{ id: `${type.id}.${key}`, field }] : [],
+		),
+	);
+
+	it("ships at least one enum to check", () => {
+		expect(packEnums.length).toBeGreaterThan(0);
+	});
+
+	it("labels every option of every enum", () => {
+		for (const { id, field } of packEnums) {
+			if (field.kind !== "enum") continue;
+			const unlabelled = field.options.filter((o) => !field.option_labels?.[o]);
+			expect({ id, unlabelled }).toEqual({ id, unlabelled: [] });
+		}
+	});
+
+	it("labels nothing the enum doesn't offer", () => {
+		// Copy for an option that no longer exists is dead the moment the option
+		// is renamed, and reads as though the pack still offers it.
+		for (const { id, field } of packEnums) {
+			if (field.kind !== "enum") continue;
+			const orphaned = Object.keys(field.option_labels ?? {}).filter(
+				(o) => !field.options.includes(o),
+			);
+			expect({ id, orphaned }).toEqual({ id, orphaned: [] });
+		}
+	});
+
+	it("never restates the stored token as its own label", () => {
+		// A label equal to the value (or to its de-slug) is copy that was never
+		// written — it would pass the completeness check above and change nothing.
+		for (const { id, field } of packEnums) {
+			if (field.kind !== "enum") continue;
+			for (const option of field.options) {
+				expect({
+					id,
+					option,
+					label: field.option_labels?.[option],
+				}).not.toEqual({ id, option, label: option });
+			}
+		}
+	});
+});
+
 describe("the shipped Agreement kinds", () => {
 	it("ships the four categories and no terms", () => {
 		expect(DEFAULT_AGREEMENT_KINDS.map((k) => k.id)).toEqual([

@@ -104,7 +104,45 @@ function citingType(
 	};
 }
 
+/**
+ * A type with one enum field, labelled or not (#155). `partial` carries no copy
+ * on purpose: the fallback rung is the half that has to hold for a couple's own
+ * event type, which the pack's completeness test can't cover.
+ */
+function enumType(id: string): EventType {
+	return {
+		id,
+		label: id,
+		valence: "neutral",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: false,
+		metadata: {
+			quality: {
+				kind: "enum",
+				options: ["exceeded", "met", "partial"],
+				option_labels: {
+					exceeded: "Beyond what was asked",
+					met: "What was asked",
+				},
+				label: "Quality",
+				required: false,
+				set_permission: ["dom", "sub", "switch"],
+			},
+			flag: {
+				kind: "enum",
+				options: ["wants_conversation"],
+				label: "Flag",
+				required: false,
+				set_permission: ["dom", "sub", "switch"],
+			},
+		},
+		awaiting: [],
+		journaling: false,
+	};
+}
+
 const TYPES: EventType[] = [
+	enumType("task_completed"),
 	citingType("infraction", "rule_ref", "Agreement"),
 	citingType("ritual_completed", "ritual_id", "Ritual", "ritual"),
 	journalType("journal_entry"),
@@ -472,6 +510,67 @@ describe("LogComposer citing refs", () => {
 			expect.objectContaining({
 				type: "infraction",
 				metadata: { rule_ref: "ag_1" },
+			}),
+		);
+	});
+});
+
+/**
+ * Enum options in the generic composer (#155, ADR 0008). Before the pack carried
+ * per-option copy this control printed the stored token, so a sub picked
+ * "Went beyond what was asked" in the Mark-done form and then met `exceeded`
+ * everywhere else. The value submitted is unchanged — this is display copy over
+ * an untouched vocabulary, which is the pairing these assert.
+ */
+describe("LogComposer enum fields", () => {
+	beforeEach(() => vi.spyOn(Date, "now").mockReturnValue(NOW));
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	const optionsOf = (name: RegExp) =>
+		[
+			...screen
+				.getByRole("combobox", { name })
+				.querySelectorAll<HTMLOptionElement>("option"),
+		].filter((o) => o.value);
+
+	it("shows each option's copy against its stored value", () => {
+		renderComposer();
+		chooseType("task_completed");
+
+		// The pairing, not just the presence: copy attached to the wrong value is
+		// worse than a raw token, because it reads as true.
+		expect(optionsOf(/quality/i).map((o) => [o.value, o.textContent])).toEqual([
+			["exceeded", "Beyond what was asked"],
+			["met", "What was asked"],
+			["partial", "partial"],
+		]);
+	});
+
+	it("de-slugs an option no copy covers", () => {
+		renderComposer();
+		chooseType("task_completed");
+
+		expect(optionsOf(/flag/i).map((o) => o.textContent)).toEqual([
+			"wants conversation",
+		]);
+	});
+
+	it("still logs the stored value, not the copy", async () => {
+		renderComposer();
+		chooseType("task_completed");
+
+		fireEvent.change(screen.getByRole("combobox", { name: /quality/i }), {
+			target: { value: "exceeded" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		expect(logEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				metadata: expect.objectContaining({ quality: "exceeded" }),
 			}),
 		);
 	});

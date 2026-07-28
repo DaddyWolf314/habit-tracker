@@ -77,7 +77,9 @@ describe("minted refs on the event card", () => {
 				composite_metadata: { prompt_id: "01JB6X", floor: "sealed" },
 			}),
 		]);
-		expect(screen.getByText("Minimum visibility: sealed")).not.toBeNull();
+		// The floor reads as its option label, not the stored token (#155) — the
+		// same word the control that set it offered.
+		expect(screen.getByText("Minimum visibility: Sealed")).not.toBeNull();
 		expect(screen.queryByText(/prompt_id/)).toBeNull();
 		expect(screen.queryByText(/01JB6X/)).toBeNull();
 	});

@@ -12,6 +12,7 @@ import {
 	awaitingKeysFor,
 	type EventType,
 	type MetadataField,
+	optionLabel,
 } from "#/shared/event-types.ts";
 import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -403,7 +404,7 @@ function MetadataInput({
 						<option value="">—</option>
 						{options.map((o) => (
 							<option key={o} value={o}>
-								{o}
+								{optionLabel(field, o)}
 							</option>
 						))}
 					</select>

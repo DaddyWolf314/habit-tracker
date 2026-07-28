@@ -6,6 +6,7 @@ import {
 	roleSchema,
 	valenceSchema,
 } from "./roles.ts";
+import { humanize } from "./trace.ts";
 
 /**
  * Event-type schema format (handoff §5). Stored per-couple in the DO; the
@@ -27,6 +28,25 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 	z.object({
 		kind: z.literal("enum"),
 		options: z.array(z.string()).min(1),
+		/**
+		 * Display copy per option, keyed by stored value (#155). The stored value is
+		 * a machine token; this is the word a person reads, so every generic enum
+		 * control renders through {@link optionLabel} rather than printing the token
+		 * — the same rule CONTEXT.md's **Disposition** entry states for closed
+		 * timers, applied to the one control that had been exempt from it.
+		 *
+		 * Optional and partial on purpose. A couple's own event type carries no copy
+		 * and must still render, so an unlabelled option de-slugs rather than
+		 * failing; the pack labels every option of every enum it ships (pinned by a
+		 * test in `rules.pack.test.ts`).
+		 *
+		 * The copy here is **speaker-neutral**, because one field is read by both
+		 * partners in different voices — the sub claiming how they did and the dom
+		 * ruling on it. A surface whose voice differs enough to need its own words
+		 * overrides locally (`countdowns-panel.tsx`'s `QUALITY_LABELS`); this is the
+		 * copy for every surface that doesn't.
+		 */
+		option_labels: z.record(z.string(), z.string()).optional(),
 		...metadataFieldBase,
 	}),
 	z.object({
@@ -69,6 +89,30 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 	}),
 ]);
 export type MetadataField = z.infer<typeof metadataFieldSchema>;
+
+/**
+ * How one metadata option reads to a person (#155) — the single phrasing path
+ * every enum control and readout shares, so a value the sub picks and the value
+ * the dom rules on can never be different words.
+ *
+ * Three rungs, most specific first: the pack's (or the couple's) declared
+ * `option_labels` copy, then a de-slug, then the token itself. The de-slug rung
+ * is what makes this safe to apply to *any* enum — a custom field a couple
+ * authored with no copy at all still reads as words rather than
+ * `wants_conversation`.
+ *
+ * Takes the whole field rather than the label map so callers that fold booleans
+ * into the same control (`yes`/`no` rendered as options) can route every option
+ * through one function. A boolean carries no copy, so its options fall through
+ * to the de-slug and read exactly as they did.
+ */
+export function optionLabel(field: MetadataField, option: string): string {
+	if (field.kind === "enum") {
+		const label = field.option_labels?.[option];
+		if (label) return label;
+	}
+	return humanize(option);
+}
 
 /**
  * One `awaiting` entry (handoff §5, ADR 0003). A bare key gates pending status

@@ -1,5 +1,5 @@
 {
-	"version": 10,
+	"version": 11,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -45,6 +45,11 @@
 				"quality": {
 					"kind": "enum",
 					"options": ["exceeded", "met", "partial"],
+					"option_labels": {
+						"exceeded": "Beyond what was asked",
+						"met": "What was asked",
+						"partial": "Part of the way"
+					},
 					"label": "Quality",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"],
@@ -106,6 +111,7 @@
 				"severity": {
 					"kind": "enum",
 					"options": ["minor", "major"],
+					"option_labels": { "minor": "Minor", "major": "Major" },
 					"label": "Severity",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"],
@@ -139,6 +145,11 @@
 				"outcome": {
 					"kind": "enum",
 					"options": ["full", "ruined", "denied"],
+					"option_labels": {
+						"full": "Full",
+						"ruined": "Ruined",
+						"denied": "Denied"
+					},
 					"label": "Outcome",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]
@@ -153,6 +164,14 @@
 						"on_body",
 						"solo"
 					],
+					"option_labels": {
+						"vaginal_creampie": "Vaginal creampie",
+						"oral_creampie": "Oral creampie",
+						"anal_creampie": "Anal creampie",
+						"facial": "Facial",
+						"on_body": "On body",
+						"solo": "Solo"
+					},
 					"label": "Finish type",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"]
@@ -202,6 +221,12 @@
 				"activity": {
 					"kind": "enum",
 					"options": ["kneeling", "service", "wear", "scene"],
+					"option_labels": {
+						"kneeling": "Kneeling",
+						"service": "Service",
+						"wear": "Wear",
+						"scene": "Scene"
+					},
 					"label": "Activity",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]
@@ -228,6 +253,12 @@
 				"activity": {
 					"kind": "enum",
 					"options": ["kneeling", "service", "wear", "scene"],
+					"option_labels": {
+						"kneeling": "Kneeling",
+						"service": "Service",
+						"wear": "Wear",
+						"scene": "Scene"
+					},
 					"label": "Activity",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]
@@ -261,6 +292,7 @@
 				"flag": {
 					"kind": "enum",
 					"options": ["wants_conversation"],
+					"option_labels": { "wants_conversation": "Wants to talk" },
 					"label": "Flag",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"]
@@ -299,6 +331,7 @@
 				"floor": {
 					"kind": "enum",
 					"options": ["sealed", "shared"],
+					"option_labels": { "sealed": "Sealed", "shared": "Shared" },
 					"label": "Minimum visibility",
 					"required": false,
 					"set_permission": ["dom", "switch"]
