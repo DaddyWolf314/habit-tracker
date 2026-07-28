@@ -79,6 +79,16 @@ in and should not.
   events that opens and closes one; "assign" as a *command* — a countdown is opened
   by an event, and the dom's live control (pause/resume/extend/cancel) is what
   remains a command (ADR 0004).
+- **Auto-closed** — how a timer the system retired reads: a stopwatch left running
+  past its per-activity max (`auto_closed`, §4.5). One word across the sessions
+  panel, the closed-countdown rows, and the trace ledger. _Avoid_: "closed
+  automatically", "timed out", "abandoned" as competing display words.
+- **Disposition** — the terminal status a closed timer carries. A row shows its
+  *display word*, never the stored one — **overdue** for `expired`, **auto-closed**
+  for `auto_closed`, and the plain word for the rest (#149). `timerViewSchema.status`
+  is an open string, so an unmapped disposition de-slugs rather than printing raw.
+  _Avoid_: "outcome" (a countdown's disposition says how it ended, not how it went —
+  a `completed` one may still be graded `partial`).
 - **Overdue** — how a passed deadline reads to a person, on any surface.
   `expired` is the *status* a swept countdown carries; whether the sweep has
   landed yet turns on alarm timing and polling, not on anything the author did,
@@ -102,6 +112,11 @@ in and should not.
   confirm roles (**mutual confirmation**); frozen by pause-everything, ended by
   dissolve. _Avoid_: "relationship" when you specifically mean the live, activated
   state.
+- **Couple status** — `pairing | active | dissolved` at rest; the status readout
+  says **Pairing in progress**, **Dynamic active**, **Dissolved** (#149). Each
+  display word is the vocabulary entry for the state it names. _Avoid_: printing
+  the stored value — "Status: active" names no state the reader can see, and
+  "dissolved" is a database word for something a partner did on purpose.
 - **Pairing** — the flow that binds a second member into the couple and then
   **permanently closes** to further invitations. _Avoid_: "signup"; "onboarding"
   (the UI surface, not the binding).

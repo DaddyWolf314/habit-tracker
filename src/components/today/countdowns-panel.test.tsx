@@ -111,3 +111,66 @@ describe("cancelling a countdown", () => {
 		expect(vi.mocked(pauseTimer)).toHaveBeenCalledWith("t1");
 	});
 });
+
+/**
+ * A closed countdown used to print its terminal disposition verbatim — "expired",
+ * "canceled" (#149). `timerViewSchema.status` is an open string, so the copy is a
+ * lookup with a de-slugging fallback: a disposition added later degrades to
+ * readable rather than raw.
+ */
+describe("closed countdown dispositions", () => {
+	afterEach(cleanup);
+
+	const closed = (status: string) =>
+		countdown({ status, closed_at: 1_700_000_100_000 });
+
+	it("reads an expired countdown as overdue, like the prompt picker", () => {
+		renderPanel([closed("expired")]);
+		expect(screen.getByText("overdue")).toBeDefined();
+		expect(screen.queryByText("expired")).toBeNull();
+	});
+
+	// "auto-closed" is what the sessions panel and the trace ledger have always
+	// called it; a third phrasing here would be two names for one thing.
+	it("says auto-closed the way every other surface does", () => {
+		renderPanel([closed("auto_closed")]);
+		expect(screen.getByText("auto-closed")).toBeDefined();
+		expect(screen.queryByText("auto_closed")).toBeNull();
+	});
+
+	// These three coincide with their stored value — they were already the right
+	// word — but they go through the map, so a rename can't leak to the page.
+	it("keeps the plain dispositions plain", () => {
+		for (const status of ["canceled", "completed", "failed"] as const) {
+			cleanup();
+			renderPanel([closed(status)]);
+			expect(screen.getByText(status)).toBeDefined();
+		}
+	});
+
+	it("de-slugs a disposition it has never seen", () => {
+		renderPanel([closed("superseded_by_replacement")]);
+		expect(screen.getByText("superseded by replacement")).toBeDefined();
+	});
+});
+
+/**
+ * `overdue` is the one word for a passed deadline on every surface (CONTEXT.md;
+ * `ref-candidates.ts`), so the live row can't say "due" while the closed row
+ * below it says something else.
+ */
+describe("an active countdown past its deadline", () => {
+	afterEach(cleanup);
+
+	it("reads overdue", () => {
+		renderPanel([
+			countdown({
+				opened_at: 1,
+				deadline_at: 2,
+				remaining_ms: 0,
+			}),
+		]);
+		expect(screen.getByText("overdue")).toBeDefined();
+		expect(screen.queryByText("due")).toBeNull();
+	});
+});

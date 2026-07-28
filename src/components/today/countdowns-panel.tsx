@@ -25,6 +25,7 @@ import {
 	type TimerView,
 	toCountdown,
 } from "#/shared/timers.ts";
+import { humanize } from "#/shared/trace.ts";
 
 /** Human label for a countdown definition (task_countdown → "Task"). */
 const TIMER_LABELS: Record<string, string> = {
@@ -33,7 +34,44 @@ const TIMER_LABELS: Record<string, string> = {
 	journal_countdown: "Journal prompt",
 };
 function timerLabel(name: string): string {
-	return TIMER_LABELS[name] ?? name.replace(/_/g, " ");
+	return TIMER_LABELS[name] ?? humanize(name);
+}
+
+/**
+ * How a closed countdown's terminal disposition reads (#149). Each word is a
+ * deliberate choice rather than the stored value passing through, even where
+ * the two coincide:
+ *
+ * `expired` says **overdue** — the one word for a passed deadline on every
+ * surface (CONTEXT.md), and what the prompt picker already calls the very same
+ * row (`ref-candidates.ts`); reading "expired" here and "overdue" there would
+ * be two names for one thing. `auto_closed` says **auto-closed**, which is what
+ * the sessions panel and the trace ledger have always called it. `canceled`
+ * keeps the verb of the dom command that wrote it, so the row can't be read as
+ * something resumable — there is no reopen, and a replacement is a fresh
+ * assignment.
+ *
+ * Lowercase throughout: this row is the twin of the sessions panel's
+ * auto-closed row, down to the class list, and the live badge above it reads
+ * `paused`/`overdue` the same way.
+ */
+const DISPOSITION_LABELS: Record<string, string> = {
+	expired: "overdue",
+	canceled: "canceled",
+	completed: "completed",
+	failed: "failed",
+	auto_closed: "auto-closed",
+};
+
+/**
+ * The above, with a de-slugging fallback — `timerViewSchema.status` is an open
+ * string rather than a closed enum, so a disposition added after this map
+ * degrades to readable instead of dumping its stored value on the page.
+ * `humanize` leaves the case alone, so the fallback lands in the same register
+ * as the mapped words rather than announcing itself as the odd one out.
+ */
+function dispositionLabel(status: string): string {
+	return DISPOSITION_LABELS[status] ?? humanize(status);
 }
 
 /** The non-empty `task_id` a task countdown carries, or null (denial has none). */
@@ -143,7 +181,11 @@ export function CountdownsPanel({
 
 	const countdowns = timers.filter((t) => t.kind === "countdown");
 	const active = countdowns.filter((t) => t.status === null);
-	const closed = countdowns.filter((t) => t.status !== null);
+	// Narrowed on the way out of the partition, so the disposition copy below
+	// takes the status it is guaranteed rather than a nullable it must re-check.
+	const closed = countdowns.filter(
+		(t): t is TimerView & { status: string } => t.status !== null,
+	);
 
 	return (
 		<section className="rounded-lg border p-4">
@@ -183,10 +225,13 @@ export function CountdownsPanel({
 										)}
 									</div>
 									<span className="w-20 text-right text-sm font-semibold tabular-nums">
+										{/* "overdue", not "due": one word for a passed deadline on
+										    every surface (CONTEXT.md) — the same one the closed row
+										    below and the prompt picker use (#149). */}
 										{paused
 											? "paused"
 											: overdue
-												? "due"
+												? "overdue"
 												: formatRemaining(countdownRemainingMs(c, now))}
 									</span>
 									{isDom ? (
@@ -288,7 +333,9 @@ export function CountdownsPanel({
 									{timerLabel(t.timer)}
 									{taskName ? ` · ${taskName}` : ""}
 								</span>
-								<span className="tabular-nums">{t.status}</span>
+								<span className="tabular-nums">
+									{dispositionLabel(t.status)}
+								</span>
 							</li>
 						);
 					})}
