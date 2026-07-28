@@ -63,7 +63,10 @@ in and should not.
   were required; "expiry".
 - **Counter / Timer / Anchor** — the three **projection** flavors: a materialized
   tally, a stopwatch/countdown, and an elapsed-since timestamp. Each is a **cache**
-  rebuildable by replaying the log.
+  rebuildable by replaying the log. **Clocks** is the UI's word for the anchors
+  read together ("days since …", Today since #88) — a display grouping, never a
+  fourth flavor. _Avoid_: "clock" for a timer, which counts toward something
+  rather than since it.
 - **Projection** — any derived, materialized view of the log (a counter, timer, or
   anchor). _Avoid_: "aggregate" (DDD-loaded), "view model".
 - **Stopwatch / Countdown** — the two timer flavors. A stopwatch *accumulates*

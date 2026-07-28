@@ -52,3 +52,23 @@ export const anchorViewSchema = z.object({
 	elapsed_days: z.number().int().nullable(),
 });
 export type AnchorView = z.infer<typeof anchorViewSchema>;
+
+/**
+ * The "days since" phrasing for an anchor (handoff §4.5, #78) — one formatter
+ * for every surface: null (never reset) reads "—", 0 reads "today". `compact`
+ * yields the chip form ("3d") the adjudication evidence uses.
+ *
+ * Beside the anchor it formats rather than in a surface's folder, since the
+ * clocks read it from Today and the queue's confirm sheet reads it from the Log.
+ * `rule-describe.ts` is the precedent — phrasing shared between surfaces lives
+ * next to the thing it phrases, and is client-only there too. (Not `trace.ts`,
+ * which is here because the DO *writes* through it and the client reads back:
+ * a different reason that does not apply to a formatter nothing server-side
+ * calls.)
+ */
+export function elapsedDaysText(days: number | null, compact = false): string {
+	if (days === null) return "—";
+	if (days === 0) return "today";
+	if (compact) return `${days}d`;
+	return days === 1 ? "1 day" : `${days} days`;
+}
