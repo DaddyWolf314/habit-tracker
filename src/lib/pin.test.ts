@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	applyLockBroadcast,
+	applyDeviceChange,
 	clearPin,
 	getAutoLockMinutes,
 	hashPin,
@@ -39,6 +39,9 @@ const MINUTE = 60_000;
  * pinning the literal keeps the neutral name honest.
  */
 const LOCK_SEQ_KEY = "habits.pin_lock_seq";
+/** The other two cover-named keys a second tab's change arrives under. */
+const PIN_HASH_KEY = "habits.pin_hash";
+const AUTO_LOCK_KEY = "habits.pin_auto_lock_min";
 
 afterEach(() => {
 	localStorage.clear();
@@ -102,11 +105,11 @@ describe("lock", () => {
 	});
 });
 
-describe("applyLockBroadcast", () => {
+describe("applyDeviceChange", () => {
 	it("covers this tab when another one announces a lock", async () => {
 		await setPin("1234");
 
-		applyLockBroadcast(
+		applyDeviceChange(
 			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: "1" }),
 		);
 
@@ -117,7 +120,7 @@ describe("applyLockBroadcast", () => {
 		await setPin("1234");
 		const before = localStorage.getItem(LOCK_SEQ_KEY);
 
-		applyLockBroadcast(
+		applyDeviceChange(
 			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: "1" }),
 		);
 
@@ -127,7 +130,7 @@ describe("applyLockBroadcast", () => {
 	it("ignores every other key on the device", async () => {
 		await setPin("1234");
 
-		applyLockBroadcast(
+		applyDeviceChange(
 			new StorageEvent("storage", {
 				key: "habits.something_else",
 				newValue: "1",
@@ -135,6 +138,49 @@ describe("applyLockBroadcast", () => {
 		);
 
 		expect(isLocked()).toBe(false);
+	});
+
+	it("does not read `clearPin` tidying up the key as a lock", async () => {
+		await setPin("1234");
+
+		applyDeviceChange(
+			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: null }),
+		);
+
+		expect(isLocked()).toBe(false);
+	});
+
+	it("re-reads the delay another tab changed", async () => {
+		await setPin("1234");
+		const listener = vi.fn();
+		const unsubscribe = subscribeLock(listener);
+
+		applyDeviceChange(
+			new StorageEvent("storage", { key: AUTO_LOCK_KEY, newValue: "15" }),
+		);
+
+		// The delay lives in localStorage, so every tab can simply look again —
+		// but nothing makes it look without this.
+		expect(listener).toHaveBeenCalled();
+		unsubscribe();
+	});
+
+	/**
+	 * Whether the PIN is set is read live, so the gate is where this one shows —
+	 * see "uncovers when the PIN it wants is removed in another tab" in
+	 * `components/pin-gate.test.tsx`. What has to happen here is the telling.
+	 */
+	it("re-reads the PIN another tab set or removed", async () => {
+		await setPin("1234");
+		const listener = vi.fn();
+		const unsubscribe = subscribeLock(listener);
+
+		applyDeviceChange(
+			new StorageEvent("storage", { key: PIN_HASH_KEY, newValue: null }),
+		);
+
+		expect(listener).toHaveBeenCalled();
+		unsubscribe();
 	});
 });
 

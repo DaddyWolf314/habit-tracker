@@ -111,13 +111,24 @@ function lockThisTab(): void {
 }
 
 /**
- * Applies a lock another tab performed, given the `storage` event that carried
- * it. Ignores every other key, and never re-announces — a received lock that
- * echoed would bounce between tabs forever.
+ * Applies what another tab on this device changed, given the `storage` event
+ * that carried it. Ignores every other key, and never writes anything back — a
+ * received change that echoed would bounce between tabs forever.
+ *
+ * A lock is the one that needs doing rather than re-reading, since "unlocked" is
+ * per tab and no shared value describes it. The PIN and the delay are the
+ * opposite: both already live in `localStorage`, so every tab can simply look
+ * again. Without that look they never do, and a tab keeps acting on a PIN that
+ * was removed or a delay that was changed somewhere else — including sitting on
+ * a lock screen for a PIN that no longer exists to open it.
  */
-export function applyLockBroadcast(event: StorageEvent): void {
-	if (event.key !== LOCK_SEQ_KEY || event.newValue === null) return;
-	lockThisTab();
+export function applyDeviceChange(event: StorageEvent): void {
+	if (event.key === LOCK_SEQ_KEY) {
+		// Removing the key is `clearPin` tidying up, not a lock being announced.
+		if (event.newValue !== null) lockThisTab();
+		return;
+	}
+	if (event.key === PIN_HASH_KEY || event.key === AUTO_LOCK_KEY) notify();
 }
 
 /** True when a PIN is set and this session has not been unlocked yet. */

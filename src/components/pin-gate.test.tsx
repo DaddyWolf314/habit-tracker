@@ -32,6 +32,9 @@ const MINUTE = 60_000;
  * pinning the literal keeps the neutral name honest.
  */
 const LOCK_SEQ_KEY = "habits.pin_lock_seq";
+/** Likewise the delay and the PIN, which a second tab can change under this one. */
+const AUTO_LOCK_KEY = "habits.pin_auto_lock_min";
+const PIN_HASH_KEY = "habits.pin_hash";
 
 afterEach(() => {
 	cleanup();
@@ -244,6 +247,56 @@ describe("PinGate", () => {
 		sitStill(5 * MINUTE);
 
 		expect(locked()).toBe(true);
+	});
+
+	/**
+	 * The delay lives in localStorage, so a tab that never hears it change goes on
+	 * waiting the old one out. Here the change is a shortening — this tab has to
+	 * pick it up rather than sit on the fifteen minutes it started with.
+	 */
+	it("takes up a delay shortened in another tab", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(15);
+		vi.useFakeTimers();
+		render(<PinGate>secret content</PinGate>);
+
+		act(() => {
+			// Play the other tab: the raw write, then the event this one hears.
+			// `setAutoLockMinutes` would notify locally and prove nothing.
+			localStorage.setItem(AUTO_LOCK_KEY, "1");
+			window.dispatchEvent(
+				new StorageEvent("storage", {
+					key: AUTO_LOCK_KEY,
+					newValue: "1",
+				}),
+			);
+		});
+		sitStill(2 * MINUTE);
+
+		expect(locked()).toBe(true);
+	});
+
+	/**
+	 * The stuck case: this tab is covered, and the PIN it would take to open it
+	 * was removed in another tab. Nothing entered here can match a hash that is
+	 * gone, so without hearing the removal this tab sits on a lock screen with no
+	 * way past it until a reload.
+	 */
+	it("uncovers when the PIN it wants is removed in another tab", async () => {
+		await setPin("1234");
+		render(<PinGate>secret content</PinGate>);
+		act(() => lock());
+		expect(locked()).toBe(true);
+
+		act(() => {
+			localStorage.removeItem(PIN_HASH_KEY);
+			window.dispatchEvent(
+				new StorageEvent("storage", { key: PIN_HASH_KEY, newValue: null }),
+			);
+		});
+
+		expect(locked()).toBe(false);
+		expect(screen.queryByText("secret content")).not.toBeNull();
 	});
 
 	it("covers this tab when another tab locks the device", async () => {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
 	AUTO_LOCK_OFF,
-	applyLockBroadcast,
+	applyDeviceChange,
 	getAutoLockMinutes,
 	isLocked,
 	isPinSet,
@@ -67,7 +67,7 @@ export function usePinLock(): {
 export function useLockWatch(): void {
 	useAwayWatch();
 	useUntouchedWatch();
-	useLockBroadcastWatch();
+	useDeviceChangeWatch();
 }
 
 /**
@@ -102,11 +102,14 @@ function useAwayWatch(): void {
 	}, []);
 }
 
-/** Applies a lock performed in another tab on this device (#97). */
-function useLockBroadcastWatch(): void {
+/**
+ * Applies what another tab on this device changed (#97): a lock, the PIN itself,
+ * or the auto-lock delay.
+ */
+function useDeviceChangeWatch(): void {
 	useEffect(() => {
-		window.addEventListener("storage", applyLockBroadcast);
-		return () => window.removeEventListener("storage", applyLockBroadcast);
+		window.addEventListener("storage", applyDeviceChange);
+		return () => window.removeEventListener("storage", applyDeviceChange);
 	}, []);
 }
 
@@ -179,9 +182,9 @@ function useUntouchedWatch(): void {
 			if (remaining > 0) return arm(remaining);
 			if (lockIfUntouchedTooLong(lastTouchedAt)) return;
 
-			// It declined: another tab on the device is in use, or the delay or the
-			// PIN went away in a tab whose storage write this one never hears about.
-			// Start the wait over rather than stop watching for the life of the tab.
+			// It declined — another tab on the device is in use, or a change landed
+			// between this tab's state and storage. Start the wait over rather than
+			// stop watching for the life of the tab.
 			lastTouchedAt = Date.now();
 			arm(delay);
 		};
