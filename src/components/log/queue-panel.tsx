@@ -10,6 +10,7 @@ import {
 	awaitingKeysFor,
 	type EventType,
 	type MetadataField,
+	optionLabel,
 } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -22,8 +23,8 @@ import {
 import type { VersionedRule } from "#/shared/rules.ts";
 import { anchorLabel } from "#/templates/index.ts";
 import {
+	displayMetaValue,
 	formatElapsed,
-	formatMetaValue,
 	formatTime,
 	memberLabel,
 	summarizeEffectOp,
@@ -240,7 +241,7 @@ function QueueItem({
 				<div className="mt-1 flex flex-wrap gap-1">
 					{context.map(([key, value]) => (
 						<span key={key} className="rounded bg-muted px-1.5 py-0.5 text-xs">
-							{key}: {formatMetaValue(value)}
+							{key}: {displayMetaValue(type.metadata[key], value)}
 						</span>
 					))}
 				</div>
@@ -350,7 +351,7 @@ function RulingInput({
 							className={field.kind === "boolean" ? "flex-1" : undefined}
 							onClick={() => onChange(o)}
 						>
-							{o}
+							{optionLabel(field, o)}
 						</Button>
 					))}
 				</div>

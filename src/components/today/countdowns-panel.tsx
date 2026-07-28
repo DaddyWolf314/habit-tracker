@@ -104,14 +104,14 @@ function taskNameOf(t: TimerView): string | null {
  * field blank exists to avoid — `quality` is an `awaiting` key adjudicated by
  * the dom (ADR 0003), so a blank lands the completion pending their ruling.
  *
- * Local to this form on purpose, but note what that costs today: the dom's queue
- * (`queue-panel.tsx`) and the generic composer both still render the stored
- * token through their shared enum control, so a sub who picks "Went beyond what
- * was asked" sees `exceeded` when it reaches the queue. That is a gap, not a
- * register decision — humanizing a *generic* enum control needs per-option
- * labels in the pack, which is a schema change and out of #154's display-layer
- * scope. Tracked in #155; if that lands, this map may become redundant, but
- * don't delete it before then.
+ * Local to this form on purpose, and now a *surface override* rather than the
+ * gap it was: since #155 the pack carries `option_labels` on every enum, so the
+ * queue, the composer and the log all read `quality` as words instead of the
+ * stored token. What they read is the pack's **neutral** copy ("Beyond what was
+ * asked"), which is the right register for the dom ruling on the work and the
+ * wrong one for the sub describing their own — hence these. Keep the two in
+ * step: a change to the pack's quality copy should be answered here or
+ * deliberately not.
  *
  * The options are derived from these keys so the set is written once. `quality`
  * is a closed enum in the pack, so this matches exhaustively and needs no

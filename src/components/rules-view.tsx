@@ -21,7 +21,7 @@ import {
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
 import type { Counter } from "#/shared/counters.ts";
-import type { EventType } from "#/shared/event-types.ts";
+import { type EventType, optionLabel } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import type { Role } from "#/shared/roles.ts";
@@ -876,7 +876,7 @@ function ConditionValue({
 				<option value="">—</option>
 				{field.options.map((o) => (
 					<option key={o} value={o}>
-						{o}
+						{optionLabel(field, o)}
 					</option>
 				))}
 			</select>

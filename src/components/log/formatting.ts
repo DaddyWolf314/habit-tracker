@@ -1,4 +1,6 @@
+import { type MetadataField, optionLabel } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import { formatMetaValue, type MetadataValue } from "#/shared/roles.ts";
 
 // The metadata-value formatter is shared (client and DO agree how a value
 // reads); re-exported here so log components keep importing it alongside the
@@ -12,6 +14,25 @@ export {
 	summarizeEffectOp,
 	type TraceLine,
 } from "#/shared/trace.ts";
+
+/**
+ * A stored metadata value as a person reads it (#155): an enum resolves to its
+ * display copy, everything else formats as before.
+ *
+ * The read-side counterpart of the enum controls, and deliberately the same
+ * `optionLabel` call they make — a sub who picks "Beyond what was asked" must
+ * not find `exceeded` in the log a moment later. An unknown field (a value whose
+ * key the type no longer declares) formats raw rather than guessing.
+ */
+export function displayMetaValue(
+	field: MetadataField | undefined,
+	value: MetadataValue,
+): string {
+	if (field?.kind === "enum" && typeof value === "string") {
+		return optionLabel(field, value);
+	}
+	return formatMetaValue(value);
+}
 
 /** A short absolute timestamp for the log ("Jul 2, 11:03 PM"). */
 export function formatTime(ms: number): string {

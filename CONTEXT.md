@@ -87,6 +87,8 @@ in and should not.
   *display word*, never the stored one — **overdue** for `expired`, **auto-closed**
   for `auto_closed`, and the plain word for the rest (#149). `timerViewSchema.status`
   is an open string, so an unmapped disposition de-slugs rather than printing raw.
+  The same two rungs — declared copy, then a de-slug — are what an **option label**
+  generalizes to every enum (#155).
   _Avoid_: "outcome" (a countdown's disposition says how it ended, not how it went —
   a `completed` one may still be ruled `partial`).
 - **Overdue** — how a passed deadline reads to a person, on any surface.
@@ -196,6 +198,16 @@ in and should not.
   citation of it still resolves and every rule matching it still fires on replay.
   _Avoid_: "live" (the repo's informal word for polling and ticking),
   "suggestion", "autocomplete".
+- **Option label** — the display copy an enum option carries, keyed by stored
+  value on the field (`option_labels`, ADR 0008). Every generic enum control and
+  readout renders it — the **Disposition** rule ("a row shows its *display word*,
+  never the stored one") applied to the one control that had been exempt (#155).
+  Pack copy is **speaker-neutral**, because one field is read in both partners'
+  voices; a surface whose register differs enough overrides locally (the sub's
+  Mark-done form, #154). Unlabelled options de-slug rather than failing, so a
+  couple's own event type still reads as words. _Avoid_: "display name" (an
+  Agreement **version** carries one, a different thing); a label that restates
+  the stored token.
 - **Valence** — `positive | negative | neutral` on a type or counter; drives
   display and the deferred scoring layer. Overridable per rule effect.
 - **Composite state** — an event's current metadata: original overlaid by
@@ -222,8 +234,10 @@ in and should not.
   completion never lands pending and never reaches the dom's queue; only a blank
   puts it there, and the dom's route to a set quality is an amendment. Copy in
   the sub's own form therefore reads as a claim rather than a verdict, and says
-  which of the two paths a pick takes (#154). _Avoid_: "grade", "score", "rating"
-  (see **Adjudication**); copy implying a self-stated quality awaits approval.
+  which of the two paths a pick takes (#154). Elsewhere it reads as the pack's
+  neutral **option label** — "Beyond what was asked", not `exceeded` (#155).
+  _Avoid_: "grade", "score", "rating" (see **Adjudication**); copy implying a
+  self-stated quality awaits approval.
 - **Notification** — the single content-free unread *count* a member polls, shown
   as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): pending-
   adjudication events plus a targeted recovery notice, composed in one place

@@ -4,6 +4,7 @@ import {
 	checkMetadataValue,
 	eventTypeSchema,
 	metadataFieldSchema,
+	optionLabel,
 } from "./event-types.ts";
 import { visibilityAllowedForType } from "./visibility.ts";
 
@@ -118,5 +119,58 @@ describe("the `text` metadata kind (ADR 0005)", () => {
 		expect(checkMetadataValue("task_name", field(80), true)).toContain(
 			"must be text",
 		);
+	});
+});
+
+/**
+ * Option display copy (#155, ADR 0008). The stored value is a machine token and
+ * `optionLabel` is the one path from it to the word a person reads, so the rungs
+ * matter more than any single label: pack copy, then a de-slug, and never a bare
+ * token with underscores in it.
+ */
+describe("optionLabel", () => {
+	const enumField = (option_labels?: Record<string, string>) =>
+		metadataFieldSchema.parse({
+			kind: "enum",
+			options: ["exceeded", "met", "partial"],
+			label: "Quality",
+			set_permission: ["dom"],
+			...(option_labels === undefined ? {} : { option_labels }),
+		});
+
+	it("prefers the declared copy for the option", () => {
+		const field = enumField({ exceeded: "Beyond what was asked" });
+		expect(optionLabel(field, "exceeded")).toBe("Beyond what was asked");
+	});
+
+	it("de-slugs an option the copy doesn't cover", () => {
+		// Partial copy is legal — a couple's own enum may carry none at all — so an
+		// uncovered option has to read as words rather than falling back to the
+		// token that made #155 a bug in the first place.
+		const field = enumField({ exceeded: "Beyond what was asked" });
+		expect(optionLabel(field, "met")).toBe("met");
+		expect(optionLabel(enumField(), "met")).toBe("met");
+		expect(
+			optionLabel(
+				metadataFieldSchema.parse({
+					kind: "enum",
+					options: ["wants_conversation"],
+					label: "Flag",
+					set_permission: ["sub"],
+				}),
+				"wants_conversation",
+			),
+		).toBe("wants conversation");
+	});
+
+	it("leaves a non-enum field's options alone", () => {
+		// The controls fold booleans into the same option list (`yes`/`no`); a
+		// boolean carries no copy, so it must read exactly as it did before.
+		const bool = metadataFieldSchema.parse({
+			kind: "boolean",
+			label: "Late?",
+			set_permission: ["sub"],
+		});
+		expect(optionLabel(bool, "yes")).toBe("yes");
 	});
 });
