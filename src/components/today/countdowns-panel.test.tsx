@@ -16,8 +16,10 @@ vi.mock("#/lib/api.ts", () => ({
 	resumeTimer: vi.fn(() => Promise.resolve({})),
 }));
 
-import { cancelTimer, pauseTimer } from "#/lib/api.ts";
+import { cancelTimer, logEvent, pauseTimer } from "#/lib/api.ts";
+import type { Role } from "#/shared/roles.ts";
 import type { TimerView } from "#/shared/timers.ts";
+import { STARTER_EVENT_TYPES } from "#/templates/index.ts";
 import { CountdownsPanel } from "./countdowns-panel.tsx";
 
 /**
@@ -46,11 +48,15 @@ function countdown(over: Partial<TimerView> = {}): TimerView {
 	};
 }
 
-function renderPanel(timers: TimerView[] = [countdown()]) {
+/** `sub` is the only role that gets Mark done — the dom keeps the live controls. */
+function renderPanel(
+	timers: TimerView[] = [countdown()],
+	selfRole: Role = "dom",
+) {
 	render(
 		<CountdownsPanel
 			timers={timers}
-			selfRole="dom"
+			selfRole={selfRole}
 			selfId="m1"
 			partnerId="m2"
 			onChange={() => {}}
@@ -172,5 +178,106 @@ describe("an active countdown past its deadline", () => {
 		]);
 		expect(screen.getByText("overdue")).toBeDefined();
 		expect(screen.queryByText("due")).toBeNull();
+	});
+});
+
+/**
+ * The sub's quality picker (#154). Two defects, one form: the qualities printed
+ * as their stored values, and the blank option called the dom's ruling a "grade"
+ * — a word `CONTEXT.md`'s Adjudication entry explicitly avoids.
+ *
+ * The copy is claim-shaped because the sub is the one speaking here: they report
+ * how they think they did, and the dom rules on it afterwards. The queue and the
+ * generic composer still print the stored token through their shared enum
+ * control, which is a known gap rather than a decision — see the map's docstring.
+ */
+describe("the sub's quality picker", () => {
+	beforeEach(() => vi.mocked(logEvent).mockClear());
+	afterEach(cleanup);
+
+	// Opening the form replaces the row's Mark done with the form's submit, so
+	// there is only ever one button by that name.
+	const openMarkDone = () => {
+		renderPanel([countdown()], "sub");
+		click("Mark done");
+	};
+
+	const options = () => screen.getAllByRole("option") as HTMLOptionElement[];
+
+	it("offers a claim rather than a stored value", () => {
+		openMarkDone();
+		for (const [value, label] of [
+			["exceeded", "Went beyond what was asked"],
+			["met", "Did what was asked"],
+			["partial", "Got part of the way"],
+		] as const) {
+			const option = screen.getByRole("option", {
+				name: label,
+			}) as HTMLOptionElement;
+			// Pin the pairing, not just the presence — swapping two labels has to
+			// fail, since a claim attached to the wrong value is worse than a raw one.
+			expect(option.value).toBe(value);
+			expect(screen.queryByRole("option", { name: value })).toBeNull();
+		}
+	});
+
+	// The map is hand-written; the pack is the authority. If someone adds a fourth
+	// quality to `event-types.json`, the exhaustive (fallback-free) map has to fail
+	// here rather than silently drop the option from the sub's picker.
+	it("offers exactly the qualities the pack defines", () => {
+		openMarkDone();
+		const field = STARTER_EVENT_TYPES.find((t) => t.id === "task_completed")
+			?.metadata.quality;
+		const packOptions = field?.kind === "enum" ? field.options : undefined;
+		expect(packOptions).toBeDefined();
+		expect(
+			options()
+				.map((o) => o.value)
+				.filter(Boolean),
+		).toEqual(packOptions);
+	});
+
+	it("calls the dom's ruling a ruling", () => {
+		openMarkDone();
+		expect(screen.queryByText(/grade/i)).toBeNull();
+		expect(
+			screen.getByRole("option", { name: /leave it for your dom to rule on/i }),
+		).toBeDefined();
+	});
+
+	// The option text taught the blank path only. Picking a quality resolves the
+	// awaiting key outright — no pending, no queue — and the sub was left to find
+	// that out from its absence.
+	it("says what a pick costs, not just what a blank does", () => {
+		openMarkDone();
+		expect(screen.getByText(/stands as the record/i)).toBeDefined();
+		expect(screen.getByText(/won't be waiting on their ruling/i)).toBeDefined();
+	});
+
+	// The copy is display-layer: what crosses the wire is still the pack's enum.
+	it("logs the stored value the pack defines, not the copy", async () => {
+		openMarkDone();
+		fireEvent.change(screen.getByLabelText(/quality/i), {
+			target: { value: "exceeded" },
+		});
+		click("Mark done");
+		await act(async () => {});
+		expect(vi.mocked(logEvent)).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "task_completed",
+				metadata: { task_id: "01JB6X", quality: "exceeded" },
+			}),
+		);
+	});
+
+	// Leaving it blank is the whole point of the field being optional: the
+	// completion lands pending the dom's ruling rather than self-assigning one.
+	it("sends no quality at all when left blank", async () => {
+		openMarkDone();
+		click("Mark done");
+		await act(async () => {});
+		expect(vi.mocked(logEvent)).toHaveBeenCalledWith(
+			expect.objectContaining({ metadata: { task_id: "01JB6X" } }),
+		);
 	});
 });
