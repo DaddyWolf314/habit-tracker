@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-	applyLockBroadcast,
+	applyDeviceChange,
 	clearPin,
 	getAutoLockMinutes,
 	hashPin,
 	isLocked,
 	lock,
 	lockIfAwayTooLong,
+	lockIfUntouchedTooLong,
 	markAway,
+	markTouched,
 	pinMatches,
 	setAutoLockMinutes,
 	setPin,
@@ -37,6 +39,9 @@ const MINUTE = 60_000;
  * pinning the literal keeps the neutral name honest.
  */
 const LOCK_SEQ_KEY = "habits.pin_lock_seq";
+/** The other two cover-named keys a second tab's change arrives under. */
+const PIN_HASH_KEY = "habits.pin_hash";
+const AUTO_LOCK_KEY = "habits.pin_auto_lock_min";
 
 afterEach(() => {
 	localStorage.clear();
@@ -100,11 +105,11 @@ describe("lock", () => {
 	});
 });
 
-describe("applyLockBroadcast", () => {
+describe("applyDeviceChange", () => {
 	it("covers this tab when another one announces a lock", async () => {
 		await setPin("1234");
 
-		applyLockBroadcast(
+		applyDeviceChange(
 			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: "1" }),
 		);
 
@@ -115,7 +120,7 @@ describe("applyLockBroadcast", () => {
 		await setPin("1234");
 		const before = localStorage.getItem(LOCK_SEQ_KEY);
 
-		applyLockBroadcast(
+		applyDeviceChange(
 			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: "1" }),
 		);
 
@@ -125,7 +130,7 @@ describe("applyLockBroadcast", () => {
 	it("ignores every other key on the device", async () => {
 		await setPin("1234");
 
-		applyLockBroadcast(
+		applyDeviceChange(
 			new StorageEvent("storage", {
 				key: "habits.something_else",
 				newValue: "1",
@@ -133,6 +138,49 @@ describe("applyLockBroadcast", () => {
 		);
 
 		expect(isLocked()).toBe(false);
+	});
+
+	it("does not read `clearPin` tidying up the key as a lock", async () => {
+		await setPin("1234");
+
+		applyDeviceChange(
+			new StorageEvent("storage", { key: LOCK_SEQ_KEY, newValue: null }),
+		);
+
+		expect(isLocked()).toBe(false);
+	});
+
+	it("re-reads the delay another tab changed", async () => {
+		await setPin("1234");
+		const listener = vi.fn();
+		const unsubscribe = subscribeLock(listener);
+
+		applyDeviceChange(
+			new StorageEvent("storage", { key: AUTO_LOCK_KEY, newValue: "15" }),
+		);
+
+		// The delay lives in localStorage, so every tab can simply look again —
+		// but nothing makes it look without this.
+		expect(listener).toHaveBeenCalled();
+		unsubscribe();
+	});
+
+	/**
+	 * Whether the PIN is set is read live, so the gate is where this one shows —
+	 * see "uncovers when the PIN it wants is removed in another tab" in
+	 * `components/pin-gate.test.tsx`. What has to happen here is the telling.
+	 */
+	it("re-reads the PIN another tab set or removed", async () => {
+		await setPin("1234");
+		const listener = vi.fn();
+		const unsubscribe = subscribeLock(listener);
+
+		applyDeviceChange(
+			new StorageEvent("storage", { key: PIN_HASH_KEY, newValue: null }),
+		);
+
+		expect(listener).toHaveBeenCalled();
+		unsubscribe();
 	});
 });
 
@@ -239,5 +287,105 @@ describe("auto-lock", () => {
 		markAway(10 * MINUTE);
 		expect(lockIfAwayTooLong(1 * MINUTE)).toBe(false);
 		expect(isLocked()).toBe(false);
+	});
+});
+
+/**
+ * The desk case (#145): the app in front of you, nobody touching it. The away
+ * rule never covered this one — a foreground tab is never out of view — so the
+ * same delay is read against the last touch instead of against a departure.
+ */
+describe("untouched", () => {
+	it("locks a tab nobody has touched for longer than the delay", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		expect(lockIfUntouchedTooLong(0, 6 * MINUTE)).toBe(true);
+		expect(isLocked()).toBe(true);
+	});
+
+	it("leaves a tab alone while someone is still using it", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		expect(lockIfUntouchedTooLong(0, 4 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("never locks while the delay is off, however long nobody touches it", async () => {
+		await setPin("1234");
+
+		expect(lockIfUntouchedTooLong(0, 600 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("does nothing on a device with no PIN — there is nothing to cover", () => {
+		setAutoLockMinutes(5);
+
+		expect(lockIfUntouchedTooLong(0, 600 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("does not re-announce a lock that already happened", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		lock();
+		const announced = localStorage.getItem(LOCK_SEQ_KEY);
+
+		expect(lockIfUntouchedTooLong(0, 600 * MINUTE)).toBe(false);
+		// A second bump would cover every other tab a second time, for a lock they
+		// have already been told about.
+		expect(localStorage.getItem(LOCK_SEQ_KEY)).toBe(announced);
+	});
+
+	it("survives a clock that jumped backwards", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		expect(lockIfUntouchedTooLong(10 * MINUTE, 1 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("waits on the tab somebody is using, not just on its own reading", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		// This tab has sat quiet for six minutes, but the input went to another
+		// window on the same device a minute ago — and a lock covers that one too.
+		markTouched(5 * MINUTE);
+
+		expect(lockIfUntouchedTooLong(0, 6 * MINUTE)).toBe(false);
+		expect(isLocked()).toBe(false);
+	});
+
+	it("locks once every tab on the device has gone quiet", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		markTouched(0);
+
+		expect(lockIfUntouchedTooLong(0, 6 * MINUTE)).toBe(true);
+		expect(isLocked()).toBe(true);
+	});
+
+	it("does not record a touch on a device with no PIN", () => {
+		setAutoLockMinutes(5);
+		markTouched(5 * MINUTE);
+
+		// Nothing to hold open a lock that isn't configured — and no stray mark
+		// left behind for whoever sets a PIN later.
+		expect(lockIfUntouchedTooLong(0, 6 * MINUTE)).toBe(false);
+	});
+
+	it("drops the device's touch mark along with the PIN", async () => {
+		await setPin("1234");
+		setAutoLockMinutes(5);
+		markTouched(10 * MINUTE);
+
+		clearPin();
+		await setPin("1234");
+		setAutoLockMinutes(5);
+
+		// A touch from the PIN that was removed must not hold the new one open.
+		expect(lockIfUntouchedTooLong(0, 11 * MINUTE)).toBe(true);
 	});
 });
