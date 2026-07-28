@@ -1,8 +1,9 @@
 {
-	"version": 8,
+	"version": 9,
 	"rules": [
 		{
 			"id": "R1",
+			"name": "Ritual logged",
 			"condition": { "type": "ritual_completed", "metadata": {} },
 			"effects": [
 				{ "verb": "increment_counter", "counter": "rituals_completed_today" }
@@ -10,16 +11,19 @@
 		},
 		{
 			"id": "R2",
+			"name": "Late ritual",
 			"condition": { "type": "ritual_completed", "metadata": { "late": true } },
 			"effects": [{ "verb": "increment_counter", "counter": "demerits" }]
 		},
 		{
 			"id": "R3",
+			"name": "Task done",
 			"condition": { "type": "task_completed", "metadata": {} },
 			"effects": [{ "verb": "increment_counter", "counter": "tasks_completed" }]
 		},
 		{
 			"id": "R4",
+			"name": "Task closes its countdown",
 			"condition": { "type": "task_completed", "metadata": {} },
 			"effects": [
 				{
@@ -32,6 +36,7 @@
 		},
 		{
 			"id": "R5",
+			"name": "Half-done task",
 			"condition": {
 				"type": "task_completed",
 				"metadata": { "quality": "partial" }
@@ -40,6 +45,7 @@
 		},
 		{
 			"id": "R6",
+			"name": "Infraction logged",
 			"condition": {
 				"type": "infraction",
 				"subject_role": "sub",
@@ -51,6 +57,7 @@
 		},
 		{
 			"id": "R7",
+			"name": "Infraction resets the clock",
 			"condition": {
 				"type": "infraction",
 				"subject_role": "sub",
@@ -60,6 +67,7 @@
 		},
 		{
 			"id": "R8",
+			"name": "Major infraction",
 			"condition": {
 				"type": "infraction",
 				"subject_role": "sub",
@@ -71,6 +79,7 @@
 		},
 		{
 			"id": "R9",
+			"name": "Minor infraction, not owned up to",
 			"condition": {
 				"type": "infraction",
 				"subject_role": "sub",
@@ -80,6 +89,7 @@
 		},
 		{
 			"id": "R10",
+			"name": "Sub's orgasm",
 			"condition": { "type": "orgasm", "subject_role": "sub", "metadata": {} },
 			"effects": [
 				{ "verb": "increment_counter", "counter": "orgasms_lifetime" }
@@ -87,6 +97,7 @@
 		},
 		{
 			"id": "R11",
+			"name": "Permitted orgasm",
 			"condition": {
 				"type": "orgasm",
 				"subject_role": "sub",
@@ -99,6 +110,7 @@
 		},
 		{
 			"id": "R12",
+			"name": "Unpermitted orgasm",
 			"condition": {
 				"type": "orgasm",
 				"subject_role": "sub",
@@ -113,6 +125,7 @@
 		},
 		{
 			"id": "R13",
+			"name": "Denial held",
 			"condition": {
 				"type": "orgasm",
 				"subject_role": "sub",
@@ -122,6 +135,7 @@
 		},
 		{
 			"id": "R14",
+			"name": "Unpermitted orgasm breaks the denial",
 			"condition": {
 				"type": "orgasm",
 				"subject_role": "sub",
@@ -133,6 +147,7 @@
 		},
 		{
 			"id": "R15",
+			"name": "Session starts the stopwatch",
 			"condition": { "type": "session_started", "metadata": {} },
 			"effects": [
 				{
@@ -145,6 +160,7 @@
 		},
 		{
 			"id": "R16",
+			"name": "Session ends the stopwatch",
 			"condition": { "type": "session_ended", "metadata": {} },
 			"effects": [
 				{
@@ -159,6 +175,7 @@
 		},
 		{
 			"id": "R17",
+			"name": "Check-in logged",
 			"condition": { "type": "check_in", "metadata": {} },
 			"effects": [
 				{ "verb": "increment_counter", "counter": "check_ins_week" },
@@ -167,6 +184,7 @@
 		},
 		{
 			"id": "R18",
+			"name": "Check-in asks to talk",
 			"condition": {
 				"type": "check_in",
 				"metadata": { "flag": "wants_conversation" }
@@ -175,6 +193,7 @@
 		},
 		{
 			"id": "R19",
+			"name": "Prompt starts the journal clock",
 			"condition": { "type": "journal_prompt", "metadata": {} },
 			"effects": [
 				{
@@ -187,6 +206,7 @@
 		},
 		{
 			"id": "R20",
+			"name": "Journal entry answers the prompt",
 			"condition": { "type": "journal_entry", "metadata": {} },
 			"effects": [
 				{
@@ -199,6 +219,7 @@
 		},
 		{
 			"id": "R21",
+			"name": "Dom's orgasm",
 			"condition": { "type": "orgasm", "subject_role": "dom", "metadata": {} },
 			"effects": [
 				{ "verb": "reset_anchor", "anchor": "since_dom_last_orgasm" },
@@ -207,6 +228,7 @@
 		},
 		{
 			"id": "R22",
+			"name": "Assigned task starts its countdown",
 			"condition": { "type": "task_assigned", "metadata": {} },
 			"effects": [
 				{
@@ -220,6 +242,7 @@
 		},
 		{
 			"id": "R23",
+			"name": "Denial starts its countdown",
 			"condition": { "type": "denial_started", "metadata": {} },
 			"effects": [
 				{
@@ -231,11 +254,13 @@
 		},
 		{
 			"id": "R24",
+			"name": "Sub's edge",
 			"condition": { "type": "edge", "subject_role": "sub", "metadata": {} },
 			"effects": [{ "verb": "increment_counter", "counter": "edges_sub" }]
 		},
 		{
 			"id": "R25",
+			"name": "Dom's edge",
 			"condition": { "type": "edge", "subject_role": "dom", "metadata": {} },
 			"effects": [{ "verb": "increment_counter", "counter": "edges_dom" }]
 		}

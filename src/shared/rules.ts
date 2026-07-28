@@ -92,6 +92,17 @@ export type Effect = z.infer<typeof effectSchema>;
  * the log-time it takes force.
  */
 export const ruleDefinitionSchema = z.object({
+	/**
+	 * What the couple calls this rule (#150, ADR 0009). It sits on the *definition*
+	 * — and so on every version — rather than on the identity row, so a rename
+	 * takes force from the moment it is made and never rewrites what a past
+	 * revision or change notice said the rule was called.
+	 *
+	 * Optional because a rule can predate the name: every version written before
+	 * v11 has none, and the engine never needed one. Read it through
+	 * {@link ruleName}, never directly — an unnamed rule still has to render.
+	 */
+	name: z.string().optional(),
 	condition: ruleConditionSchema,
 	effects: z.array(effectSchema).min(1),
 	enabled: z.boolean().default(true),
@@ -172,6 +183,7 @@ export interface RuleIdentity {
 export function ruleFromVersion(id: string, version: RuleVersion): Rule {
 	return {
 		id,
+		name: version.name,
 		condition: version.condition,
 		effects: version.effects,
 		enabled: version.enabled,
@@ -190,6 +202,7 @@ export function versionFromDefinition(
 ): RuleVersion {
 	return {
 		effective_from: effectiveFrom,
+		name: definition.name,
 		condition: definition.condition,
 		effects: definition.effects,
 		enabled: definition.enabled,
@@ -206,4 +219,27 @@ export function latestVersion(rule: VersionedRule): RuleVersion {
 /** A rule's current definition flattened to the shape the engine and UI read. */
 export function currentRule(rule: VersionedRule): Rule {
 	return ruleFromVersion(rule.id, latestVersion(rule));
+}
+
+/**
+ * What to call a rule on a screen (#150, ADR 0009) — its authored name, or a
+ * de-slugged id when it has none.
+ *
+ * The one place the fallback lives, because every surface that names a rule needs
+ * it and four hand-rolled versions would drift: a version written before v11, a
+ * change notice about a purged rule, and a `Rule` the engine assembled in memory
+ * all arrive here nameless. The de-slug is a last resort, not a display strategy
+ * — #150 rejected it as the permanent answer precisely because a stable id and
+ * the behaviour it describes drift apart, and it reads as a lie once they have.
+ * It is still a better answer than a blank heading.
+ */
+export function ruleName(rule: { id: string; name?: string }): string {
+	return rule.name?.trim() || deslugRuleId(rule.id);
+}
+
+/** `custom-late-check-in` → "late check in"; `R2` → "R2". */
+function deslugRuleId(id: string): string {
+	const bare = id.replace(/^custom[-_]/, "");
+	const words = bare.replace(/[-_]+/g, " ").trim();
+	return words || id;
 }

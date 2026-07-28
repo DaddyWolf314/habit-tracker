@@ -27,6 +27,19 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		);
 	});
 
+	// The pack names every rule it ships (#150). Pinned, because the v11 migration
+	// deliberately leaves pack rows null and defers to `rules.json` — a rule the
+	// pack forgot to name would render as "R7" for ever, with nothing to catch it.
+	// It is also the couple's only route to a name for a rule they never edited.
+	it("names every rule, distinctly", () => {
+		const names = DEFAULT_RULES.map((r) => r.name);
+		for (const name of names) {
+			expect(name?.trim()).toBeTruthy();
+		}
+		// Two rules called the same thing is a rules screen that cannot be read.
+		expect(new Set(names).size).toBe(DEFAULT_RULES.length);
+	});
+
 	it("every projection derives from only the starter seven", () => {
 		for (const rule of DEFAULT_RULES) {
 			// Condition types are starter-seven event types.

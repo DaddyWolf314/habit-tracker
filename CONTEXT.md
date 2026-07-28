@@ -20,10 +20,15 @@ in and should not.
   automation, not a term the couple agreed (ADR 0006).
 - **Effect** — one op a fired rule routes: counter increment/decrement/reset,
   anchor reset, timer open/close, notify.
-- **Rule version** — an effective-dated revision of a rule's condition and effects.
-  Rules are append-only-versioned: editing adds a version (with an `effective_from`),
-  never rewriting the prior, so replay picks the version in force at an event's
-  **log-time** (when it fired). _Avoid_: "edit" as if a rule mutates in place.
+- **Rule version** — an effective-dated revision of a rule's **name**, condition,
+  and effects. Rules are append-only-versioned: editing adds a version (with an
+  `effective_from`), never rewriting the prior, so replay picks the version in force
+  at an event's **log-time** (when it fired). The name versions with the rest, as an
+  Agreement version's does, so a rename is not retroactive: a revision row and a past
+  change notice keep saying what the rule was called then (ADR 0009). It is display
+  copy — the engine never reads it, the trace still cites the stable **id**, and
+  reconciliation ignores it, so renaming a pack rule is not an upstream change.
+  _Avoid_: "edit" as if a rule mutates in place; the id as a stand-in for the name.
 - **Effective-dating** — a rule version governs only events logged while it was in
   force. Rule changes are **forward-only**: already-logged events keep the
   consequences they received, and a rebuild re-derives each event under the version

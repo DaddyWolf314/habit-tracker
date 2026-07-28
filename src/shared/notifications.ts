@@ -1,5 +1,6 @@
 import { queueFor } from "./adjudication.ts";
 import type { EventView } from "./events.ts";
+import { ruleName } from "./rules.ts";
 /**
  * Content-free notifications (handoff §3.5, #42). Discretion is a product
  * requirement: a notification may reveal only a *count*, never anything about
@@ -121,6 +122,16 @@ export interface RuleChangeNotice {
 	rule_id: string;
 	/** When the change was made (its `audit_log` timestamp). */
 	at: number;
+	/**
+	 * What the rule was called at `at` (#150) — resolved by the server from the
+	 * version in force then, never from the rule's name today. A later rename must
+	 * not rewrite a notice the partner has already read, which is the same
+	 * guarantee the effective-dated name gives the revision history (ADR 0009).
+	 *
+	 * Absent when nothing names it: a purge leaves no version behind, and a rule
+	 * last touched before v11 has no name on record. The renderer de-slugs the id.
+	 */
+	name?: string;
 }
 
 /**
@@ -132,9 +143,12 @@ export interface RuleChangeNotice {
  * sees once they're looking at the rules themselves. Viewer-relative: authoring
  * kinds are always changes the *other* member made (a member's own changes need
  * no notice), and `upstream_changed` is the app's pack, not a partner.
+ *
+ * The rule is named the way it was named *then* (#150) — see
+ * {@link RuleChangeNotice.name}.
  */
 export function ruleChangeNotice(notice: RuleChangeNotice): string {
-	const rule = `"${notice.rule_id}"`;
+	const rule = `"${ruleName({ id: notice.rule_id, name: notice.name })}"`;
 	switch (notice.kind) {
 		case "create":
 			return `Your partner added the rule ${rule}.`;

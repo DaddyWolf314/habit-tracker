@@ -24,13 +24,19 @@ vi.mock("#/lib/api.ts", () => ({
 	listCounters: vi.fn(() => Promise.resolve({ counters: [] })),
 	listEventTypes: vi.fn(() => Promise.resolve({ types: TYPES })),
 	listRuleHistory: vi.fn(() => Promise.resolve({ rules: [RULE] })),
+	renameRule: vi.fn(() => Promise.resolve({})),
 	setRuleEnabled: vi.fn(() => Promise.resolve({})),
 	updateRule: vi.fn(() => Promise.resolve({})),
 }));
 
 vi.mock("#/lib/identity.ts", () => ({ hasIdentity: () => true }));
 
-import { deleteRule } from "#/lib/api.ts";
+import {
+	deleteRule,
+	listRuleHistory,
+	renameRule,
+	updateRule,
+} from "#/lib/api.ts";
 import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { VersionedRule } from "#/shared/rules.ts";
@@ -95,6 +101,29 @@ const RULE: VersionedRule = {
 		{
 			effective_from: 0,
 			condition: { type: "task_completed", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "points", by: 1 }],
+			enabled: true,
+		},
+	],
+};
+
+/** A rule renamed once — two revisions, each carrying the name of its own moment. */
+const RENAMED: VersionedRule = {
+	id: "custom-late-check-in",
+	origin: "custom",
+	adopted: false,
+	versions: [
+		{
+			effective_from: 0,
+			name: "Late check-in",
+			condition: { type: "ritual_completed", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "points", by: 1 }],
+			enabled: true,
+		},
+		{
+			effective_from: 1_000,
+			name: "Tardy check-in",
+			condition: { type: "ritual_completed", metadata: {} },
 			effects: [{ verb: "increment_counter", counter: "points", by: 1 }],
 			enabled: true,
 		},
@@ -221,5 +250,157 @@ describe("the revision-history disclosure", () => {
 		fireEvent.click(toggle);
 		expect(toggle.getAttribute("aria-expanded")).toBe("true");
 		expect(document.getElementById(listId)).not.toBeNull();
+	});
+});
+
+/**
+ * A rule carries a name (#150, ADR 0009). The issue's symptom was the editor
+ * heading reading "Edit custom-late-check-in" — but the deeper requirement is the
+ * one the effective-dated name buys: renaming a rule must not rewrite what the
+ * revision history says it used to be called.
+ */
+describe("a rule's name", () => {
+	afterEach(cleanup);
+
+	async function renderRenamed() {
+		vi.mocked(listRuleHistory).mockResolvedValueOnce({ rules: [RENAMED] });
+		await renderRules();
+	}
+
+	it("heads the card, over the plain-language reading of what it does", async () => {
+		await renderRenamed();
+		expect(screen.getByText("Tardy check-in")).not.toBeNull();
+		expect(screen.getByText(/when Ritual completed is logged/)).not.toBeNull();
+	});
+
+	it("names each past revision as it stood then, not as it stands now", async () => {
+		await renderRenamed();
+		fireEvent.click(screen.getByRole("button", { name: /revision/ }));
+		// Both names are on screen: the old revision keeps the old wording, which is
+		// the whole reason the name versions with the definition rather than sitting
+		// on the identity row.
+		expect(screen.getAllByText(/Late check-in/).length).toBeGreaterThan(0);
+		expect(screen.getAllByText(/Tardy check-in/).length).toBeGreaterThan(0);
+	});
+
+	it("heads the editor with the name rather than the stable id", async () => {
+		await renderRenamed();
+		fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+		expect(
+			screen.getByRole("heading", { name: "Edit Tardy check-in" }),
+		).not.toBeNull();
+		expect(screen.queryByText(/Edit custom-late-check-in/)).toBeNull();
+	});
+
+	// The editor's name box is offered on an edit, not only on a create — a rule
+	// you cannot rename is the issue only half fixed.
+	it("sends a rename as an ordinary edit, leaving the id alone", async () => {
+		vi.mocked(updateRule).mockClear();
+		await renderRenamed();
+		fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+		fireEvent.change(screen.getByLabelText("Name"), {
+			target: { value: "Overdue check-in" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Review rule" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+		await act(async () => {});
+		expect(vi.mocked(updateRule)).toHaveBeenCalledWith(
+			"custom-late-check-in",
+			expect.objectContaining({ name: "Overdue check-in" }),
+		);
+	});
+
+	// A rule that predates naming still has to render. The de-slug is the floor,
+	// not the strategy (#150) — RULE below carries no name on any revision.
+	it("falls back to a de-slugged id when no revision carries a name", async () => {
+		await renderRules();
+		expect(screen.getByRole("heading", { name: "Rules" })).not.toBeNull();
+		expect(screen.getAllByText("R1").length).toBeGreaterThan(0);
+	});
+});
+
+/**
+ * Timer wiring is "advanced — view only" (#64): the structured picker has no way
+ * to represent `open_timer`/`close_timer`, so those rules never reach the editor.
+ * That left them stuck with their ids as names, which is the whole of #150 — so
+ * the *name* axis is separated from the *effects* axis and only the latter stays
+ * read-only.
+ */
+describe("renaming an advanced rule", () => {
+	afterEach(cleanup);
+
+	/** R15 — opens the session stopwatch. Nothing the picker can draw. */
+	const ADVANCED: VersionedRule = {
+		id: "R15",
+		origin: "pack",
+		adopted: false,
+		versions: [
+			{
+				effective_from: 0,
+				name: "Session starts the stopwatch",
+				condition: { type: "ritual_completed", metadata: {} },
+				effects: [
+					{
+						verb: "open_timer",
+						timer: "session_stopwatch",
+						match_on: { session_id: "session_id" },
+						tag_from: "activity",
+					},
+				],
+				enabled: true,
+			},
+		],
+	};
+
+	async function renderAdvanced() {
+		vi.mocked(renameRule).mockClear();
+		vi.mocked(updateRule).mockClear();
+		vi.mocked(listRuleHistory).mockResolvedValueOnce({ rules: [ADVANCED] });
+		await renderRules();
+	}
+
+	it("offers Rename where it withholds Edit", async () => {
+		await renderAdvanced();
+		expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Rename" })).not.toBeNull();
+	});
+
+	// The name box opens seeded, so the author corrects a name rather than
+	// retyping one — and a blank submission is refused rather than clearing it.
+	it("seeds the box with the current name and refuses a blank one", async () => {
+		await renderAdvanced();
+		click("Rename");
+		const box = screen.getByLabelText("Name") as HTMLInputElement;
+		expect(box.value).toBe("Session starts the stopwatch");
+		fireEvent.change(box, { target: { value: "  " } });
+		expect(
+			(screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
+	});
+
+	// A name and only a name goes over the wire. The screen cannot render this
+	// rule's effects, so it must never be the thing that sends them back.
+	it("sends the name alone, never a definition it cannot render", async () => {
+		await renderAdvanced();
+		click("Rename");
+		fireEvent.change(screen.getByLabelText("Name"), {
+			target: { value: "Stopwatch starts" },
+		});
+		click("Save name");
+		await act(async () => {});
+		expect(vi.mocked(renameRule)).toHaveBeenCalledWith(
+			"R15",
+			"Stopwatch starts",
+		);
+		expect(vi.mocked(updateRule)).not.toHaveBeenCalled();
+	});
+
+	it("cancelling closes the box without renaming", async () => {
+		await renderAdvanced();
+		click("Rename");
+		click("Cancel");
+		expect(vi.mocked(renameRule)).not.toHaveBeenCalled();
+		expect(screen.queryByLabelText("Name")).toBeNull();
 	});
 });

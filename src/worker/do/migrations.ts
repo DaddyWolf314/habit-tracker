@@ -227,6 +227,35 @@ export const DO_MIGRATIONS: string[][] = [
 		)`,
 		`CREATE INDEX IF NOT EXISTS agreements_kind_idx ON agreements (kind)`,
 	],
+	// v11 — a rule carries a user-authored name (#150, ADR 0009). It lands on
+	// `rule_versions`, not on the identity row, for the reason the v10 comment
+	// gives for `agreement_versions.name`, and more sharply: rule history is
+	// *displayed*, so a name on the identity row would retroactively rewrite what
+	// a past revision row and a past change notice said the rule was called.
+	//
+	// Nullable rather than `NOT NULL DEFAULT ''`: "this version predates naming" is
+	// a real state, and the read path renders it already — `ruleName()` falls back
+	// to a de-slugged id. A blank string would be indistinguishable from a name the
+	// couple typed and then cleared.
+	//
+	// The backfill covers only *custom* rules, seeding each from its de-slugged id
+	// (`custom-late-check-in` → "late check in"). That is the display strategy #150
+	// rejected, and it is still right as a one-time seed: what it writes is an
+	// ordinary name the couple can correct, where a permanent de-slug-on-read could
+	// never be corrected, because the id it derives from is immutable by design.
+	//
+	// Pack rules are deliberately left null. Only the shipped pack knows that R7 is
+	// "Infraction resets the clock", so `ensureRulePackSeeded` fills those from
+	// `rules.json` — rather than this file freezing a copy of the pack's names that
+	// would then quietly diverge from it, since a rename does not reconcile.
+	[
+		`ALTER TABLE rule_versions ADD COLUMN name TEXT`,
+		`UPDATE rule_versions
+			SET name = REPLACE(REPLACE(
+				CASE WHEN rule_id LIKE 'custom-%' THEN SUBSTR(rule_id, 8) ELSE rule_id END,
+				'-', ' '), '_', ' ')
+			WHERE rule_id NOT GLOB 'R[0-9]*'`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

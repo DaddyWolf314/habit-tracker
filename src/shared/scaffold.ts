@@ -74,6 +74,9 @@ export function scaffoldPlan({
 		},
 		rule: {
 			id: `track_${agreementId}`,
+			// Named from the term for the same reason the counters are (#150): the id
+			// is a ULID, and "Edit track_01J8…" is what #150 was filed about.
+			name: `Track ${name}`,
 			enabled: true,
 			condition: { type: eventTypeId, metadata: { [refKey]: agreementId } },
 			effects: [{ verb: "increment_counter", counter: counterId, by: 1 }],
