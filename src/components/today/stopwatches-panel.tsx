@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { logEvent } from "#/lib/api.ts";
@@ -183,6 +183,7 @@ function StartForm({
 	subjectId: string;
 	onStarted: () => void;
 }) {
+	const activityId = useId();
 	const [activity, setActivity] = useState<Activity>(ACTIVITY_OPTIONS[0]);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -209,9 +210,11 @@ function StartForm({
 	return (
 		<div className="mt-3 flex flex-wrap items-end gap-2 rounded-md border bg-muted/30 p-3">
 			<div className="flex-1">
-				{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-				<label className="text-xs text-muted-foreground">Activity</label>
+				<label htmlFor={activityId} className="text-xs text-muted-foreground">
+					Activity
+				</label>
 				<select
+					id={activityId}
 					className={`${fieldClass} mt-1`}
 					value={activity}
 					onChange={(e) => setActivity(e.target.value as Activity)}

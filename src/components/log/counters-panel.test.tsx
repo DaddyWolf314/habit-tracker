@@ -120,3 +120,64 @@ describe("counter delete confirmation", () => {
 		expect(vi.mocked(deleteCounter)).toHaveBeenCalledWith("chores");
 	});
 });
+
+/**
+ * Valence reaches a reader who can't see the tint (#148). The row is dense
+ * enough that the cue has to be SR-only text rather than a glyph, so the test
+ * asserts the text is present and adjacent to the value it qualifies.
+ */
+describe("counter valence without color", () => {
+	afterEach(cleanup);
+
+	it("names the valence next to the value", () => {
+		renderPanel([
+			counter({ id: "kept", name: "Kept", valence: "positive", value: 7 }),
+			counter({ id: "missed", name: "Missed", valence: "negative", value: 2 }),
+			counter({ id: "chores", name: "Chores", valence: "neutral", value: 42 }),
+		]);
+		expect(screen.getByText("7").textContent).toBe("7positive counter");
+		expect(screen.getByText("2").textContent).toBe("2negative counter");
+		expect(screen.getByText("42").textContent).toBe("42neutral counter");
+	});
+});
+
+/**
+ * The creator's pickers are Radix triggers — buttons, not form controls, so no
+ * label can point at them with `htmlFor` (#148). They name the caption *and*
+ * themselves, so the value they hold stays part of what is read back.
+ */
+describe("the counter creator's controls are named", () => {
+	afterEach(cleanup);
+
+	it("names each picker by its caption and its current value", () => {
+		renderPanel([]);
+		click("New counter");
+		const kind = screen.getByRole("combobox", { name: "Type" });
+		const valence = screen.getByRole("combobox", { name: "Valence" });
+		// The caption is only half of it: each trigger also lists *itself*, which is
+		// what keeps the chosen value in the announced name. `dom-accessibility-api`
+		// drops a self-reference (it treats the traversal root as already visited)
+		// and so computes the caption alone, hence asserting the wiring here rather
+		// than a name a real screen reader would read as "Type, Tally".
+		expect(kind.getAttribute("aria-labelledby")).toContain(
+			kind.getAttribute("id"),
+		);
+		expect(valence.getAttribute("aria-labelledby")).toContain(
+			valence.getAttribute("id"),
+		);
+	});
+
+	it("gives the targets and the name field a label of their own", () => {
+		renderPanel([]);
+		click("New counter");
+		expect(
+			screen.getByRole("textbox", { name: "Counter name" }),
+		).not.toBeNull();
+		expect(
+			screen.getByRole("spinbutton", { name: "Daily target" }),
+		).not.toBeNull();
+		expect(
+			screen.getByRole("spinbutton", { name: "Weekly target" }),
+		).not.toBeNull();
+	});
+});

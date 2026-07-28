@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { CountersPanel } from "#/components/log/counters-panel.tsx";
 import { EventStream } from "#/components/log/event-stream.tsx";
 import { LogComposer } from "#/components/log/log-composer.tsx";
@@ -255,16 +255,29 @@ function CountersSummary({
 	onChange: () => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const panelId = useId();
 
+	// The two states are separate elements, so both carry `aria-expanded` — a
+	// screen reader meets whichever one is on screen, and each has to say which
+	// state it is in (#148). Only the expanded one names the region: the panel
+	// isn't rendered while collapsed, so an `aria-controls` there would dangle.
 	if (open) {
 		return (
 			<div className="space-y-2">
 				<div className="flex justify-end">
-					<Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+					<Button
+						variant="ghost"
+						size="sm"
+						aria-expanded={true}
+						aria-controls={panelId}
+						onClick={() => setOpen(false)}
+					>
 						Collapse counters
 					</Button>
 				</div>
-				<CountersPanel counters={counters} onChange={onChange} />
+				<div id={panelId}>
+					<CountersPanel counters={counters} onChange={onChange} />
+				</div>
 			</div>
 		);
 	}
@@ -272,6 +285,7 @@ function CountersSummary({
 	return (
 		<button
 			type="button"
+			aria-expanded={false}
 			onClick={() => setOpen(true)}
 			className="flex w-full items-center justify-between gap-3 rounded-lg border p-4 text-left hover:bg-accent/50"
 		>

@@ -18,10 +18,13 @@ import type { Visibility } from "#/shared/roles.ts";
  * component has no business making.
  */
 export function VisibilitySelect({
+	id,
 	className,
 	value,
 	onChange,
 }: {
+	/** Forwarded so the caller's label can name it explicitly (#148). */
+	id?: string;
 	className?: string;
 	/** `""` is "not yet chosen" — never a level, and never submittable. */
 	value: Visibility | "";
@@ -29,6 +32,7 @@ export function VisibilitySelect({
 }) {
 	return (
 		<select
+			id={id}
 			className={className}
 			value={value}
 			onChange={(e) => onChange(e.target.value as Visibility | "")}

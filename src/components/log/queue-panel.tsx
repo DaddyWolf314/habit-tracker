@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -110,6 +110,8 @@ function QueueItem({
 	// version that won't actually govern the ruling.
 	const rulesInForce = rulesEffectiveAt(rules, event.logged_at);
 	const [values, setValues] = useState<Record<string, string>>({});
+	// One of these per queued event, so the id has to be per-instance (#148).
+	const noteId = useId();
 	const [note, setNote] = useState("");
 	const [stage, setStage] = useState<"edit" | "confirm">("edit");
 	const [busy, setBusy] = useState(false);
@@ -260,10 +262,11 @@ function QueueItem({
 						/>
 					))}
 					<div>
-						<span className="text-xs text-muted-foreground">
+						<label htmlFor={noteId} className="text-xs text-muted-foreground">
 							Note (optional)
-						</span>
+						</label>
 						<Textarea
+							id={noteId}
 							className="mt-1"
 							value={note}
 							onChange={(e) => setNote(e.target.value)}
@@ -328,6 +331,7 @@ function RulingInput({
 	value: string;
 	onChange: (value: string) => void;
 }) {
+	const inputId = useId();
 	const label = (
 		<span className="text-xs font-medium">Rule on: {field.label}</span>
 	);
@@ -354,10 +358,16 @@ function RulingInput({
 		);
 	}
 
+	// A real label here, where the control is an input the caption is the only
+	// name for; the branch above captions a pair of buttons that already name
+	// themselves (#148).
 	return (
 		<div>
-			{label}
+			<label htmlFor={inputId} className="text-xs font-medium">
+				Rule on: {field.label}
+			</label>
 			<input
+				id={inputId}
 				className={`${fieldClass} mt-1`}
 				type={field.kind === "number" ? "number" : "text"}
 				min={field.kind === "number" ? field.min : undefined}

@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -195,35 +195,43 @@ export function LogComposer({
 	return (
 		<div className="space-y-3">
 			<Field label="Type">
-				<select
-					className={`${fieldClass} mt-1`}
-					value={typeId}
-					onChange={(e) => selectType(e.target.value)}
-				>
-					<option value="">Choose a type…</option>
-					{pickable.map((t) => (
-						<option key={t.id} value={t.id}>
-							{t.label}
-						</option>
-					))}
-				</select>
+				{(id) => (
+					<select
+						id={id}
+						className={`${fieldClass} mt-1`}
+						value={typeId}
+						onChange={(e) => selectType(e.target.value)}
+					>
+						<option value="">Choose a type…</option>
+						{pickable.map((t) => (
+							<option key={t.id} value={t.id}>
+								{t.label}
+							</option>
+						))}
+					</select>
+				)}
 			</Field>
 
 			{type && (
 				<div className="space-y-3">
 					<Field label={`Subject${type.subject_required ? " (required)" : ""}`}>
-						<select
-							className={`${fieldClass} mt-1`}
-							value={subject}
-							onChange={(e) => setSubject(e.target.value)}
-						>
-							<option value="">—</option>
-							{members.map((m) => (
-								<option key={m.member_id} value={m.member_id}>
-									{m.is_self ? `you (${m.role ?? "?"})` : (m.role ?? "partner")}
-								</option>
-							))}
-						</select>
+						{(id) => (
+							<select
+								id={id}
+								className={`${fieldClass} mt-1`}
+								value={subject}
+								onChange={(e) => setSubject(e.target.value)}
+							>
+								<option value="">—</option>
+								{members.map((m) => (
+									<option key={m.member_id} value={m.member_id}>
+										{m.is_self
+											? `you (${m.role ?? "?"})`
+											: (m.role ?? "partner")}
+									</option>
+								))}
+							</select>
+						)}
 					</Field>
 
 					{/* An originating ref is server-minted (ADR 0005), so it is not user
@@ -247,20 +255,26 @@ export function LogComposer({
 						))}
 
 					<Field label={type.note_prompt ?? "Note"}>
-						<Textarea
-							className="mt-1"
-							value={note}
-							onChange={(e) => setNote(e.target.value)}
-						/>
+						{(id) => (
+							<Textarea
+								id={id}
+								className="mt-1"
+								value={note}
+								onChange={(e) => setNote(e.target.value)}
+							/>
+						)}
 					</Field>
 
 					{type.journaling && (
 						<Field label={VISIBILITY_LABEL}>
-							<VisibilitySelect
-								className={`${fieldClass} mt-1`}
-								value={visibility}
-								onChange={setVisibility}
-							/>
+							{(id) => (
+								<VisibilitySelect
+									id={id}
+									className={`${fieldClass} mt-1`}
+									value={visibility}
+									onChange={setVisibility}
+								/>
+							)}
 						</Field>
 					)}
 
@@ -279,14 +293,25 @@ export function LogComposer({
  * One labelled form row. The label element wraps its control, so the caption is
  * the control's accessible name and tapping it focuses the field — the composer
  * is a phone surface, and these are the smallest targets on it.
+ *
+ * `children` is a function of the id rather than a node (#148): the wrapping
+ * alone leaves some screen readers without the name, and an explicit `htmlFor`
+ * needs an id on the control. Minting it here and handing it down means a call
+ * site cannot render a field this label doesn't actually point at.
  */
-function Field({ label, children }: { label: ReactNode; children: ReactNode }) {
+function Field({
+	label,
+	children,
+}: {
+	label: ReactNode;
+	children: (id: string) => ReactNode;
+}) {
+	const id = useId();
 	return (
 		<div>
-			{/** biome-ignore lint/a11y/noLabelWithoutControl: the control is `children` */}
-			<label className="block">
+			<label className="block" htmlFor={id}>
 				<span className={labelClass}>{label}</span>
-				{children}
+				{children(id)}
 			</label>
 		</div>
 	);
@@ -330,18 +355,21 @@ function MetadataInput({
 	if (field.kind === "ref" && field.ref_kind === "prompt") {
 		return (
 			<Field label={label}>
-				<select
-					className={`${fieldClass} mt-1`}
-					value={value}
-					onChange={(e) => onChange(e.target.value)}
-				>
-					<option value="">— (not answering a prompt)</option>
-					{openPrompts.map((p) => (
-						<option key={p.prompt_id} value={p.prompt_id}>
-							{promptOptionLabel(p)}
-						</option>
-					))}
-				</select>
+				{(id) => (
+					<select
+						id={id}
+						className={`${fieldClass} mt-1`}
+						value={value}
+						onChange={(e) => onChange(e.target.value)}
+					>
+						<option value="">— (not answering a prompt)</option>
+						{openPrompts.map((p) => (
+							<option key={p.prompt_id} value={p.prompt_id}>
+								{promptOptionLabel(p)}
+							</option>
+						))}
+					</select>
+				)}
 			</Field>
 		);
 	}
@@ -365,32 +393,38 @@ function MetadataInput({
 		const options = field.kind === "boolean" ? ["yes", "no"] : field.options;
 		return (
 			<Field label={label}>
-				<select
-					className={`${fieldClass} mt-1`}
-					value={value}
-					onChange={(e) => onChange(e.target.value)}
-				>
-					<option value="">—</option>
-					{options.map((o) => (
-						<option key={o} value={o}>
-							{o}
-						</option>
-					))}
-				</select>
+				{(id) => (
+					<select
+						id={id}
+						className={`${fieldClass} mt-1`}
+						value={value}
+						onChange={(e) => onChange(e.target.value)}
+					>
+						<option value="">—</option>
+						{options.map((o) => (
+							<option key={o} value={o}>
+								{o}
+							</option>
+						))}
+					</select>
+				)}
 			</Field>
 		);
 	}
 
 	return (
 		<Field label={label}>
-			<input
-				className={`${fieldClass} mt-1`}
-				type={field.kind === "number" ? "number" : "text"}
-				min={field.kind === "number" ? field.min : undefined}
-				max={field.kind === "number" ? field.max : undefined}
-				value={value}
-				onChange={(e) => onChange(e.target.value)}
-			/>
+			{(id) => (
+				<input
+					id={id}
+					className={`${fieldClass} mt-1`}
+					type={field.kind === "number" ? "number" : "text"}
+					min={field.kind === "number" ? field.min : undefined}
+					max={field.kind === "number" ? field.max : undefined}
+					value={value}
+					onChange={(e) => onChange(e.target.value)}
+				/>
+			)}
 		</Field>
 	);
 }
@@ -429,12 +463,15 @@ function RefPicker({
 		return (
 			<div>
 				<Field label={label}>
-					<input
-						className={`${fieldClass} mt-1`}
-						type="text"
-						value={value}
-						onChange={(e) => onChange(e.target.value)}
-					/>
+					{(id) => (
+						<input
+							id={id}
+							className={`${fieldClass} mt-1`}
+							type="text"
+							value={value}
+							onChange={(e) => onChange(e.target.value)}
+						/>
+					)}
 				</Field>
 				<Button
 					variant="ghost"
@@ -458,21 +495,24 @@ function RefPicker({
 	return (
 		<div>
 			<Field label={label}>
-				<select
-					className={`${fieldClass} mt-1`}
-					value={value}
-					onChange={(e) => onChange(e.target.value)}
-				>
-					<option value="">—</option>
-					{candidates.map((c) => (
-						<option key={c.value} value={c.value}>
-							{c.label}
-						</option>
-					))}
-					{value !== "" && !known && (
-						<option value={value}>{value} — no longer offered</option>
-					)}
-				</select>
+				{(id) => (
+					<select
+						id={id}
+						className={`${fieldClass} mt-1`}
+						value={value}
+						onChange={(e) => onChange(e.target.value)}
+					>
+						<option value="">—</option>
+						{candidates.map((c) => (
+							<option key={c.value} value={c.value}>
+								{c.label}
+							</option>
+						))}
+						{value !== "" && !known && (
+							<option value={value}>{value} — no longer offered</option>
+						)}
+					</select>
+				)}
 			</Field>
 			<Button
 				variant="ghost"

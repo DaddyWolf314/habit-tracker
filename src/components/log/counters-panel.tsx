@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
@@ -93,6 +93,11 @@ export function CountersPanel({
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [openTrace, setOpenTrace] = useState<CounterTrace | null>(null);
+	// Prefix for the creator form's field ids (#148). The Radix triggers are
+	// buttons, not form controls, so they take `aria-labelledby` over the caption
+	// *and themselves* — naming only the caption would drop the chosen value out
+	// of what a screen reader reads back.
+	const ids = useId();
 	const [creating, setCreating] = useState(false);
 	// The counter whose definition the form is editing, or null when creating a new
 	// one. The form is shared between both — edit seeds it from an existing counter.
@@ -224,6 +229,16 @@ export function CountersPanel({
 		neutral: "text-foreground",
 	};
 
+	// The tint above is the only thing carrying valence, which leaves colorblind
+	// and grayscale readers nothing (#148). Text rather than a sign or an icon:
+	// the row is dense and the glyph would have to compete with the tap targets
+	// #147 just sized, so the cue goes where it costs no pixels.
+	const valenceCue: Record<string, string> = {
+		positive: "positive counter",
+		negative: "negative counter",
+		neutral: "neutral counter",
+	};
+
 	return (
 		<section className="rounded-lg border p-4">
 			<div className="flex items-center justify-between">
@@ -240,18 +255,24 @@ export function CountersPanel({
 			{creating && (
 				<div className="mt-3 space-y-2">
 					<Input
+						aria-label="Counter name"
 						placeholder="Counter name"
 						value={name}
 						onChange={(e) => setName(e.target.value)}
 					/>
 					<div className="flex flex-wrap gap-2">
 						<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-							<span>Type</span>
+							<span id={`${ids}-kind-label`}>Type</span>
 							<Select
 								value={kind}
 								onValueChange={(v) => setKind(v as CounterKind)}
 							>
-								<SelectTrigger size="sm" className="w-44">
+								<SelectTrigger
+									size="sm"
+									id={`${ids}-kind`}
+									aria-labelledby={`${ids}-kind-label ${ids}-kind`}
+									className="w-44"
+								>
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
@@ -261,12 +282,17 @@ export function CountersPanel({
 							</Select>
 						</div>
 						<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-							<span>Valence</span>
+							<span id={`${ids}-valence-label`}>Valence</span>
 							<Select
 								value={valence}
 								onValueChange={(v) => setValence(v as Valence)}
 							>
-								<SelectTrigger size="sm" className="w-44">
+								<SelectTrigger
+									size="sm"
+									id={`${ids}-valence`}
+									aria-labelledby={`${ids}-valence-label ${ids}-valence`}
+									className="w-44"
+								>
 									<SelectValue />
 								</SelectTrigger>
 								<SelectContent>
@@ -283,12 +309,17 @@ export function CountersPanel({
 					{kind === "tally" ? (
 						<div className="flex flex-wrap gap-2">
 							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-								<span>Resets</span>
+								<span id={`${ids}-reset-label`}>Resets</span>
 								<Select
 									value={reset}
 									onValueChange={(v) => setReset(v as CounterReset)}
 								>
-									<SelectTrigger size="sm" className="w-44">
+									<SelectTrigger
+										size="sm"
+										id={`${ids}-reset`}
+										aria-labelledby={`${ids}-reset-label ${ids}-reset`}
+										className="w-44"
+									>
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
@@ -301,8 +332,9 @@ export function CountersPanel({
 								</Select>
 							</div>
 							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-								<span>Daily target</span>
+								<label htmlFor={`${ids}-daily`}>Daily target</label>
 								<Input
+									id={`${ids}-daily`}
 									type="number"
 									min="1"
 									placeholder="none"
@@ -312,8 +344,9 @@ export function CountersPanel({
 								/>
 							</div>
 							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-								<span>Weekly target</span>
+								<label htmlFor={`${ids}-weekly`}>Weekly target</label>
 								<Input
+									id={`${ids}-weekly`}
 									type="number"
 									min="1"
 									placeholder="none"
@@ -326,9 +359,14 @@ export function CountersPanel({
 					) : (
 						<div className="flex flex-wrap gap-2">
 							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-								<span>Tracks</span>
+								<span id={`${ids}-tracks-label`}>Tracks</span>
 								<Select value={streakCounter} onValueChange={setStreakCounter}>
-									<SelectTrigger size="sm" className="w-56">
+									<SelectTrigger
+										size="sm"
+										id={`${ids}-tracks`}
+										aria-labelledby={`${ids}-tracks-label ${ids}-tracks`}
+										className="w-56"
+									>
 										<SelectValue placeholder="Choose a counter…" />
 									</SelectTrigger>
 									<SelectContent>
@@ -346,7 +384,7 @@ export function CountersPanel({
 								</Select>
 							</div>
 							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
-								<span>Period</span>
+								<span id={`${ids}-period-label`}>Period</span>
 								<Select
 									value={streakPeriod}
 									onValueChange={(v) => {
@@ -355,7 +393,12 @@ export function CountersPanel({
 										setStreakCounter("");
 									}}
 								>
-									<SelectTrigger size="sm" className="w-32">
+									<SelectTrigger
+										size="sm"
+										id={`${ids}-period`}
+										aria-labelledby={`${ids}-period-label ${ids}-period`}
+										className="w-32"
+									>
 										<SelectValue />
 									</SelectTrigger>
 									<SelectContent>
@@ -417,6 +460,9 @@ export function CountersPanel({
 							className={`w-10 text-right text-lg font-semibold tabular-nums ${valenceTint[counter.valence] ?? ""}`}
 						>
 							{counter.value}
+							<span className="sr-only">
+								{valenceCue[counter.valence] ?? ""}
+							</span>
 						</span>
 						<div className="flex flex-wrap justify-end gap-1">
 							<Button

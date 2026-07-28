@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
@@ -187,6 +187,9 @@ function RuleCard({
 }) {
 	const [busy, setBusy] = useState(false);
 	const [showHistory, setShowHistory] = useState(false);
+	// Per-rule: every rule renders one of these, so `aria-controls` has to name
+	// this rule's revision list rather than some other rule's (#148).
+	const historyId = useId();
 	// Removing a rule is irreversible and has no undo surface, so it takes the
 	// house two-tap inline confirm (dissolve, retraction, counter delete) rather
 	// than a browser dialog, which would block the whole surface.
@@ -233,6 +236,8 @@ function RuleCard({
 				<button
 					type="button"
 					className="underline text-muted-foreground"
+					aria-expanded={showHistory}
+					aria-controls={historyId}
 					onClick={() => setShowHistory((s) => !s)}
 				>
 					{rule.versions.length} revision{rule.versions.length === 1 ? "" : "s"}
@@ -294,7 +299,10 @@ function RuleCard({
 			</div>
 
 			{showHistory && (
-				<ol className="mt-3 space-y-1 border-t pt-3 text-xs text-muted-foreground">
+				<ol
+					id={historyId}
+					className="mt-3 space-y-1 border-t pt-3 text-xs text-muted-foreground"
+				>
 					{[...rule.versions]
 						.sort((a, b) => a.effective_from - b.effective_from)
 						.map((v) => {
@@ -393,6 +401,9 @@ function RuleEditor({
 		[types],
 	);
 	const seed = existing ? latestVersion(existing) : null;
+	// Prefix for this editor's field ids, so the labels below can name their
+	// controls explicitly (#148).
+	const ids = useId();
 	const [name, setName] = useState("");
 	const [typeId, setTypeId] = useState(seed?.condition.type ?? "");
 	// Subject-role qualifier (ADR 0003): "" means unqualified — the rule matches
@@ -581,8 +592,14 @@ function RuleEditor({
 
 			{!existing && (
 				<div className="mt-3">
-					<span className="text-xs text-muted-foreground">Short name</span>
+					<label
+						htmlFor={`${ids}-name`}
+						className="text-xs text-muted-foreground"
+					>
+						Short name
+					</label>
 					<input
+						id={`${ids}-name`}
 						className={`${fieldClass} mt-1`}
 						value={name}
 						placeholder="e.g. late check-in demerit"
@@ -592,8 +609,14 @@ function RuleEditor({
 			)}
 
 			<div className="mt-3">
-				<span className="text-xs text-muted-foreground">When this happens</span>
+				<label
+					htmlFor={`${ids}-type`}
+					className="text-xs text-muted-foreground"
+				>
+					When this happens
+				</label>
 				<select
+					id={`${ids}-type`}
 					className={`${fieldClass} mt-1`}
 					value={typeId}
 					onChange={(e) => {
@@ -612,11 +635,14 @@ function RuleEditor({
 
 			{type && (
 				<div className="mt-3">
-					{/** biome-ignore lint/a11y/noLabelWithoutControl: label wraps the select */}
-					<label className="text-xs text-muted-foreground">
+					<label
+						htmlFor={`${ids}-subject-role`}
+						className="text-xs text-muted-foreground"
+					>
 						About… (optional — whose event this rule watches)
 					</label>
 					<select
+						id={`${ids}-subject-role`}
 						className={`${fieldClass} mt-1`}
 						value={subjectRole}
 						// The options below are exactly the Role enum plus "" — the only
@@ -631,17 +657,22 @@ function RuleEditor({
 				</div>
 			)}
 
+			{/* A fieldset, because the caption is over repeating rows rather than one
+			    control (#148): the legend names the group, and each row's own controls
+			    carry their own names below — a visible per-row label would re-flow a
+			    deliberately dense row. */}
 			{type && (
-				<div className="mt-3 space-y-2">
-					<span className="text-xs text-muted-foreground">
+				<fieldset className="mt-3 space-y-2">
+					<legend className="text-xs text-muted-foreground">
 						Only when… (optional conditions)
-					</span>
+					</legend>
 					{conditions.map((cond, i) => {
 						const field = cond.key ? type.metadata[cond.key] : undefined;
 						return (
 							// biome-ignore lint/suspicious/noArrayIndexKey: draft rows are positional
 							<div key={i} className="flex items-center gap-2">
 								<select
+									aria-label={`Condition ${i + 1} key`}
 									className={fieldClass}
 									value={cond.key}
 									onChange={(e) =>
@@ -661,6 +692,7 @@ function RuleEditor({
 								</select>
 								<span className="text-muted-foreground">is</span>
 								<ConditionValue
+									label={`Condition ${i + 1} value`}
 									field={field}
 									value={cond.value}
 									agreements={agreements}
@@ -693,15 +725,16 @@ function RuleEditor({
 							Add condition
 						</Button>
 					)}
-				</div>
+				</fieldset>
 			)}
 
-			<div className="mt-4 space-y-2">
-				<span className="text-xs text-muted-foreground">Then do this</span>
+			<fieldset className="mt-4 space-y-2">
+				<legend className="text-xs text-muted-foreground">Then do this</legend>
 				{effects.map((eff, i) => (
 					// biome-ignore lint/suspicious/noArrayIndexKey: draft rows are positional
 					<div key={i} className="flex flex-wrap items-center gap-2">
 						<select
+							aria-label={`Effect ${i + 1}`}
 							className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 							value={eff.verb}
 							onChange={(e) =>
@@ -719,6 +752,7 @@ function RuleEditor({
 							))}
 						</select>
 						<EffectTarget
+							label={`Effect ${i + 1} target`}
 							draft={eff}
 							counters={counters}
 							onChange={(patch) =>
@@ -745,7 +779,7 @@ function RuleEditor({
 				>
 					Add effect
 				</Button>
-			</div>
+			</fieldset>
 
 			{previewWhen && (
 				<p className="mt-4 rounded-md bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">
@@ -769,11 +803,15 @@ function RuleEditor({
 
 /** The value input for a condition, driven by the chosen field's kind. */
 function ConditionValue({
+	label,
 	field,
 	value,
 	agreements,
 	onChange,
 }: {
+	/** Accessible name for whichever control this renders — the row's caption
+	    names the group, not the individual field (#148). */
+	label: string;
 	field: EventType["metadata"][string] | undefined;
 	value: string;
 	/** The corpus, so a condition on a citing ref is a pick (#121, ADR 0006). */
@@ -793,6 +831,7 @@ function ConditionValue({
 		const known = offered.some((a) => a.id === value);
 		return (
 			<select
+				aria-label={label}
 				className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
@@ -815,6 +854,7 @@ function ConditionValue({
 	if (field?.kind === "boolean") {
 		return (
 			<select
+				aria-label={label}
 				className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
@@ -828,6 +868,7 @@ function ConditionValue({
 	if (field?.kind === "enum") {
 		return (
 			<select
+				aria-label={label}
 				className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
@@ -843,6 +884,7 @@ function ConditionValue({
 	}
 	return (
 		<input
+			aria-label={label}
 			className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 			type={field?.kind === "number" ? "number" : "text"}
 			value={value}
@@ -853,10 +895,13 @@ function ConditionValue({
 
 /** The target picker for an effect: a counter, an anchor, an amount, or nothing. */
 function EffectTarget({
+	label,
 	draft,
 	counters,
 	onChange,
 }: {
+	/** Accessible name stem for the row's controls — see `ConditionValue` (#148). */
+	label: string;
 	draft: EffectDraft;
 	counters: Counter[];
 	onChange: (patch: Partial<EffectDraft>) => void;
@@ -865,6 +910,7 @@ function EffectTarget({
 	if (draft.verb === "reset_anchor") {
 		return (
 			<select
+				aria-label={`${label} — clock`}
 				className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 				value={draft.anchor}
 				onChange={(e) => onChange({ anchor: e.target.value })}
@@ -883,6 +929,7 @@ function EffectTarget({
 	return (
 		<>
 			<select
+				aria-label={`${label} — counter`}
 				className="rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 				value={draft.counter}
 				onChange={(e) => onChange({ counter: e.target.value })}
@@ -896,6 +943,7 @@ function EffectTarget({
 			</select>
 			{showBy && (
 				<input
+					aria-label={`${label} — amount`}
 					className="w-16 rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
 					type="number"
 					min={1}
