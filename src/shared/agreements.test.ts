@@ -6,10 +6,13 @@ import {
 	agreementEffectiveAt,
 	agreementRefKeys,
 	agreementsInForce,
+	authorsAgreement,
 	authorsKind,
 	describeCitation,
 	latestAgreementVersion,
+	mayRetireAgreement,
 	reconcileAgreementKinds,
+	subjectForNewAgreement,
 	type VersionedAgreement,
 	validateAgreementWrite,
 } from "./agreements.ts";
@@ -22,21 +25,45 @@ import {
  *  - **Resolution at `occurred_at`.** A citation reads the version in force when
  *    the act happened, not when it was logged and not what the terms became. This
  *    is deliberately a different clock from rule versions (ADR 0002, log-time).
- *  - **Authorship cannot be escalated into.** The sub alone authors limits, and
- *    neither role can reach that by editing the kind's author list or by
- *    re-kinding an entry. Structure, not policy.
+ *  - **Authorship cannot be escalated into.** A limit is its subject's alone, and
+ *    nobody can reach it by editing the kind's author list or by re-kinding an
+ *    entry. Structure, not policy. Since ADR 0010 the guarantee is per *member*
+ *    rather than per role, which is what makes it survive the couple shapes a role
+ *    list could not express — a switch+sub couple, where the switch is the dom-side
+ *    partner and used to be able to edit that sub's limits (#129).
  */
 
+/** The shipped kinds pack at v2 (ADR 0010): a role list plus an author scope. */
 const KINDS: AgreementKind[] = [
-	{ id: "protocol", label: "Protocol", author_permission: ["dom", "switch"] },
-	{ id: "ritual", label: "Ritual", author_permission: ["dom", "switch"] },
-	{ id: "limit", label: "Limit", author_permission: ["sub", "switch"] },
+	{
+		id: "protocol",
+		label: "Protocol",
+		author_permission: ["dom", "switch"],
+		author_scope: "counterpart",
+	},
+	{
+		id: "ritual",
+		label: "Ritual",
+		author_permission: ["dom", "switch"],
+		author_scope: "counterpart",
+	},
+	{
+		id: "limit",
+		label: "Limit",
+		author_permission: ["dom", "sub", "switch"],
+		author_scope: "subject",
+	},
 	{
 		id: "safeword",
 		label: "Safeword",
 		author_permission: ["dom", "sub", "switch"],
+		author_scope: "unscoped",
 	},
 ];
+
+/** The two members of a dom+sub couple, since authorship is per-member. */
+const DOM = "m_dom";
+const SUB = "m_sub";
 
 const MAR = 1_700_000_000_000;
 const JUN = MAR + 90 * 86_400_000;
@@ -47,6 +74,10 @@ function agreement(
 	return {
 		id: "ag_7f3",
 		kind: "protocol",
+		// A protocol is about the sub-side member and authored by the dom — the case
+		// that makes subject and author *different* members, and the reason a subject
+		// cannot simply replace the role list (ADR 0010).
+		subject: SUB,
 		versions: [
 			{
 				effective_from: MAR,
@@ -82,11 +113,21 @@ const ctx = (
 ) =>
 	({
 		role: "dom",
+		memberId: DOM,
+		memberIds: [DOM, SUB],
 		kinds: KINDS,
 		agreements: [agreement()],
 		cited: new Set<string>(),
 		...over,
 	}) as Parameters<typeof validateAgreementWrite>[1];
+
+/** The same context as the sub, whose limits are the thing being protected. */
+const asSub = (
+	over: Partial<Parameters<typeof validateAgreementWrite>[1]> = {},
+) => ctx({ role: "sub", memberId: SUB, ...over });
+
+/** The sub's own limit: subject-scoped, so theirs alone to move. */
+const subsLimit = agreement({ id: "ag_2c", kind: "limit", subject: SUB });
 
 describe("agreementEffectiveAt — the occurred_at clock (ADR 0006)", () => {
 	it("resolves to the version in force when the act happened", () => {
@@ -203,7 +244,7 @@ describe("authorsKind", () => {
 	});
 
 	it("is false for a role it does not", () => {
-		expect(authorsKind(KINDS, "limit", "dom")).toBe(false);
+		expect(authorsKind(KINDS, "protocol", "sub")).toBe(false);
 	});
 
 	it("is false for an unresolved role", () => {
@@ -215,15 +256,14 @@ describe("authorsKind", () => {
 		expect(authorsKind(KINDS, "nonsense", "dom")).toBe(false);
 	});
 
-	it("lets a switch author limits — a switch is partly a sub", () => {
-		// ADR 0003's dormancy was the wrong thing to inherit here. A dom/sub
-		// qualifier matching nobody is harmless for *rules* — scoring simply stops
-		// — but a `sub`-only limit kind would mean a switch/switch couple could
-		// not record a boundary at all, which is the opposite of what the kind is
-		// for. A switch holds both sides of the dynamic, so they author both.
+	it("lets anyone hold a limit, including a plain dom (ADR 0010)", () => {
+		// `limit` widened to every role, and the role list changed job with it: it
+		// says who may *have* such a term, not who may edit one. ADR 0006 kept the
+		// dom out, which meant the corpus structurally could not hold a dom's own
+		// boundary — "I won't do breath play" had nowhere to go.
+		expect(authorsKind(KINDS, "limit", "dom")).toBe(true);
+		expect(authorsKind(KINDS, "limit", "sub")).toBe(true);
 		expect(authorsKind(KINDS, "limit", "switch")).toBe(true);
-		// The property that matters is unchanged: a plain dom still cannot.
-		expect(authorsKind(KINDS, "limit", "dom")).toBe(false);
 	});
 });
 
@@ -247,27 +287,26 @@ describe("validateAgreementWrite — authorship (ADR 0006)", () => {
 	it("lets the sub write a limit", () => {
 		const r = validateAgreementWrite(
 			{ op: "create", kind: "limit", name: "n", text: "t" },
-			ctx({ role: "sub" }),
+			asSub(),
 		);
 		expect(r.ok).toBe(true);
 	});
 
 	it("refuses the dom editing the sub's limit", () => {
-		// The headline safety property. A limit binds the dom, so the person it
-		// protects is the only one who may change it.
-		const limit = agreement({ id: "ag_2c", kind: "limit" });
+		// The headline safety property, and since ADR 0010 it holds by *subject*
+		// rather than by role — so it survives the couple shapes the role list could
+		// not express, including switch+sub and switch+switch.
 		const r = validateAgreementWrite(
 			{ op: "revise", id: "ag_2c", name: "n", text: "marks are fine now" },
-			ctx({ agreements: [limit] }),
+			ctx({ agreements: [subsLimit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 	});
 
 	it("refuses the dom retiring the sub's limit", () => {
-		const limit = agreement({ id: "ag_2c", kind: "limit" });
 		const r = validateAgreementWrite(
 			{ op: "retire", id: "ag_2c" },
-			ctx({ agreements: [limit] }),
+			ctx({ agreements: [subsLimit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 	});
@@ -282,10 +321,9 @@ describe("validateAgreementWrite — authorship (ADR 0006)", () => {
 	});
 
 	it("flags a forbidden write without flagging it missing", () => {
-		const limit = agreement({ id: "ag_2c", kind: "limit" });
 		const r = validateAgreementWrite(
 			{ op: "retire", id: "ag_2c" },
-			ctx({ agreements: [limit] }),
+			ctx({ agreements: [subsLimit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 		expect(r.ok === false && r.not_found).toBeFalsy();
@@ -293,20 +331,39 @@ describe("validateAgreementWrite — authorship (ADR 0006)", () => {
 });
 
 describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () => {
-	it("refuses the dom adding themselves to the limit kind's authors", () => {
-		// Closing the loop above: without this the dom simply edits the layer
-		// above the limit and then edits the limit.
+	it("refuses editing the authors of a kind you don't hold", () => {
+		// The kind-side guard still stands where the role list still gates: a sub
+		// cannot reach into `protocol`.
 		const r = validateAgreementWrite(
-			{ op: "edit_kind", id: "limit", author_permission: ["sub", "dom"] },
-			ctx(),
+			{ op: "edit_kind", id: "protocol", author_permission: ["dom", "sub"] },
+			asSub(),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 	});
 
-	it("lets the sub edit the limit kind they already author", () => {
+	it("gains nothing from widening a role list (ADR 0010)", () => {
+		// The old invariant was "you cannot grant yourself authorship you don't
+		// hold", and it was load-bearing because the role list *was* authorship.
+		// Since the scope decides per entry, the list can be widened freely and the
+		// sub's limits stay theirs — the dom is legitimately in `limit`'s list here
+		// and still cannot touch this one.
+		const wide: AgreementKind[] = KINDS.map((k) =>
+			k.id === "limit"
+				? { ...k, author_permission: ["dom", "sub", "switch"] }
+				: k,
+		);
+		expect(authorsKind(wide, "limit", "dom")).toBe(true);
+		const r = validateAgreementWrite(
+			{ op: "revise", id: "ag_2c", name: "n", text: "marks are fine now" },
+			ctx({ kinds: wide, agreements: [subsLimit] }),
+		);
+		expect(r).toMatchObject({ ok: false, forbidden: true });
+	});
+
+	it("lets the sub edit the limit kind they already hold", () => {
 		const r = validateAgreementWrite(
 			{ op: "edit_kind", id: "limit", author_permission: ["sub", "switch"] },
-			ctx({ role: "sub" }),
+			asSub(),
 		);
 		expect(r.ok).toBe(true);
 	});
@@ -322,12 +379,13 @@ describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () =>
 	});
 
 	it("refuses the sub re-kinding their limit into a protocol", () => {
-		// And the mirror: you must author both sides of the move, so neither role
-		// can push an entry into the other's category either.
-		const limit = agreement({ id: "ag_2c", kind: "limit" });
+		// ADR 0010's stated dead path: `subject` → `counterpart` is reachable by
+		// nobody. The sub authors the source *because* they are the subject, and the
+		// target excludes the subject by construction, so a boundary can never be
+		// converted into an obligation.
 		const r = validateAgreementWrite(
 			{ op: "rekind", id: "ag_2c", kind: "protocol" },
-			ctx({ role: "sub", agreements: [limit] }),
+			asSub({ agreements: [subsLimit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 	});
@@ -366,10 +424,9 @@ describe("validateAgreementWrite — delete legality (ADR 0002 parity)", () => {
 	});
 
 	it("still refuses a delete the actor may not author", () => {
-		const limit = agreement({ id: "ag_2c", kind: "limit" });
 		const r = validateAgreementWrite(
 			{ op: "delete", id: "ag_2c" },
-			ctx({ agreements: [limit] }),
+			ctx({ agreements: [subsLimit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 	});
@@ -588,6 +645,7 @@ describe("reconcileAgreementKinds", () => {
 		id: "limit",
 		label: "Limit",
 		author_permission: ["sub", "switch"],
+		author_scope: "subject",
 	};
 
 	it("installs a kind the couple doesn't have yet", () => {
@@ -672,11 +730,197 @@ describe("reconcileAgreementKinds", () => {
 			[packLimit],
 			[
 				{ ...packLimit, adopted: false },
-				{ id: "aftercare", label: "Aftercare", author_permission: ["dom"] },
+				{
+					id: "aftercare",
+					label: "Aftercare",
+					author_permission: ["dom"],
+					author_scope: "unscoped",
+				},
 			],
 		);
 		expect(result.added).toEqual([]);
 		expect(result.upserted).toEqual([]);
 		expect(result.skipped).toEqual([]);
+	});
+});
+
+/**
+ * Per-entry authorship (#160, ADR 0010) — the fix for #129.
+ *
+ * These are the cases a role list provably could not express. The predicate that
+ * broke it was "does this kind's author list resolve to more than one member",
+ * and the shipped pack hit that in two opposite directions, so both are pinned
+ * here by couple shape rather than by role alone.
+ */
+describe("authorsAgreement — by member, not by role", () => {
+	const SWITCH = "m_switch";
+	const OTHER_SWITCH = "m_switch_b";
+
+	it("keeps a limit with its subject", () => {
+		expect(authorsAgreement(KINDS, subsLimit, SUB, "sub")).toBe(true);
+		expect(authorsAgreement(KINDS, subsLimit, DOM, "dom")).toBe(false);
+	});
+
+	it("keeps the switch out of the sub's limits in a switch+sub couple", () => {
+		// #129's headline. The switch is the dom-side partner here and is in
+		// `limit`'s role list, so before ADR 0010 this was allowed — the one couple
+		// shape where the gate that exists to prevent exactly this did nothing.
+		expect(authorsAgreement(KINDS, subsLimit, SWITCH, "switch")).toBe(false);
+	});
+
+	it("keeps each switch out of the other's limits in a switch+switch couple", () => {
+		// ADR 0006's table read this shape as benign ("limits: both", meaning each
+		// records their own). It is the same defect: either could move the other's.
+		const mine = agreement({ id: "ag_s", kind: "limit", subject: SWITCH });
+		expect(authorsAgreement(KINDS, mine, SWITCH, "switch")).toBe(true);
+		expect(authorsAgreement(KINDS, mine, OTHER_SWITCH, "switch")).toBe(false);
+	});
+
+	it("lets a dom hold a limit of their own", () => {
+		// The mirror gap: `limit` excluded `dom`, so a dom's boundary had nowhere to
+		// live. Now it is theirs, and the sub cannot move it either.
+		const domsLimit = agreement({ id: "ag_d", kind: "limit", subject: DOM });
+		expect(authorsAgreement(KINDS, domsLimit, DOM, "dom")).toBe(true);
+		expect(authorsAgreement(KINDS, domsLimit, SUB, "sub")).toBe(false);
+	});
+
+	it("stops the bound party rewriting their own protocol", () => {
+		// The second hole, never traced by ADR 0006: `protocol` is `[dom, switch]`,
+		// so in a dom+switch couple the switch — the sub-side partner — could revise
+		// the obligations binding themselves.
+		const aboutTheSwitch = agreement({ id: "ag_p", subject: SWITCH });
+		expect(authorsAgreement(KINDS, aboutTheSwitch, SWITCH, "switch")).toBe(
+			false,
+		);
+		expect(authorsAgreement(KINDS, aboutTheSwitch, DOM, "dom")).toBe(true);
+	});
+
+	it("still needs the role list for a counterpart kind", () => {
+		// The scope narrows the list; it does not replace it. A sub is not in
+		// `protocol`'s list, so not being its subject is not enough.
+		const aboutTheSwitch = agreement({ id: "ag_p", subject: SWITCH });
+		expect(authorsAgreement(KINDS, aboutTheSwitch, SUB, "sub")).toBe(false);
+	});
+
+	it("falls back to the role list for an unscoped kind", () => {
+		// A safeword is the couple's shared record, deliberately either-authored —
+		// exactly the pre-ADR-0010 behaviour, kept where it was always right.
+		const safeword = agreement({ id: "ag_sw", kind: "safeword" });
+		expect(
+			authorsAgreement(KINDS, { ...safeword, subject: undefined }, DOM, "dom"),
+		).toBe(true);
+		expect(
+			authorsAgreement(KINDS, { ...safeword, subject: undefined }, SUB, "sub"),
+		).toBe(true);
+	});
+
+	it("gives a scoped entry with no subject to nobody", () => {
+		const orphan = agreement({ id: "ag_o", kind: "limit", subject: undefined });
+		expect(authorsAgreement(KINDS, orphan, SUB, "sub")).toBe(false);
+		expect(authorsAgreement(KINDS, orphan, DOM, "dom")).toBe(false);
+	});
+
+	it("authors nothing for a kind the couple doesn't hold", () => {
+		expect(
+			authorsAgreement(KINDS, { kind: "invented", subject: SUB }, SUB, "sub"),
+		).toBe(false);
+	});
+});
+
+describe("mayRetireAgreement — the subjectless escape", () => {
+	it("lets the role list retire a scoped entry with no subject", () => {
+		// Every other op is author-gated, so without this such an entry would be
+		// permanently in force: unrevisable, unretirable, undeletable.
+		const orphan = agreement({ id: "ag_o", kind: "limit", subject: undefined });
+		expect(mayRetireAgreement(KINDS, orphan, SUB, "sub")).toBe(true);
+		expect(authorsAgreement(KINDS, orphan, SUB, "sub")).toBe(false);
+	});
+
+	it("does not widen retirement for an entry that has a subject", () => {
+		expect(mayRetireAgreement(KINDS, subsLimit, DOM, "dom")).toBe(false);
+		expect(mayRetireAgreement(KINDS, subsLimit, SUB, "sub")).toBe(true);
+	});
+
+	it("still refuses someone outside the role list entirely", () => {
+		const orphan = agreement({ id: "ag_o", subject: undefined });
+		expect(mayRetireAgreement(KINDS, orphan, SUB, "sub")).toBe(false);
+	});
+});
+
+describe("subjectForNewAgreement — derived, never asked", () => {
+	it("gives a subject-scoped term to its author", () => {
+		expect(subjectForNewAgreement("subject", SUB, [DOM, SUB])).toBe(SUB);
+	});
+
+	it("gives a counterpart-scoped term to the other member", () => {
+		expect(subjectForNewAgreement("counterpart", DOM, [DOM, SUB])).toBe(SUB);
+	});
+
+	it("gives an unscoped term no subject at all", () => {
+		expect(subjectForNewAgreement("unscoped", DOM, [DOM, SUB])).toBeUndefined();
+	});
+
+	it("has no counterpart to name in a couple of one", () => {
+		expect(subjectForNewAgreement("counterpart", DOM, [DOM])).toBeUndefined();
+	});
+});
+
+describe("validateAgreementWrite — subject and scope (ADR 0010)", () => {
+	it("refuses a counterpart-scoped create with nobody to be about", () => {
+		// Storing it would mean an entry authored by nobody from the moment it
+		// existed, which is the bricking the model refuses to have.
+		const r = validateAgreementWrite(
+			{ op: "create", kind: "protocol", name: "n", text: "t" },
+			ctx({ memberIds: [DOM] }),
+		);
+		expect(r.ok).toBe(false);
+	});
+
+	it("lets the subject revise their own limit", () => {
+		const r = validateAgreementWrite(
+			{ op: "revise", id: "ag_2c", name: "n", text: "still no marks" },
+			asSub({ agreements: [subsLimit] }),
+		);
+		expect(r.ok).toBe(true);
+	});
+
+	it("lets a subjectless scoped entry be retired but not revised", () => {
+		const orphan = agreement({ id: "ag_o", kind: "limit", subject: undefined });
+		expect(
+			validateAgreementWrite(
+				{ op: "retire", id: "ag_o" },
+				asSub({ agreements: [orphan] }),
+			).ok,
+		).toBe(true);
+		const revised = validateAgreementWrite(
+			{ op: "revise", id: "ag_o", name: "n", text: "t" },
+			asSub({ agreements: [orphan] }),
+		);
+		expect(revised).toMatchObject({ ok: false, forbidden: true });
+	});
+
+	it("blocks a re-kind from an unscoped kind into a scoped one", () => {
+		// ADR 0010's other stated dead path. The entry has no subject, and inventing
+		// one here would retroactively decide whose term it always was.
+		const safeword = agreement({
+			id: "ag_sw",
+			kind: "safeword",
+			subject: undefined,
+		});
+		const r = validateAgreementWrite(
+			{ op: "rekind", id: "ag_sw", kind: "limit" },
+			asSub({ agreements: [safeword] }),
+		);
+		expect(r.ok).toBe(false);
+	});
+
+	it("allows a re-kind into an unscoped kind, which is a self-downgrade", () => {
+		// The subject's own call to make: moving their limit into `safeword` lets
+		// their partner edit it too. Visible in the audit log, and theirs to choose.
+		const r = validateAgreementWrite(
+			{ op: "rekind", id: "ag_2c", kind: "safeword" },
+			asSub({ agreements: [subsLimit] }),
+		);
+		expect(r.ok).toBe(true);
 	});
 });

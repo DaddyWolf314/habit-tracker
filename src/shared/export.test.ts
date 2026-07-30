@@ -333,15 +333,26 @@ describe("agreementVersionToExportRow (#121, ADR 0006)", () => {
 	};
 
 	it("carries every field of a version", () => {
-		expect(agreementVersionToExportRow("ag_1", "protocol", version)).toEqual({
+		expect(
+			agreementVersionToExportRow("ag_1", "protocol", version, "m_sub"),
+		).toEqual({
 			agreement_id: "ag_1",
 			kind: "protocol",
+			subject: "m_sub",
 			effective_from: 1_700_000_000_000,
 			name: "text me when you land",
 			text: "Text me when you land.",
 			review_cadence_days: 90,
 			retired: false,
 		});
+	});
+
+	it("maps an absent subject to null, never undefined", () => {
+		// An `unscoped` kind has no subject to name (ADR 0010), and an export row is
+		// a flat record — the same null-not-undefined discipline the cadence gets.
+		expect(
+			agreementVersionToExportRow("ag_1", "safeword", version).subject,
+		).toBeNull();
 	});
 
 	it("maps an absent cadence to null, never undefined", () => {
@@ -376,12 +387,14 @@ describe("agreementKindToExportRow", () => {
 			agreementKindToExportRow({
 				id: "limit",
 				label: "Limit",
-				author_permission: ["sub", "switch"],
+				author_permission: ["dom", "sub", "switch"],
+				author_scope: "subject",
 			}),
 		).toEqual({
 			id: "limit",
 			label: "Limit",
-			author_permission: '["sub","switch"]',
+			author_permission: '["dom","sub","switch"]',
+			author_scope: "subject",
 		});
 	});
 });

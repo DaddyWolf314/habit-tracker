@@ -44,24 +44,51 @@ export const agreementVersionSchema = z.object({
 export type AgreementVersion = z.infer<typeof agreementVersionSchema>;
 
 /**
- * A per-couple kind, shaped like an event type: a label plus the roles that may
- * author entries of it. `author_permission` is what makes "the dom does not write
- * the sub's limits" structural, and {@link validateAgreementWrite} guards the
- * layer above it.
+ * How a kind narrows authorship from its role list to a **member** (ADR 0010).
  *
- * A `switch` authors both sides, sub-side kinds included: they hold both halves
- * of the dynamic, and a `sub`-only limit kind would leave a switch/switch couple
- * unable to record a boundary at all. Known consequence, stated here because it
- * is easier to meet as a decision than to discover: authorship is **by role, not
- * by member**, so in a `switch`+`sub` couple the switch — the dom-side partner
- * there — can edit that sub's limits. Closing that means scoping a limit to the
- * member it protects rather than to a role, which is a model change, not a
- * permission tweak.
+ * A role list alone provably cannot express what the corpus needs. Its predicate
+ * is "does this kind's author list resolve to more than one member", and the
+ * seeds hit that in two opposite ways: `limit` (`[sub, switch]`) let either
+ * partner move the other's boundary in a switch+sub *and* a switch+switch couple,
+ * while `protocol` (`[dom, switch]`) let the switch in a dom+switch couple
+ * rewrite the obligations binding themselves.
+ *
+ *  - `subject` — only the member it is **about** may move it. A limit: "no marks
+ *    above the collar" is a fact about one person's body, so subject and author
+ *    are always the same member.
+ *  - `counterpart` — anyone in the role list **except** that member. A protocol is
+ *    about the sub and authored by the dom, so the bound party must not be able
+ *    to rewrite their own terms.
+ *  - `unscoped` — the role list alone, subject absent. A safeword: the couple's
+ *    written record of a shared system, deliberately either-authored.
+ */
+export const authorScopeSchema = z
+	.enum(["subject", "counterpart", "unscoped"])
+	.default("unscoped");
+export type AuthorScope = z.infer<typeof authorScopeSchema>;
+
+/**
+ * A per-couple kind, shaped like an event type: a label, the roles that may hold
+ * entries of it, and how authorship of a given entry narrows to a member.
+ *
+ * `author_permission` **changed job** with ADR 0010. It no longer means "who may
+ * edit these" — it means who may *hold* a term of this kind — and
+ * {@link authorScopeSchema} supplies the per-member half. So `limit` is
+ * `[dom, sub, switch]` (anyone may have limits) with scope `subject` (only yours
+ * are yours), and each mechanism does one job instead of the list nearly doing
+ * both.
+ *
+ * The scope is **immutable**: set when the kind is installed and never written
+ * again, not by `edit_kind` and not by a pack bump. Flipping `limit` from
+ * `subject` to `unscoped` would convert every existing limit into a mutually
+ * editable term in one write, and narrowing the other way would leave subjectless
+ * entries with no author at all.
  */
 export const agreementKindSchema = z.object({
 	id: z.string().min(1),
 	label: z.string().min(1),
 	author_permission: permissionListSchema,
+	author_scope: authorScopeSchema,
 	/**
 	 * Whether the couple has edited this kind's author list (#159). Adoption
 	 * freezes the list against the pack, exactly as it does a rule's definition
@@ -172,6 +199,19 @@ function sameAuthorship(a: AgreementKind, b: AgreementKind): boolean {
 export const versionedAgreementSchema = z.object({
 	id: z.string().min(1),
 	kind: z.string().min(1),
+	/**
+	 * The member this term is **about** (ADR 0010) — the same name, type and
+	 * absence semantics as `events.subject`, because it is the same distinction one
+	 * layer up: aboutness and authorship are independent axes.
+	 *
+	 * Sits here rather than on a version, and is **never written twice**. A
+	 * versioned subject would be an escalation path — a revision could move a limit
+	 * to its author and own it outright, reopening through the version table the
+	 * invariant `rekind` and `edit_kind` close. Absent for an `unscoped` kind, and
+	 * for an entry written before the column existed; such an entry is
+	 * **retire-only** (see {@link authorsAgreement}).
+	 */
+	subject: z.string().optional(),
 	versions: z.array(agreementVersionSchema).min(1),
 });
 export type VersionedAgreement = z.infer<typeof versionedAgreementSchema>;
@@ -278,7 +318,12 @@ export function describeCitation(
 		: `${thenName} (now: ${current.name})`;
 }
 
-/** Whether `role` may author entries of `kindId`. An unresolved role authors nothing. */
+/**
+ * Whether `role` may **hold** an entry of `kindId` — the creation gate, and since
+ * ADR 0010 that alone. It answers "may someone of this role have a term of this
+ * kind at all", never "may they edit this particular one", which is
+ * {@link authorsAgreement}. An unresolved role holds nothing.
+ */
 export function authorsKind(
 	kinds: AgreementKind[],
 	kindId: string,
@@ -287,6 +332,95 @@ export function authorsKind(
 	if (role === null) return false;
 	const kind = kinds.find((k) => k.id === kindId);
 	return kind?.author_permission.includes(role) ?? false;
+}
+
+/** The author scope of `kindId`, or null when the couple holds no such kind. */
+export function agreementScope(
+	kinds: AgreementKind[],
+	kindId: string,
+): AuthorScope | null {
+	return kinds.find((k) => k.id === kindId)?.author_scope ?? null;
+}
+
+/**
+ * The subject a new entry of a kind with this scope gets (ADR 0010). Derived at
+ * write time, never asked: a couple has exactly two members, so `subject` scope
+ * resolves to the creator and `counterpart` to the other member. There is no
+ * "who is this about?" picker for any seeded kind.
+ *
+ * Returns undefined for `unscoped`, and for a `counterpart` kind in a couple with
+ * nobody else in it — the caller refuses that write rather than storing a
+ * subjectless entry of a kind whose authorship is defined relative to a subject.
+ */
+export function subjectForNewAgreement(
+	scope: AuthorScope,
+	creatorId: string,
+	memberIds: readonly string[],
+): string | undefined {
+	if (scope === "subject") return creatorId;
+	if (scope === "unscoped") return undefined;
+	return memberIds.find((id) => id !== creatorId);
+}
+
+/**
+ * Whether `memberId` may **move** this entry — revise, re-kind or delete it.
+ *
+ * This is per-entry where {@link authorsKind} is per-kind, and that split is the
+ * whole of ADR 0010. The scope decides which question gets asked:
+ *
+ *  - `subject` — is this yours? Deliberately *not* also a role-list check: a
+ *    later narrowing of `author_permission` would otherwise lock someone out of
+ *    their own limit, which is the bricking failure the model refuses to have.
+ *    Nobody becomes a subject without passing the creation gate, so the list has
+ *    already had its say.
+ *  - `counterpart` — are you in the list, and is this not about you? The second
+ *    half is what stops the bound party rewriting their own obligation.
+ *  - `unscoped` — are you in the list? Exactly the pre-ADR-0010 behaviour.
+ *
+ * A scoped entry with **no subject** is authored by nobody. That is the residual
+ * state for an entry written before the column existed, and it is retire-only
+ * rather than bricked — see {@link mayRetireAgreement}.
+ */
+export function authorsAgreement(
+	kinds: AgreementKind[],
+	agreement: Pick<VersionedAgreement, "kind" | "subject">,
+	memberId: string,
+	role: Role | null,
+): boolean {
+	const scope = agreementScope(kinds, agreement.kind);
+	if (scope === null) return false;
+	if (scope === "unscoped") return authorsKind(kinds, agreement.kind, role);
+	if (agreement.subject === undefined) return false;
+	if (scope === "subject") return agreement.subject === memberId;
+	return (
+		agreement.subject !== memberId && authorsKind(kinds, agreement.kind, role)
+	);
+}
+
+/**
+ * Whether `memberId` may **retire** this entry — a superset of
+ * {@link authorsAgreement}.
+ *
+ * The difference is the subjectless residual. A scoped entry with no subject has
+ * no author, and every other op is author-gated, so without this it would be
+ * permanently in force: unrevisable, unretirable, undeletable. Retiring is the one
+ * escape, open to the kind's role list, which keeps such an entry readable,
+ * citable and resolvable while letting the couple end it and write a replacement
+ * that has a subject.
+ *
+ * `unscoped` is needed here too, not only as a legacy path: a safeword carries no
+ * subject by design.
+ */
+export function mayRetireAgreement(
+	kinds: AgreementKind[],
+	agreement: Pick<VersionedAgreement, "kind" | "subject">,
+	memberId: string,
+	role: Role | null,
+): boolean {
+	if (authorsAgreement(kinds, agreement, memberId, role)) return true;
+	return (
+		agreement.subject === undefined && authorsKind(kinds, agreement.kind, role)
+	);
 }
 
 /**
@@ -333,6 +467,17 @@ export type AgreementWrite =
 export interface AgreementContext {
 	/** The actor's resolved role; null before mutual confirmation. */
 	role: Role | null;
+	/**
+	 * The actor's member id. Authorship is per-member since ADR 0010, so the role
+	 * alone can no longer answer whether this write is allowed.
+	 */
+	memberId: string;
+	/**
+	 * Every member id in the couple, for deriving a `counterpart` subject on a
+	 * create. Two in an active couple; a shorter list is what makes a
+	 * counterpart-scoped create refusable rather than subjectless.
+	 */
+	memberIds: readonly string[];
 	/** Now, so a version cannot be dated into the past. */
 	now: number;
 	kinds: AgreementKind[];
@@ -419,38 +564,87 @@ export function validateAgreementWrite(
 	}
 
 	if (write.op === "create") {
-		if (!ctx.kinds.some((k) => k.id === write.kind))
-			return deny("no such kind", { not_found: true });
+		const scope = agreementScope(ctx.kinds, write.kind);
+		if (scope === null) return deny("no such kind", { not_found: true });
+		// The role list is the "may you hold one of these" gate (ADR 0010) — the
+		// per-member half is the scope, applied to the derived subject below.
 		if (!authorsKind(ctx.kinds, write.kind, ctx.role)) {
 			return deny("your role doesn't author this kind of agreement", {
 				forbidden: true,
 			});
+		}
+		// A counterpart-scoped kind is defined relative to somebody else, so with
+		// nobody else there is no coherent entry to write. Refusing beats storing a
+		// subjectless one, which would be authored by nobody from the moment it
+		// existed.
+		if (
+			scope === "counterpart" &&
+			subjectForNewAgreement(scope, ctx.memberId, ctx.memberIds) === undefined
+		) {
+			return deny(
+				"this kind of agreement is about your partner, and you don't have one yet",
+			);
 		}
 		return checkEffectiveFrom(write.effective_from, [], ctx.now);
 	}
 
 	const agreement = ctx.agreements.find((a) => a.id === write.id);
 	if (!agreement) return deny("no such agreement", { not_found: true });
-	// Every remaining op edits an existing entry, so all of them need authorship
-	// of the kind it currently sits in.
-	if (!authorsKind(ctx.kinds, agreement.kind, ctx.role)) {
-		return deny("your role doesn't author this kind of agreement", {
-			forbidden: true,
-		});
+
+	// Retiring is the one op open wider than authorship, so it is settled before
+	// the author gate rather than inside it: a scoped entry with no subject has no
+	// author at all, and without this it would be permanently in force.
+	if (write.op === "retire") {
+		if (!mayRetireAgreement(ctx.kinds, agreement, ctx.memberId, ctx.role)) {
+			return deny("this isn't yours to retire", { forbidden: true });
+		}
+		return { ok: true };
+	}
+
+	// Every remaining op moves an existing entry, so all of them need authorship of
+	// *this* entry — not merely of the kind it sits in, which is what let a switch
+	// edit their sub's limits (#129).
+	if (!authorsAgreement(ctx.kinds, agreement, ctx.memberId, ctx.role)) {
+		return deny(
+			agreement.subject === undefined
+				? "this agreement predates knowing whose it is — it can be retired, not changed"
+				: "this agreement isn't yours to change",
+			{ forbidden: true },
+		);
 	}
 
 	switch (write.op) {
-		case "rekind":
-			if (!ctx.kinds.some((k) => k.id === write.kind))
-				return deny("no such kind", { not_found: true });
+		case "rekind": {
+			const target = agreementScope(ctx.kinds, write.kind);
+			if (target === null) return deny("no such kind", { not_found: true });
+			// An entry carries its subject across a re-kind — the subject is immutable
+			// — so a scoped target needs one to be there already. Inventing one here
+			// would be retroactively deciding whose term it always was.
+			if (target !== "unscoped" && agreement.subject === undefined) {
+				return deny(
+					"this kind of agreement has to be about someone, and this one isn't",
+				);
+			}
 			// The invariant, from the entry side: authoring the source is not enough,
-			// or a dom could walk a protocol they own into the sub's category.
-			if (!authorsKind(ctx.kinds, write.kind, ctx.role)) {
+			// or a dom could walk a protocol they own into the sub's category. Applied
+			// through the *target's* scope, which is what makes the two named
+			// consequences of ADR 0010 fall out rather than needing special cases —
+			// notably that `subject` → `counterpart` is reachable by nobody, since the
+			// subject authors the source and is excluded by the target.
+			if (
+				!authorsAgreement(
+					ctx.kinds,
+					{ kind: write.kind, subject: agreement.subject },
+					ctx.memberId,
+					ctx.role,
+				)
+			) {
 				return deny("your role doesn't author the kind you're moving it to", {
 					forbidden: true,
 				});
 			}
 			return { ok: true };
+		}
 		case "delete":
 			// ADR 0002's "delete collapses to disable", applied to terms: retiring
 			// keeps every version readable, so something a member was held to can
@@ -467,8 +661,6 @@ export function validateAgreementWrite(
 				agreement.versions,
 				ctx.now,
 			);
-		case "retire":
-			return { ok: true };
 	}
 }
 

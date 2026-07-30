@@ -48,14 +48,31 @@ import { AgreementsView } from "./agreements-view.tsx";
 const NOW = 1_700_000_000_000;
 
 const KINDS: AgreementKind[] = [
-	{ id: "protocol", label: "Protocol", author_permission: ["dom", "switch"] },
-	{ id: "limit", label: "Limit", author_permission: ["sub", "switch"] },
+	{
+		id: "protocol",
+		label: "Protocol",
+		author_permission: ["dom", "switch"],
+		author_scope: "counterpart",
+	},
+	{
+		id: "limit",
+		label: "Limit",
+		author_permission: ["dom", "sub", "switch"],
+		author_scope: "subject",
+	},
 ];
 
+/**
+ * The default viewpoint is the dom's: `m1` is self and holds `dom`, `m2` is the
+ * sub. Both fixtures are therefore about `m2` — a protocol binds the sub
+ * (`counterpart` scope) and the limit is the sub's own (`subject` scope), which is
+ * what makes the dom's missing controls below meaningful rather than incidental.
+ */
 const AGREEMENTS: VersionedAgreement[] = [
 	{
 		id: "ag_1",
 		kind: "protocol",
+		subject: "m2",
 		versions: [
 			{
 				effective_from: NOW - 10_000,
@@ -68,6 +85,7 @@ const AGREEMENTS: VersionedAgreement[] = [
 	{
 		id: "ag_2",
 		kind: "limit",
+		subject: "m2",
 		versions: [
 			{
 				effective_from: NOW - 10_000,
@@ -141,12 +159,17 @@ describe("AgreementsView", () => {
 		expect(screen.getByText("no marks above the collar")).not.toBeNull();
 	});
 
-	it("offers the dom a protocol control and no limit control", async () => {
-		await renderView();
-		expect(
-			screen.getByRole("button", { name: /add protocol/i }),
-		).not.toBeNull();
-		expect(screen.queryByRole("button", { name: /add limit/i })).toBeNull();
+	it("offers the dom a limit control too, since ADR 0010 widened the kind", () => {
+		// The role list now says who may *hold* a term of a kind, and a dom holds
+		// limits of their own — the corpus could not record one before, which is the
+		// mirror of the hole #129 closed. What the dom still cannot do is touch the
+		// sub's limit, which the next test pins.
+		return renderView().then(() => {
+			expect(
+				screen.getByRole("button", { name: /add protocol/i }),
+			).not.toBeNull();
+			expect(screen.getByRole("button", { name: /add limit/i })).not.toBeNull();
+		});
 	});
 
 	it("offers the sub a limit control and no protocol control", async () => {
@@ -390,11 +413,18 @@ describe("AgreementsView — acknowledging a partner's change", () => {
 describe("AgreementsView — tracking a ritual", () => {
 	const RITUAL_KINDS: AgreementKind[] = [
 		...KINDS,
-		{ id: "ritual", label: "Ritual", author_permission: ["dom", "switch"] },
+		{
+			id: "ritual",
+			label: "Ritual",
+			author_permission: ["dom", "switch"],
+			author_scope: "counterpart",
+		},
 	];
 	const KNEEL: VersionedAgreement = {
 		id: "ag_7f3",
 		kind: "ritual",
+		// A ritual is the sub's to perform, and the dom's to write and to track.
+		subject: "m2",
 		versions: [
 			{
 				effective_from: NOW - 10_000,
@@ -475,5 +505,102 @@ describe("AgreementsView — tracking a ritual", () => {
 		asRole("sub");
 		await openRow();
 		expect(screen.queryByRole("button", { name: /track this/i })).toBeNull();
+	});
+});
+
+/**
+ * Whose term is whose, on screen (#160, ADR 0010).
+ *
+ * The guarantee is per-member now, and a missing button cannot express it: a dom
+ * looking at a limit with no Edit control used to mean "your role doesn't hold this
+ * kind" and can now also mean "this one is your partner's". Those are different
+ * facts, and the second is the one the whole change exists to give.
+ */
+describe("AgreementsView — whose term it is", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		// Re-set explicitly: `clearAllMocks` clears calls, not implementations, so a
+		// `mockResolvedValue` from a previous test would otherwise leak forward.
+		vi.mocked(listAgreementKinds).mockResolvedValue({ kinds: KINDS });
+		asRole("dom");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("marks a scoped term as the partner's", async () => {
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
+		await renderView();
+		expect(screen.getAllByText("your partner's").length).toBeGreaterThan(0);
+	});
+
+	it("marks the viewer's own term as theirs", async () => {
+		// A dom's own limit, which the corpus could not hold at all before.
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [{ ...AGREEMENTS[1], id: "ag_mine", subject: "m1" }],
+		});
+		await renderView();
+		expect(screen.getByText("yours")).not.toBeNull();
+		// And it is theirs to change, unlike the sub's.
+		expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+	});
+
+	it("leaves an unscoped kind unlabelled", async () => {
+		// A safeword is the couple's shared record — there is no subject to name, so
+		// a label would be inventing one.
+		vi.mocked(listAgreementKinds).mockResolvedValue({
+			kinds: [
+				{
+					id: "safeword",
+					label: "Safeword",
+					author_permission: ["dom", "sub", "switch"],
+					author_scope: "unscoped",
+				},
+			],
+		});
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [
+				{ ...AGREEMENTS[0], id: "ag_sw", kind: "safeword", subject: undefined },
+			],
+		});
+		await renderView();
+		expect(screen.queryByText("yours")).toBeNull();
+		expect(screen.queryByText("your partner's")).toBeNull();
+	});
+
+	it("leaves a section ungrouped while one person holds every term", async () => {
+		// In a dom+sub couple every protocol is the sub's, so the heading never
+		// appears and the screen is unchanged from before ADR 0010.
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
+		await renderView();
+		expect(screen.queryByText("Yours")).toBeNull();
+		expect(screen.queryByText("Your partner's")).toBeNull();
+	});
+
+	it("groups a section once it holds two people's terms", async () => {
+		// Where the widened Limits kind put two subjects in one section — the case
+		// that did not exist before, since a dom could not hold a limit.
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [
+				AGREEMENTS[1],
+				{ ...AGREEMENTS[1], id: "ag_mine", subject: "m1" },
+			],
+		});
+		await renderView();
+		expect(screen.getByText("Yours")).not.toBeNull();
+		expect(screen.getByText("Your partner's")).not.toBeNull();
+	});
+
+	it("offers Retire but not Edit on a term whose subject was never recorded", async () => {
+		// The retire-only residual: authored by nobody, so the couple's only way to
+		// end it is to retire it and write a replacement that has a subject.
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [{ ...AGREEMENTS[1], id: "ag_orphan", subject: undefined }],
+		});
+		await renderView();
+		expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Retire" })).not.toBeNull();
 	});
 });

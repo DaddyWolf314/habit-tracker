@@ -5,14 +5,17 @@ import {
 	type AgreementKind,
 	type AgreementVersion,
 	type AgreementWrite,
+	type AuthorScope,
 	agreementChangeKind,
 	agreementEffectiveAt,
 	agreementRefKeys,
-	authorsKind,
+	agreementScope,
+	authorsAgreement,
 	type CreateAgreementInput,
 	latestAgreementVersion,
 	type ReviseAgreementInput,
 	reconcileAgreementKinds,
+	subjectForNewAgreement,
 	type VersionedAgreement,
 	validateAgreementWrite,
 } from "#/shared/agreements.ts";
@@ -1103,7 +1106,12 @@ export class CoupleDO extends DurableObject<Env> {
 			// to rather than only what a term says today.
 			agreements: this.agreements().flatMap((agreement) =>
 				agreement.versions.map((version) =>
-					agreementVersionToExportRow(agreement.id, agreement.kind, version),
+					agreementVersionToExportRow(
+						agreement.id,
+						agreement.kind,
+						version,
+						agreement.subject,
+					),
 				),
 			),
 			agreement_kinds: this.agreementKinds().map(agreementKindToExportRow),
@@ -1616,11 +1624,21 @@ export class CoupleDO extends DurableObject<Env> {
 		);
 		const id = ulid();
 		const at = Date.now();
+		// Derived, never supplied (ADR 0010). A couple has exactly two members, so a
+		// `subject`-scoped kind resolves to the author and a `counterpart` one to the
+		// other member — there is no "who is this about?" question to ask. Frozen from
+		// here: nothing below, and no other write path, touches it again.
+		const subject = subjectForNewAgreement(
+			agreementScope(this.agreementKinds(), input.kind) ?? "unscoped",
+			me.id,
+			this.members().map((member) => member.id),
+		);
 		this.sql.exec(
-			`INSERT INTO agreements (id, kind, created_at) VALUES (?, ?, ?)`,
+			`INSERT INTO agreements (id, kind, created_at, subject) VALUES (?, ?, ?, ?)`,
 			id,
 			input.kind,
 			at,
+			subject ?? null,
 		);
 		this.writeAgreementVersion(id, {
 			// A future `effective_from` is the announced draft — visible to both,
@@ -1798,11 +1816,18 @@ export class CoupleDO extends DurableObject<Env> {
 		const me = this.requireAuthor(identityHash);
 		const agreement = this.agreements().find((a) => a.id === agreementId);
 		if (!agreement) throw coupleError("NOT_FOUND", "no such agreement");
-		if (!authorsKind(this.agreementKinds(), agreement.kind, me.role as Role)) {
-			throw coupleError(
-				"FORBIDDEN",
-				"your role doesn't author this kind of agreement",
-			);
+		// Per-entry since ADR 0010, not merely per-kind: scaffolding a ritual writes
+		// automation off somebody's term, so the gate has to be the same one that
+		// governs revising it.
+		if (
+			!authorsAgreement(
+				this.agreementKinds(),
+				agreement,
+				me.id,
+				me.role as Role,
+			)
+		) {
+			throw coupleError("FORBIDDEN", "this agreement isn't yours to change");
 		}
 		const rules = rulesEffectiveAt(this.versionedRules(), Date.now());
 		if (isTracked(agreementId, rules, this.eventTypes())) {
@@ -3811,12 +3836,17 @@ export class CoupleDO extends DurableObject<Env> {
 			installed,
 		);
 		for (const kind of reconciliation.added) {
+			// `author_scope` is written **here and nowhere else** (ADR 0010). It is
+			// immutable, and a pack bump that rewrote it would be the forbidden flip
+			// performed by the pack — the very thing #159 stopped it doing to the
+			// author list. An existing kind gets its scope once, from migration v13.
 			this.sql.exec(
-				`INSERT INTO agreement_kinds (id, label, author_permission)
-					VALUES (?, ?, ?)`,
+				`INSERT INTO agreement_kinds (id, label, author_permission, author_scope)
+					VALUES (?, ?, ?, ?)`,
 				kind.id,
 				kind.label,
 				JSON.stringify(kind.author_permission),
+				kind.author_scope,
 			);
 		}
 		for (const kind of reconciliation.upserted) {
@@ -3880,6 +3910,8 @@ export class CoupleDO extends DurableObject<Env> {
 	private assertAgreementWrite(write: AgreementWrite, me: MemberRow): void {
 		const result = validateAgreementWrite(write, {
 			role: (me.role as Role | null) ?? null,
+			memberId: me.id,
+			memberIds: this.members().map((member) => member.id),
 			now: Date.now(),
 			kinds: this.agreementKinds(),
 			agreements: this.agreements(),
@@ -3901,8 +3933,9 @@ export class CoupleDO extends DurableObject<Env> {
 				author_permission: string;
 				adopted: number;
 				upstream_changed: number;
+				author_scope: string;
 			}>(
-				`SELECT id, label, author_permission, adopted, upstream_changed
+				`SELECT id, label, author_permission, author_scope, adopted, upstream_changed
 					FROM agreement_kinds ORDER BY id`,
 			)
 			.toArray()
@@ -3910,6 +3943,7 @@ export class CoupleDO extends DurableObject<Env> {
 				id: row.id,
 				label: row.label,
 				author_permission: JSON.parse(row.author_permission) as Role[],
+				author_scope: row.author_scope as AuthorScope,
 				adopted: row.adopted === 1,
 				upstream_changed: row.upstream_changed === 1,
 			}));
@@ -3920,11 +3954,15 @@ export class CoupleDO extends DurableObject<Env> {
 			.exec<{
 				id: string;
 				kind: string;
-			}>(`SELECT id, kind FROM agreements ORDER BY created_at`)
+				subject: string | null;
+			}>(`SELECT id, kind, subject FROM agreements ORDER BY created_at`)
 			.toArray();
 		return rows.map((row) => ({
 			id: row.id,
 			kind: row.kind,
+			// One representation of absence, as `review_cadence_days` does below: a
+			// null column reads as undefined rather than leaving two ways to be unset.
+			subject: row.subject ?? undefined,
 			versions: this.agreementVersions(row.id),
 		}));
 	}

@@ -222,3 +222,135 @@ describe("v12 agreement kind adoption", () => {
 		expect(columns(db, "agreement_kinds")).toContain("upstream_changed");
 	});
 });
+
+/**
+ * v13 — an Agreement has a subject, and its kind an author scope (#160, ADR 0010).
+ *
+ * Two backfills, and the interesting one is the subject: it reads `author_scope`,
+ * so the statements are order-dependent within the migration, and it derives from
+ * the audit log rather than guessing.
+ */
+describe("v13 agreement subject and author scope", () => {
+	const DOM = "mem_dom";
+	const SUB = "mem_sub";
+
+	/** A DO paired before v13, holding the four kinds and one term of each shape. */
+	function preV13(): Database.Database {
+		const db = doAtVersion(12);
+		const kind = db.prepare(
+			`INSERT INTO agreement_kinds (id, label, author_permission) VALUES (?, ?, ?)`,
+		);
+		kind.run("protocol", "Protocol", JSON.stringify(["dom", "switch"]));
+		kind.run("ritual", "Ritual", JSON.stringify(["dom", "switch"]));
+		kind.run("limit", "Limit", JSON.stringify(["sub", "switch"]));
+		kind.run("safeword", "Safeword", JSON.stringify(["dom", "sub", "switch"]));
+		// A couple's own kind: nothing shipped names it, so it must not be given a
+		// scope the pack chose for something else.
+		kind.run("aftercare", "Aftercare", JSON.stringify(["dom"]));
+
+		const member = db.prepare(
+			`INSERT INTO members (id, identity_hash, role, joined_at) VALUES (?, ?, ?, 0)`,
+		);
+		member.run(DOM, "hash_dom", "dom");
+		member.run(SUB, "hash_sub", "sub");
+
+		const agreement = db.prepare(
+			`INSERT INTO agreements (id, kind, created_at) VALUES (?, ?, 0)`,
+		);
+		agreement.run("ag_protocol", "protocol");
+		agreement.run("ag_limit", "limit");
+		agreement.run("ag_safeword", "safeword");
+
+		// Who typed each one — the only record of it, and exact where it exists.
+		const audit = db.prepare(
+			`INSERT INTO audit_log (at, actor, action, target) VALUES (?, ?, 'agreement.create', ?)`,
+		);
+		audit.run(10, DOM, "ag_protocol");
+		audit.run(20, SUB, "ag_limit");
+		audit.run(30, DOM, "ag_safeword");
+		return db;
+	}
+
+	function scopeOf(db: Database.Database, id: string): string {
+		return (
+			db
+				.prepare(`SELECT author_scope FROM agreement_kinds WHERE id = ?`)
+				.get(id) as { author_scope: string }
+		).author_scope;
+	}
+
+	function subjectOf(db: Database.Database, id: string): string | null {
+		return (
+			db.prepare(`SELECT subject FROM agreements WHERE id = ?`).get(id) as {
+				subject: string | null;
+			}
+		).subject;
+	}
+
+	it("adds both columns", () => {
+		const db = preV13();
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "agreement_kinds")).toContain("author_scope");
+		expect(columns(db, "agreements")).toContain("subject");
+	});
+
+	it("scopes the shipped kinds and leaves a custom one unscoped", () => {
+		// Freezing the pack's scopes here is safe in the way freezing its *names*
+		// was not (ADR 0009): a scope may never change, so there is nothing for a
+		// frozen value to diverge from.
+		const db = preV13();
+		runMigrations(sqlStorage(db));
+		expect(scopeOf(db, "protocol")).toBe("counterpart");
+		expect(scopeOf(db, "ritual")).toBe("counterpart");
+		expect(scopeOf(db, "limit")).toBe("subject");
+		expect(scopeOf(db, "safeword")).toBe("unscoped");
+		expect(scopeOf(db, "aftercare")).toBe("unscoped");
+	});
+
+	it("gives a subject-scoped term to whoever wrote it", () => {
+		const db = preV13();
+		runMigrations(sqlStorage(db));
+		expect(subjectOf(db, "ag_limit")).toBe(SUB);
+	});
+
+	it("gives a counterpart-scoped term to the other member", () => {
+		// The dom typed the protocol; it is about the sub.
+		const db = preV13();
+		runMigrations(sqlStorage(db));
+		expect(subjectOf(db, "ag_protocol")).toBe(SUB);
+	});
+
+	it("leaves an unscoped term with no subject", () => {
+		const db = preV13();
+		runMigrations(sqlStorage(db));
+		expect(subjectOf(db, "ag_safeword")).toBeNull();
+	});
+
+	it("leaves a term with no create record subjectless rather than guessing", () => {
+		// Such an entry is retire-only, which is a defined state — inventing a
+		// subject would assert whose boundary it is on no evidence at all.
+		const db = preV13();
+		db.prepare(
+			`INSERT INTO agreements (id, kind, created_at) VALUES (?, ?, 0)`,
+		).run("ag_orphan", "limit");
+		runMigrations(sqlStorage(db));
+		expect(subjectOf(db, "ag_orphan")).toBeNull();
+	});
+
+	it("keeps the couple's author lists intact", () => {
+		// #159's tightening must survive the migration that lands beside it.
+		const db = preV13();
+		runMigrations(sqlStorage(db));
+		const row = db
+			.prepare(`SELECT author_permission FROM agreement_kinds WHERE id = ?`)
+			.get("limit") as { author_permission: string };
+		expect(JSON.parse(row.author_permission)).toEqual(["sub", "switch"]);
+	});
+
+	it("brings a fresh DO up with both columns", () => {
+		const db = new Database(":memory:");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "agreement_kinds")).toContain("author_scope");
+		expect(columns(db, "agreements")).toContain("subject");
+	});
+});
