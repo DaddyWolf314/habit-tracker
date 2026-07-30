@@ -341,6 +341,47 @@ describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () =>
 		expect(r).toMatchObject({ ok: false, forbidden: true });
 	});
 
+	it("refuses editing the author list of a subject-scoped kind", () => {
+		// Found reviewing #160: widening `limit` put the dom *inside* its author
+		// list, and ADR 0006's guard is "you may edit the list if you are in it" — so
+		// the dom acquired authority over who may hold a limit. Narrowing it to
+		// `["dom"]` stops the sub recording a boundary at all, which is #129's
+		// failure from the opposite side.
+		const r = validateAgreementWrite(
+			{ op: "edit_kind", id: "limit", author_permission: ["dom"] },
+			ctx(),
+		);
+		expect(r).toMatchObject({ ok: false, forbidden: true });
+		// Refused for its subject too: the point is that the list is fixed, not that
+		// one member is untrusted.
+		expect(
+			validateAgreementWrite(
+				{ op: "edit_kind", id: "limit", author_permission: ["sub"] },
+				asSub(),
+			),
+		).toMatchObject({ ok: false, forbidden: true });
+	});
+
+	it("refuses emptying any kind's author list", () => {
+		// Predates ADR 0010: nobody could then hold a term of the kind, and nobody
+		// would pass the guard above to undo it, so the kind is frozen for good.
+		const r = validateAgreementWrite(
+			{ op: "edit_kind", id: "protocol", author_permission: [] },
+			ctx(),
+		);
+		expect(r.ok).toBe(false);
+	});
+
+	it("still allows editing a counterpart-scoped kind's author list", () => {
+		// The ADR 0006 guard stays load-bearing where the list still governs — only
+		// `subject` scope takes the list out of the couple's hands.
+		const r = validateAgreementWrite(
+			{ op: "edit_kind", id: "protocol", author_permission: ["dom"] },
+			ctx(),
+		);
+		expect(r.ok).toBe(true);
+	});
+
 	it("gains nothing from widening a role list (ADR 0010)", () => {
 		// The old invariant was "you cannot grant yourself authorship you don't
 		// hold", and it was load-bearing because the role list *was* authorship.
@@ -358,14 +399,6 @@ describe("validateAgreementWrite — the escalation invariant (ADR 0006)", () =>
 			ctx({ kinds: wide, agreements: [subsLimit] }),
 		);
 		expect(r).toMatchObject({ ok: false, forbidden: true });
-	});
-
-	it("lets the sub edit the limit kind they already hold", () => {
-		const r = validateAgreementWrite(
-			{ op: "edit_kind", id: "limit", author_permission: ["sub", "switch"] },
-			asSub(),
-		);
-		expect(r.ok).toBe(true);
 	});
 
 	it("refuses the dom re-kinding a protocol into a limit", () => {

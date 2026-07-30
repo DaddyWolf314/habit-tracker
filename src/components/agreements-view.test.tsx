@@ -533,7 +533,7 @@ describe("AgreementsView — whose term it is", () => {
 	it("marks a scoped term as the partner's", async () => {
 		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
 		await renderView();
-		expect(screen.getAllByText("your partner's").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("Your partner's").length).toBeGreaterThan(0);
 	});
 
 	it("marks the viewer's own term as theirs", async () => {
@@ -542,7 +542,7 @@ describe("AgreementsView — whose term it is", () => {
 			agreements: [{ ...AGREEMENTS[1], id: "ag_mine", subject: "m1" }],
 		});
 		await renderView();
-		expect(screen.getByText("yours")).not.toBeNull();
+		expect(screen.getByText("Yours")).not.toBeNull();
 		// And it is theirs to change, unlike the sub's.
 		expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
 	});
@@ -566,8 +566,8 @@ describe("AgreementsView — whose term it is", () => {
 			],
 		});
 		await renderView();
-		expect(screen.queryByText("yours")).toBeNull();
-		expect(screen.queryByText("your partner's")).toBeNull();
+		expect(screen.queryByText("Yours")).toBeNull();
+		expect(screen.queryByText("Your partner's")).toBeNull();
 	});
 
 	it("leaves a section ungrouped while one person holds every term", async () => {
@@ -575,8 +575,10 @@ describe("AgreementsView — whose term it is", () => {
 		// appears and the screen is unchanged from before ADR 0010.
 		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
 		await renderView();
-		expect(screen.queryByText("Yours")).toBeNull();
-		expect(screen.queryByText("Your partner's")).toBeNull();
+		expect(screen.queryByRole("heading", { name: "Yours" })).toBeNull();
+		expect(
+			screen.queryByRole("heading", { name: "Your partner's" }),
+		).toBeNull();
 	});
 
 	it("groups a section once it holds two people's terms", async () => {
@@ -589,8 +591,12 @@ describe("AgreementsView — whose term it is", () => {
 			],
 		});
 		await renderView();
-		expect(screen.getByText("Yours")).not.toBeNull();
-		expect(screen.getByText("Your partner's")).not.toBeNull();
+		expect(screen.getByRole("heading", { name: "Yours" })).not.toBeNull();
+		expect(
+			screen.getByRole("heading", { name: "Your partner's" }),
+		).not.toBeNull();
+		// The heading carries it, so the rows beneath do not repeat it.
+		expect(screen.queryAllByText("Yours")).toHaveLength(1);
 	});
 
 	it("offers Retire but not Edit on a term whose subject was never recorded", async () => {
@@ -602,5 +608,89 @@ describe("AgreementsView — whose term it is", () => {
 		await renderView();
 		expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
 		expect(screen.getByRole("button", { name: "Retire" })).not.toBeNull();
+	});
+});
+
+/**
+ * Gaps found reviewing #160 (ADR 0010:234 — an ownership label must be carried
+ * "where the kind has a subject at all", and #159's notice must be reachable).
+ */
+describe("AgreementsView — review follow-ups", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		vi.mocked(listAgreementKinds).mockResolvedValue({ kinds: KINDS });
+		asRole("dom");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("labels a retired term too", async () => {
+		// The case the label matters most for: a retired term's only control is
+		// Delete, so a dom expanding their partner's retired limit would otherwise
+		// get no control and nothing saying why.
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [
+				{
+					...AGREEMENTS[1],
+					versions: [
+						...AGREEMENTS[1].versions,
+						{
+							effective_from: NOW - 5_000,
+							name: "no marks above the collar",
+							text: "",
+							retired: true,
+						},
+					],
+				},
+			],
+		});
+		await renderView();
+		expect(screen.getByText(/no longer in force/i)).not.toBeNull();
+		expect(screen.getByText("Your partner's")).not.toBeNull();
+	});
+
+	it("shows the new-default badge on an empty kind the viewer can't hold", async () => {
+		// The section's "nothing here and not yours" early return used to run first,
+		// so #159's notice was unreachable on exactly the kinds a couple is not in.
+		vi.mocked(listAgreementKinds).mockResolvedValue({
+			kinds: [
+				{
+					id: "protocol",
+					label: "Protocol",
+					author_permission: ["sub"],
+					author_scope: "counterpart",
+					upstream_changed: true,
+				},
+			],
+		});
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: [] });
+		await renderView();
+		expect(screen.getByText("new default")).not.toBeNull();
+	});
+
+	it("uses one phrase for a term whose subject was never recorded", async () => {
+		// Heading and chip must not drift apart, per CONTEXT.md's one-word rule.
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [
+				{ ...AGREEMENTS[1], id: "ag_orphan", subject: undefined },
+				{ ...AGREEMENTS[1], id: "ag_mine", subject: "m1" },
+			],
+		});
+		await renderView();
+		expect(
+			screen.getByRole("heading", { name: "Not recorded" }),
+		).not.toBeNull();
+
+		// Ungrouped, the chip carries the same phrase rather than a second wording.
+		cleanup();
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [{ ...AGREEMENTS[1], id: "ag_orphan", subject: undefined }],
+		});
+		await renderView();
+		expect(screen.getByText("Not recorded")).not.toBeNull();
+		expect(screen.queryByRole("heading", { name: "Not recorded" })).toBeNull();
 	});
 });

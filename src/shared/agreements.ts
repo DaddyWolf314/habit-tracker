@@ -553,12 +553,33 @@ export function validateAgreementWrite(
 	if (write.op === "edit_kind") {
 		const kind = ctx.kinds.find((k) => k.id === write.id);
 		if (!kind) return deny("no such kind", { not_found: true });
+		// A `subject`-scoped kind's list is fixed, like its scope. Under that scope
+		// the list says *anyone may record their own boundary*, which is what the
+		// kind means rather than policy a couple tunes — and leaving it editable
+		// reopened #129 from a new direction. ADR 0010 widened `limit` to include
+		// `dom`, which by the guard below handed the dom authority over who may hold
+		// a limit: narrowing it to `["dom"]` stops the sub recording new boundaries
+		// at all, which is the failure the whole decision exists to prevent.
+		if (kind.author_scope === "subject") {
+			return deny(
+				"who may hold this kind of agreement isn't editable — everyone records their own",
+				{ forbidden: true },
+			);
+		}
 		// The invariant, from the kind side. Without this the dom adds themselves
-		// to `limit` and every guard below becomes decoration.
+		// to a kind and every guard below becomes decoration.
 		if (!authorsKind(ctx.kinds, write.id, ctx.role)) {
 			return deny("only an author of this kind may change who authors it", {
 				forbidden: true,
 			});
+		}
+		// An empty list is never a legitimate state: nobody could hold a term of the
+		// kind, and nobody would pass the guard above to undo it, so the kind is
+		// frozen for good. Predates ADR 0010 — a dom has always been able to empty
+		// `protocol` — and is refused here rather than at the route because this is
+		// the single gate every write goes through.
+		if (write.author_permission.length === 0) {
+			return deny("a kind needs at least one role that may hold it");
 		}
 		return { ok: true };
 	}

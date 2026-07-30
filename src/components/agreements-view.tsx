@@ -21,7 +21,9 @@ import {
 import { hasIdentity } from "#/lib/identity.ts";
 import {
 	type AgreementKind,
+	type AuthorScope,
 	agreementEffectiveAt,
+	agreementScope,
 	authorsAgreement,
 	authorsKind,
 	latestAgreementVersion,
@@ -221,6 +223,15 @@ export function AgreementsView() {
 										selfRole,
 									)}
 									canRetire={false}
+									// A retired term is the case the label matters most for: its
+									// only control is Delete, so a dom expanding their partner's
+									// retired limit would otherwise get no control and nothing
+									// saying why.
+									whose={whoseTerm(
+										agreementScope(kinds, agreement.kind) ?? "unscoped",
+										agreement.subject,
+										selfId,
+									)}
 									retired
 									onChanged={reload}
 									onError={setError}
@@ -232,6 +243,39 @@ export function AgreementsView() {
 			)}
 		</div>
 	);
+}
+
+/** Whose a term is, from the viewer's side; null for a kind with no subject. */
+type Whose = "yours" | "partner" | "unrecorded";
+
+/**
+ * The one phrasing for each state, so a heading and a chip about the same fact
+ * cannot drift apart — the discipline `CONTEXT.md` sets for *Auto-closed* ("one
+ * word across the sessions panel, the closed-countdown rows, and the trace
+ * ledger"), applied to whose a term is.
+ */
+const WHOSE_COPY: Record<Whose, string> = {
+	yours: "Yours",
+	partner: "Your partner's",
+	unrecorded: "Not recorded",
+};
+
+/**
+ * Which of the three a term is. Named for the **subject** rather than for
+ * ownership: `CONTEXT.md`'s Author scope entry avoids "owner" precisely because
+ * the subject is the recorded fact and any notion of owning is derived from it.
+ *
+ * Null for an `unscoped` kind — a safeword has no subject, so a label would be
+ * inventing one.
+ */
+function whoseTerm(
+	scope: AuthorScope,
+	subject: string | undefined,
+	selfId: string,
+): Whose | null {
+	if (scope === "unscoped") return null;
+	if (subject === undefined) return "unrecorded";
+	return subject === selfId ? "yours" : "partner";
 }
 
 /** One kind and its terms, with the authoring control only its authors see. */
@@ -287,10 +331,10 @@ function KindSection({
 				subject,
 				heading:
 					subject === undefined
-						? "Whose these are wasn't recorded"
+						? WHOSE_COPY.unrecorded
 						: subject === selfId
-							? "Yours"
-							: "Your partner's",
+							? WHOSE_COPY.yours
+							: WHOSE_COPY.partner,
 				agreements: group,
 			}))
 			.sort((a, b) =>
@@ -299,8 +343,12 @@ function KindSection({
 	}, [agreements, kind.author_scope, selfId]);
 
 	// A kind neither member authors is readable, never an error — that is how a
-	// `sub`-only kind behaves in a couple with no sub (ADR 0003's dormancy).
-	if (agreements.length === 0 && !canAuthor) return null;
+	// `sub`-only kind behaves in a couple with no sub (ADR 0003's dormancy). An
+	// empty one still renders while it carries the new-default flag, or the notice
+	// #159 exists to raise would be unreachable on exactly the kinds a couple is not
+	// in — `rules-view.tsx` has no equivalent gate in front of its badge.
+	if (agreements.length === 0 && !canAuthor && !kind.upstream_changed)
+		return null;
 
 	return (
 		<section className="rounded-lg border p-4">
@@ -339,7 +387,7 @@ function KindSection({
 			)}
 
 			{groups.map((group) => (
-				<div key={group.subject ?? "unowned"}>
+				<div key={group.subject ?? "unrecorded"}>
 					{/*
 					 * Only once a section actually holds more than one person's terms
 					 * (ADR 0010). In a dom+sub couple every protocol is the sub's and the
@@ -371,20 +419,17 @@ function KindSection({
 											selfId,
 											selfRole,
 										)}
-										// Whose term this is, where the kind has a subject at all.
-										// Without it, a viewer with no Edit control cannot tell
-										// "your role doesn't hold this kind" from "this one is your
-										// partner's" — and the second is the guarantee ADR 0010
-										// exists to give, so leaving it to a missing button would
-										// make it invisible exactly where it is looked for.
-										ownership={
-											kind.author_scope === "unscoped"
+										// Said once per view, not twice: when the section is grouped
+										// the heading above already carries this, and repeating it on
+										// every row under it is noise.
+										whose={
+											groups.length > 1
 												? null
-												: agreement.subject === undefined
-													? "unowned"
-													: agreement.subject === selfId
-														? "yours"
-														: "partner"
+												: whoseTerm(
+														kind.author_scope,
+														agreement.subject,
+														selfId,
+													)
 										}
 										// Only a ritual has something to count, and only while
 										// nothing already counts it (#121). Gated on per-entry
@@ -414,7 +459,7 @@ function AgreementRow({
 	now,
 	canChange,
 	canRetire,
-	ownership = null,
+	whose = null,
 	counting = null,
 	retired = false,
 	onChanged,
@@ -429,8 +474,14 @@ function AgreementRow({
 	 * subject has no author, so retiring is the couple's only way to end it.
 	 */
 	canRetire: boolean;
-	/** Whose term it is, for a kind that has a subject; null for an `unscoped` one. */
-	ownership?: "yours" | "partner" | "unowned" | null;
+	/**
+	 * Whose term it is, for a kind that has a subject; null for an `unscoped` one.
+	 * Without it, a viewer with no Edit control cannot tell "your role doesn't hold
+	 * this kind" from "this one is your partner's" — and the second is the guarantee
+	 * ADR 0010 exists to give, so leaving it to a missing button would make it
+	 * invisible exactly where it is looked for.
+	 */
+	whose?: Whose | null;
 	/** The type that would count this term, when it can still be tracked. */
 	counting?: { type: EventType; refKey: string } | null;
 	/** Already retired: still its author's to delete, never to revise or re-retire. */
@@ -477,14 +528,10 @@ function AgreementRow({
 					onClick={() => setOpen((o) => !o)}
 				>
 					<span className="font-medium">{current?.name ?? latest.name}</span>
-					{ownership && (
+					{whose && (
 						<span className="ml-2 align-middle">
-							<Badge tone={ownership === "yours" ? "accent" : "neutral"}>
-								{ownership === "yours"
-									? "yours"
-									: ownership === "partner"
-										? "your partner's"
-										: "unassigned"}
+							<Badge tone={whose === "yours" ? "accent" : "neutral"}>
+								{WHOSE_COPY[whose]}
 							</Badge>
 						</span>
 					)}

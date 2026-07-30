@@ -117,16 +117,8 @@ creator; under `counterpart` it must not be.
 
 ## Why `author_scope` cannot be edited
 
-`edit_kind` accepts `author_permission` only, and `author_scope` is set with the
-kind and never changes.
-
-Walking the escalation surface, changing a scope is the *only* remaining attack.
-Widening a role list cannot escalate any more: under `subject` scope it only
-widens who may hold a term, and under `counterpart` scope adding the subject's own
-role changes nothing, since the scope excludes the subject by construction. This
-is a real improvement — ADR 0006's guard ("editing a kind's `author_permission`
-requires already being in it") stops being load-bearing. Flipping `limit` from
-`subject` to `unscoped`, by contrast, converts every existing limit into a mutually
+`author_scope` is set with the kind and never changes. Flipping `limit` from
+`subject` to `unscoped` would convert every existing limit into a mutually
 editable term in one write.
 
 **Tightening-only was considered and fails.** `unscoped` → `subject` looks like a
@@ -134,6 +126,39 @@ narrowing, but `unscoped` entries carry no subject, so the moment the scope flip
 every entry has no author and is bricked as above. The narrowing direction is the
 dangerous one, so there is no exception. A mis-set custom kind is repaired by
 creating a new kind and moving entries across.
+
+## Nor can a `subject`-scoped kind's author list
+
+An earlier draft of this ADR claimed that with the scope immutable, "changing a
+scope is the *only* remaining attack", because widening a role list "only widens
+who may hold a term". **That was wrong**, and the error is worth keeping on the
+record because it was introduced by this very decision.
+
+The claim holds for *entry* authorship: the sub's existing limits stay theirs
+whatever the list says, since `subject` scope asks only "is this yours". It fails
+for the list itself. Widening `limit` to `[dom, sub, switch]` put the dom **inside
+`limit`'s author list**, and ADR 0006's guard is "you may edit a kind's author list
+if you are already in it" — so the dom acquired authority over *who may hold a
+limit*, and narrowing the list to `["dom"]` stops the sub recording a new boundary
+at all. That is #129's failure reached from the opposite side: not "someone moved
+my boundary" but "I cannot write one down."
+
+So a **`subject`-scoped kind's `author_permission` is fixed too.** Under that scope
+the list says *anyone may record their own boundary*, which is what the kind means
+rather than policy a couple tunes — the same argument that makes the scope
+immutable. `edit_kind` refuses it outright.
+
+Two consequences of stating it that way. ADR 0006's "you cannot grant yourself
+authorship you do not hold" guard **stays load-bearing** for `counterpart` and
+`unscoped` kinds, rather than being retired as the earlier draft claimed. And
+`limit`'s widening is now genuinely safe rather than assertedly so: the list it
+widened to is the list it keeps.
+
+**An empty author list is refused for every kind**, scoped or not. Nobody could
+hold a term of it, and nobody would pass the guard above to undo it, so the kind
+would be frozen for good. This predates the decision — a dom has always been able
+to empty `protocol` — and is fixed here because the audit that found the above
+found it too.
 
 ## What `rekind` becomes
 
@@ -253,6 +278,11 @@ subject, and the blocked `rekind` path above is defined in terms of it.
 - **A dom can hold a limit, and the corpus surface says so.** This is a product
   change, not only a permission fix: a couple who read "Limits" as "the boundaries
   I set on my dom" will now see their dom's entries in the same section.
+- **A `subject`-scoped kind is fixed in both dimensions** — scope and author list.
+  A couple who wanted `limit` to exclude someone cannot express it, and the repair
+  is a custom kind with the scope they want. That is the deliberate trade: the one
+  thing a couple must never be able to configure away is the other's ability to
+  record a boundary.
 - **`author_scope` is immutable, so a custom kind is a permanent commitment made
   when a couple is least informed about it.** The repair path — new kind, move
   compatible entries, retire the rest — is manual, and for an `unscoped` kind they

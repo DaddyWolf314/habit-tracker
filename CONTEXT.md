@@ -49,9 +49,12 @@ in and should not.
   (`protocol`, `ritual`, `limit`, `safeword`, or the couple's own), carrying an
   **author scope** and the role list that may hold entries of that kind. The role
   list says who may *have* such a term; the scope says which member may move a
-  given one (ADR 0010). Neither a kind's author list nor an Agreement's kind may
-  be set to one the actor does not already hold, and a kind's author scope never
-  changes. _Avoid_: "category", "type" (an **event type** is a different thing);
+  given one (ADR 0010). An Agreement's kind, and a kind's author list, may only be
+  set to one the actor already holds; a kind's author scope never changes, and
+  neither does the author list of a `subject`-scoped kind — a couple must not be
+  able to configure away the other's ability to record a boundary. An **empty**
+  author list is refused outright: nobody could hold such a term, and nobody could
+  undo it. _Avoid_: "category", "type" (an **event type** is a different thing);
   treating kind as display-only; "the role list decides who may edit these".
 - **Author scope** — how an Agreement kind narrows authorship from its role list
   to a member: `subject` (only the member it is about — `limit`), `counterpart`
@@ -59,6 +62,9 @@ in and should not.
   (the role list alone, subject absent — `safeword`). Set with the kind and
   **immutable**: flipping a scope would convert every existing entry in one write,
   and narrowing to `subject` would leave subjectless entries with no author at all.
+  A `subject`-scoped kind's **role list is fixed too** — the widening that put a dom
+  into `limit` also gave them the ADR 0006 right to edit that list, which would let
+  them narrow it and stop the sub recording a boundary at all.
   A role list alone cannot express this — in a switch+sub couple it made the sub's
   limits editable by the switch, and in dom+switch it let the switch rewrite their
   own protocols. _Avoid_: "permission" for the scope (`author_permission` is the
