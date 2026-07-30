@@ -614,10 +614,30 @@ describe("the shipped Agreement kinds", () => {
 		]);
 	});
 
-	it("keeps a plain dom out of limits, and lets a switch in", () => {
+	it("lets anyone hold a limit, and scopes it to its subject", () => {
+		// ADR 0010 widened the role list and moved the guarantee onto the scope. The
+		// old shape (`[sub, switch]`) protected the sub's limits by *role*, which
+		// broke in a switch+sub couple — the switch was in the list too — and meant
+		// a dom had nowhere to record a boundary of their own.
 		const limit = DEFAULT_AGREEMENT_KINDS.find((k) => k.id === "limit");
-		expect(limit?.author_permission).not.toContain("dom");
-		expect(limit?.author_permission).toEqual(["sub", "switch"]);
+		expect(limit?.author_permission).toEqual(["dom", "sub", "switch"]);
+		expect(limit?.author_scope).toBe("subject");
+	});
+
+	it("scopes every shipped kind deliberately", () => {
+		// A kind defaulting to `unscoped` by omission would be a term anyone in the
+		// list may move — silently the pre-ADR-0010 behaviour, for the kinds that
+		// most need not to have it.
+		expect(
+			Object.fromEntries(
+				DEFAULT_AGREEMENT_KINDS.map((k) => [k.id, k.author_scope]),
+			),
+		).toEqual({
+			protocol: "counterpart",
+			ritual: "counterpart",
+			limit: "subject",
+			safeword: "unscoped",
+		});
 	});
 
 	it("names a kind for every agreement_kind the pack narrows to", () => {

@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
+import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import {
@@ -425,26 +426,6 @@ function RuleRenameForm({
 				Cancel
 			</Button>
 		</form>
-	);
-}
-
-function Badge({
-	children,
-	tone,
-}: {
-	children: React.ReactNode;
-	tone: "neutral" | "accent" | "muted";
-}) {
-	const cls =
-		tone === "accent"
-			? "bg-primary/10 text-primary"
-			: tone === "muted"
-				? "bg-muted text-muted-foreground"
-				: "bg-secondary text-secondary-foreground";
-	return (
-		<span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${cls}`}>
-			{children}
-		</span>
 	);
 }
 

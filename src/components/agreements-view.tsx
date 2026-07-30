@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
+import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -20,9 +21,13 @@ import {
 import { hasIdentity } from "#/lib/identity.ts";
 import {
 	type AgreementKind,
+	type AuthorScope,
 	agreementEffectiveAt,
+	agreementScope,
+	authorsAgreement,
 	authorsKind,
 	latestAgreementVersion,
+	mayRetireAgreement,
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
@@ -106,6 +111,10 @@ export function AgreementsView() {
 
 	const selfRole = (members.find((m) => m.is_self)?.role ??
 		null) as Role | null;
+	// Authorship is per-member since ADR 0010, so the screen needs the viewer's id
+	// and not only their role. Empty before `getRoles` lands, which authors nothing
+	// — the same floor an unresolved role already had.
+	const selfId = members.find((m) => m.is_self)?.member_id ?? "";
 
 	// Held in state and ticked, like the countdown panels: this screen's whole
 	// announced-draft affordance turns on a version crossing its `effective_from`,
@@ -175,9 +184,12 @@ export function AgreementsView() {
 				<KindSection
 					key={kind.id}
 					kind={kind}
+					kinds={kinds}
 					agreements={live.filter((a) => a.kind === kind.id)}
 					now={now}
 					canAuthor={authorsKind(kinds, kind.id, selfRole)}
+					selfId={selfId}
+					selfRole={selfRole}
 					rules={rules}
 					types={types}
 					adding={adding === kind.id}
@@ -204,7 +216,22 @@ export function AgreementsView() {
 								<AgreementRow
 									agreement={agreement}
 									now={now}
-									canAuthor={authorsKind(kinds, agreement.kind, selfRole)}
+									canChange={authorsAgreement(
+										kinds,
+										agreement,
+										selfId,
+										selfRole,
+									)}
+									canRetire={false}
+									// A retired term is the case the label matters most for: its
+									// only control is Delete, so a dom expanding their partner's
+									// retired limit would otherwise get no control and nothing
+									// saying why.
+									whose={whoseTerm(
+										agreementScope(kinds, agreement.kind) ?? "unscoped",
+										agreement.subject,
+										selfId,
+									)}
 									retired
 									onChanged={reload}
 									onError={setError}
@@ -218,12 +245,48 @@ export function AgreementsView() {
 	);
 }
 
+/** Whose a term is, from the viewer's side; null for a kind with no subject. */
+type Whose = "yours" | "partner" | "unrecorded";
+
+/**
+ * The one phrasing for each state, so a heading and a chip about the same fact
+ * cannot drift apart — the discipline `CONTEXT.md` sets for *Auto-closed* ("one
+ * word across the sessions panel, the closed-countdown rows, and the trace
+ * ledger"), applied to whose a term is.
+ */
+const WHOSE_COPY: Record<Whose, string> = {
+	yours: "Yours",
+	partner: "Your partner's",
+	unrecorded: "Not recorded",
+};
+
+/**
+ * Which of the three a term is. Named for the **subject** rather than for
+ * ownership: `CONTEXT.md`'s Author scope entry avoids "owner" precisely because
+ * the subject is the recorded fact and any notion of owning is derived from it.
+ *
+ * Null for an `unscoped` kind — a safeword has no subject, so a label would be
+ * inventing one.
+ */
+function whoseTerm(
+	scope: AuthorScope,
+	subject: string | undefined,
+	selfId: string,
+): Whose | null {
+	if (scope === "unscoped") return null;
+	if (subject === undefined) return "unrecorded";
+	return subject === selfId ? "yours" : "partner";
+}
+
 /** One kind and its terms, with the authoring control only its authors see. */
 function KindSection({
 	kind,
+	kinds,
 	agreements,
 	now,
 	canAuthor,
+	selfId,
+	selfRole,
 	rules,
 	types,
 	adding,
@@ -233,9 +296,14 @@ function KindSection({
 	onError,
 }: {
 	kind: AgreementKind;
+	/** Every kind, since per-entry authorship resolves through the scope. */
+	kinds: AgreementKind[];
 	agreements: VersionedAgreement[];
 	now: number;
+	/** Whether the viewer's role may hold a term of this kind — the Add gate. */
 	canAuthor: boolean;
+	selfId: string;
+	selfRole: Role | null;
 	rules: Rule[];
 	types: EventType[];
 	adding: boolean;
@@ -244,14 +312,57 @@ function KindSection({
 	onChanged: () => void;
 	onError: (message: string) => void;
 }) {
+	// Whose terms this section holds. One group is the common case and renders no
+	// headings at all; a second appears only once the section genuinely contains
+	// two people's terms, which is what the widened `limit` kind made possible
+	// (ADR 0010). Ordered so the viewer's own come first.
+	const groups = useMemo(() => {
+		if (kind.author_scope === "unscoped") {
+			return [{ subject: undefined, heading: "", agreements }];
+		}
+		const bySubject = new Map<string | undefined, VersionedAgreement[]>();
+		for (const agreement of agreements) {
+			const existing = bySubject.get(agreement.subject);
+			if (existing) existing.push(agreement);
+			else bySubject.set(agreement.subject, [agreement]);
+		}
+		return [...bySubject.entries()]
+			.map(([subject, group]) => ({
+				subject,
+				heading:
+					subject === undefined
+						? WHOSE_COPY.unrecorded
+						: subject === selfId
+							? WHOSE_COPY.yours
+							: WHOSE_COPY.partner,
+				agreements: group,
+			}))
+			.sort((a, b) =>
+				a.subject === selfId ? -1 : b.subject === selfId ? 1 : 0,
+			);
+	}, [agreements, kind.author_scope, selfId]);
+
 	// A kind neither member authors is readable, never an error — that is how a
-	// `sub`-only kind behaves in a couple with no sub (ADR 0003's dormancy).
-	if (agreements.length === 0 && !canAuthor) return null;
+	// `sub`-only kind behaves in a couple with no sub (ADR 0003's dormancy). An
+	// empty one still renders while it carries the new-default flag, or the notice
+	// #159 exists to raise would be unreachable on exactly the kinds a couple is not
+	// in — `rules-view.tsx` has no equivalent gate in front of its badge.
+	if (agreements.length === 0 && !canAuthor && !kind.upstream_changed)
+		return null;
 
 	return (
 		<section className="rounded-lg border p-4">
 			<div className="flex items-center justify-between gap-3">
-				<h2 className="text-lg font-semibold">{kind.label}</h2>
+				<div className="flex items-center gap-2">
+					<h2 className="text-lg font-semibold">{kind.label}</h2>
+					{/*
+					 * The couple edited who authors this kind, and a later ship changed
+					 * the shipped default (#159). Their list still applies — the pack
+					 * never overwrites an adopted kind — so this offers the new default
+					 * rather than announcing a change that already happened.
+					 */}
+					{kind.upstream_changed && <Badge tone="accent">new default</Badge>}
+				</div>
 				{canAuthor && !adding && (
 					<Button size="sm" onClick={onAdd}>
 						Add {kind.label.toLowerCase()}
@@ -275,28 +386,69 @@ function KindSection({
 				<p className="mt-2 text-sm text-muted-foreground">Nothing yet.</p>
 			)}
 
-			<ul className="mt-3 space-y-2">
-				{agreements.map((agreement) => (
-					<li key={agreement.id}>
-						<AgreementRow
-							agreement={agreement}
-							now={now}
-							canAuthor={canAuthor}
-							// Only a ritual has something to count, and only while nothing
-							// already counts it (#121).
-							// Trackable only where something could count it: a type must
-							// cite this kind, and nothing may already be counting it.
-							counting={
-								canAuthor && !isTracked(agreement.id, rules, types)
-									? countingTypeFor(kind.id, types)
-									: null
-							}
-							onChanged={onChanged}
-							onError={onError}
-						/>
-					</li>
-				))}
-			</ul>
+			{groups.map((group) => (
+				<div key={group.subject ?? "unrecorded"}>
+					{/*
+					 * Only once a section actually holds more than one person's terms
+					 * (ADR 0010). In a dom+sub couple every protocol is the sub's and the
+					 * heading never appears; it shows up where it earns its keep — the
+					 * widened Limits section, and a switch+switch couple's protocols.
+					 */}
+					{groups.length > 1 && (
+						<h3 className="mt-3 text-xs font-medium text-muted-foreground">
+							{group.heading}
+						</h3>
+					)}
+					<ul className="mt-2 space-y-2">
+						{group.agreements.map((agreement) => {
+							const canChange = authorsAgreement(
+								kinds,
+								agreement,
+								selfId,
+								selfRole,
+							);
+							return (
+								<li key={agreement.id}>
+									<AgreementRow
+										agreement={agreement}
+										now={now}
+										canChange={canChange}
+										canRetire={mayRetireAgreement(
+											kinds,
+											agreement,
+											selfId,
+											selfRole,
+										)}
+										// Said once per view, not twice: when the section is grouped
+										// the heading above already carries this, and repeating it on
+										// every row under it is noise.
+										whose={
+											groups.length > 1
+												? null
+												: whoseTerm(
+														kind.author_scope,
+														agreement.subject,
+														selfId,
+													)
+										}
+										// Only a ritual has something to count, and only while
+										// nothing already counts it (#121). Gated on per-entry
+										// authorship, since scaffolding writes automation off
+										// somebody's term.
+										counting={
+											canChange && !isTracked(agreement.id, rules, types)
+												? countingTypeFor(kind.id, types)
+												: null
+										}
+										onChanged={onChanged}
+										onError={onError}
+									/>
+								</li>
+							);
+						})}
+					</ul>
+				</div>
+			))}
 		</section>
 	);
 }
@@ -305,7 +457,9 @@ function KindSection({
 function AgreementRow({
 	agreement,
 	now,
-	canAuthor,
+	canChange,
+	canRetire,
+	whose = null,
 	counting = null,
 	retired = false,
 	onChanged,
@@ -313,7 +467,21 @@ function AgreementRow({
 }: {
 	agreement: VersionedAgreement;
 	now: number;
-	canAuthor: boolean;
+	/** May revise, re-kind, delete or track it — authorship of *this* entry. */
+	canChange: boolean;
+	/**
+	 * May retire it, which is deliberately wider (ADR 0010): a scoped entry with no
+	 * subject has no author, so retiring is the couple's only way to end it.
+	 */
+	canRetire: boolean;
+	/**
+	 * Whose term it is, for a kind that has a subject; null for an `unscoped` one.
+	 * Without it, a viewer with no Edit control cannot tell "your role doesn't hold
+	 * this kind" from "this one is your partner's" — and the second is the guarantee
+	 * ADR 0010 exists to give, so leaving it to a missing button would make it
+	 * invisible exactly where it is looked for.
+	 */
+	whose?: Whose | null;
 	/** The type that would count this term, when it can still be tracked. */
 	counting?: { type: EventType; refKey: string } | null;
 	/** Already retired: still its author's to delete, never to revise or re-retire. */
@@ -360,24 +528,39 @@ function AgreementRow({
 					onClick={() => setOpen((o) => !o)}
 				>
 					<span className="font-medium">{current?.name ?? latest.name}</span>
+					{whose && (
+						<span className="ml-2 align-middle">
+							<Badge tone={whose === "yours" ? "accent" : "neutral"}>
+								{WHOSE_COPY[whose]}
+							</Badge>
+						</span>
+					)}
 					{announced && (
 						<span className="ml-2 text-xs text-muted-foreground">
 							changes soon
 						</span>
 					)}
 				</button>
-				{canAuthor && !retired && !editing && armed === null && (
+				{!retired && !editing && armed === null && (
 					<div className="flex shrink-0 gap-2">
-						<Button size="xs" variant="ghost" onClick={() => setEditing(true)}>
-							Edit
-						</Button>
-						<Button
-							size="xs"
-							variant="ghost"
-							onClick={() => setArmed("retire")}
-						>
-							Retire
-						</Button>
+						{canChange && (
+							<Button
+								size="xs"
+								variant="ghost"
+								onClick={() => setEditing(true)}
+							>
+								Edit
+							</Button>
+						)}
+						{canRetire && (
+							<Button
+								size="xs"
+								variant="ghost"
+								onClick={() => setArmed("retire")}
+							>
+								Retire
+							</Button>
+						)}
 					</div>
 				)}
 				{armed === "retire" && (
@@ -445,7 +628,7 @@ function AgreementRow({
 								</li>
 							))}
 					</ul>
-					{canAuthor && armed === null && (
+					{canChange && armed === null && (
 						<Button
 							size="xs"
 							variant="ghost"
@@ -455,7 +638,7 @@ function AgreementRow({
 							{retired ? "Delete for good" : "Delete instead"}
 						</Button>
 					)}
-					{canAuthor && (
+					{canChange && (
 						<p className="mt-1 text-xs text-muted-foreground">
 							Deleting only works while nothing in the log has cited this —
 							otherwise retiring is as far as it goes, so the record keeps what

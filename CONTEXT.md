@@ -42,25 +42,44 @@ in and should not.
   cited by events (an `infraction`'s `rule_ref`, a `ritual_completed`'s
   `ritual_id`). A human agreement, *not* an engine **Rule**; the two shared the
   word "rule" and must not be conflated (ADR 0006). Always shared — never carries
-  the journaling visibility axis. _Avoid_: "rule" for an Agreement; "policy",
-  "contract".
+  the journaling visibility axis. Carries a **subject** — the member it is about —
+  exactly as an event does, so aboutness and authorship stay independent axes here
+  too (ADR 0010). _Avoid_: "rule" for an Agreement; "policy", "contract".
 - **Agreement kind** — a per-couple definition classifying an Agreement
-  (`protocol`, `ritual`, `limit`, `safeword`, or the couple's own), carrying the
-  role list that may author entries of that kind. Authorship follows the kind:
-  a plain dom never authors limits. A **switch authors both sides** — they hold
-  both halves of the dynamic — so authorship is by role, not by member. Neither a
-  kind's author list nor an Agreement's kind may be set to one the actor does not
-  already hold. _Avoid_: "category", "type"
-  (an **event type** is a different thing); treating kind as display-only.
+  (`protocol`, `ritual`, `limit`, `safeword`, or the couple's own), carrying an
+  **author scope** and the role list that may hold entries of that kind. The role
+  list says who may *have* such a term; the scope says which member may move a
+  given one (ADR 0010). An Agreement's kind, and a kind's author list, may only be
+  set to one the actor already holds; a kind's author scope never changes, and
+  neither does the author list of a `subject`-scoped kind — a couple must not be
+  able to configure away the other's ability to record a boundary. An **empty**
+  author list is refused outright: nobody could hold such a term, and nobody could
+  undo it. _Avoid_: "category", "type" (an **event type** is a different thing);
+  treating kind as display-only; "the role list decides who may edit these".
+- **Author scope** — how an Agreement kind narrows authorship from its role list
+  to a member: `subject` (only the member it is about — `limit`), `counterpart`
+  (anyone in the list except that member — `protocol`, `ritual`), or `unscoped`
+  (the role list alone, subject absent — `safeword`). Set with the kind and
+  **immutable**: flipping a scope would convert every existing entry in one write,
+  and narrowing to `subject` would leave subjectless entries with no author at all.
+  A `subject`-scoped kind's **role list is fixed too** — the widening that put a dom
+  into `limit` also gave them the ADR 0006 right to edit that list, which would let
+  them narrow it and stop the sub recording a boundary at all.
+  A role list alone cannot express this — in a switch+sub couple it made the sub's
+  limits editable by the switch, and in dom+switch it let the switch rewrite their
+  own protocols. _Avoid_: "permission" for the scope (`author_permission` is the
+  role list); "owner" (the **subject** is the fact, ownership is derived).
 - **Protocol** — the Agreement kind for a standing expectation the sub is held to
   and can break. One kind among several, not the name of the corpus. _Avoid_:
-  "Protocol" for the whole corpus (a limit binds the dom, so the old
+  "Protocol" for the whole corpus (a limit is its subject's own boundary, so the
   "sub is held to it" definition was never true of one).
 - **Agreement version** — an effective-dated revision carrying the entry's **name
-  and prose together**, so a rename is never retroactive. `kind` sits on the
-  identity and never versions. An Agreement is *in force* or *retired*; a version
-  dated ahead is the announced draft, and there is no private draft state.
-  _Avoid_: "draft" as a status; "delete" (retire, unless nothing ever cited it).
+  and prose together**, so a rename is never retroactive. `kind` and **subject**
+  sit on the identity and never version — a versioned subject would let a revision
+  move a limit to its author and own it outright (ADR 0010). An Agreement is *in
+  force* or *retired*; a version dated ahead is the announced draft, and there is
+  no private draft state. _Avoid_: "draft" as a status; "delete" (retire, unless
+  nothing ever cited it).
 - **Review nudge** — an Agreement's optional review cadence, firing through the
   DO's schedule table as a prompt to revisit the term together. It **never lapses**
   an Agreement: an unanswered nudge leaves the term in force, because a lapse would

@@ -131,10 +131,15 @@ export function agreementVersionToExportRow(
 	agreementId: string,
 	kind: string,
 	version: AgreementVersion,
+	subject?: string,
 ): ExportRow {
 	return {
 		agreement_id: agreementId,
 		kind,
+		// Who the term is about (#160, ADR 0010) — a member id, repeated on every one
+		// of the term's rows because it belongs to the identity rather than the
+		// version. Null for an `unscoped` kind, where there is no subject to name.
+		subject: subject ?? null,
 		effective_from: version.effective_from,
 		name: version.name,
 		text: version.text,
@@ -143,11 +148,18 @@ export function agreementVersionToExportRow(
 	};
 }
 
-/** One Agreement kind as an export row — who may author that category. */
+/**
+ * One Agreement kind as an export row — who may hold that category, and how
+ * authorship of one of its entries narrows to a member (ADR 0010).
+ *
+ * `adopted` and `upstream_changed` are deliberately absent, as they are from
+ * `ruleToExportRow`: they are pack-tracking state, not the couple's content.
+ */
 export function agreementKindToExportRow(kind: AgreementKind): ExportRow {
 	return {
 		id: kind.id,
 		label: kind.label,
 		author_permission: JSON.stringify(kind.author_permission),
+		author_scope: kind.author_scope,
 	};
 }

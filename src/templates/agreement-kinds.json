@@ -1,25 +1,29 @@
 {
-	"version": 1,
+	"version": 2,
 	"kinds": [
 		{
 			"id": "protocol",
 			"label": "Protocol",
-			"author_permission": ["dom", "switch"]
+			"author_permission": ["dom", "switch"],
+			"author_scope": "counterpart"
 		},
 		{
 			"id": "ritual",
 			"label": "Ritual",
-			"author_permission": ["dom", "switch"]
+			"author_permission": ["dom", "switch"],
+			"author_scope": "counterpart"
 		},
 		{
 			"id": "limit",
 			"label": "Limit",
-			"author_permission": ["sub", "switch"]
+			"author_permission": ["dom", "sub", "switch"],
+			"author_scope": "subject"
 		},
 		{
 			"id": "safeword",
 			"label": "Safeword",
-			"author_permission": ["dom", "sub", "switch"]
+			"author_permission": ["dom", "sub", "switch"],
+			"author_scope": "unscoped"
 		}
 	]
 }

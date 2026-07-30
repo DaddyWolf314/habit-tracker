@@ -256,6 +256,88 @@ export const DO_MIGRATIONS: string[][] = [
 				'-', ' '), '_', ' ')
 			WHERE rule_id NOT GLOB 'R[0-9]*'`,
 	],
+	// v12 — Agreement kinds freeze against the pack (#159, ADR 0010). The v10 table
+	// shipped without the adoption state `rules` has carried since v8/v9, so
+	// `seedAgreementKinds` upserted `author_permission` unconditionally: a couple who
+	// tightened a kind by hand — the only workaround for #129's hole — had that
+	// tightening silently reset by the next kinds ship. A permission regression
+	// delivered as an upgrade, on the one setting whose whole job is safety.
+	//
+	// This is a precondition for the subject/scope change, not a related cleanup.
+	// ADR 0010 makes `author_scope` immutable because flipping a scope converts every
+	// existing entry in one write — and an unconditional pack upsert *is* that flip,
+	// performed by the pack. A scope landing on a clobberable table would leave the
+	// invariant it rests on as decoration.
+	//
+	// Mirrors v9's `rules.upstream_changed` in shape and meaning: `adopted` is set by
+	// `updateAgreementKind`, and `upstream_changed` is the flag (not the audit row)
+	// that drives the "new default" badge — cleared by the couple's next edit, or by
+	// a bump that finds no diff.
+	//
+	// **No backfill**, deliberately. A past edit is recoverable (`edit_kind` writes an
+	// `agreement_edit_kind` row to `consent_history`), but no couple has authored an
+	// Agreement or edited a kind, so there is nothing to reconstruct and `DEFAULT 0`
+	// is exact rather than a guess — ADR 0010, "build the mechanisms, skip the
+	// archaeology".
+	[
+		`ALTER TABLE agreement_kinds ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE agreement_kinds ADD COLUMN upstream_changed INTEGER NOT NULL DEFAULT 0`,
+	],
+	// v13 — an Agreement has a subject, and its kind an author scope (#160, ADR
+	// 0010). Authorship was by role, and a role list cannot say what the corpus
+	// needs: `limit` (`[sub, switch]`) let either partner move the other's boundary
+	// in a switch+sub *and* a switch+switch couple, while `protocol` (`[dom, switch]`)
+	// let the switch in a dom+switch couple rewrite the obligations binding
+	// themselves. Both are the same defect — a kind whose author list resolves to
+	// more than one member — pointing in opposite directions.
+	//
+	// `agreements.subject` is nullable and mirrors `events.subject`: a member id,
+	// naming who the term is *about*. It sits on the identity row and is never
+	// written twice, because a versioned subject would let a revision move a limit to
+	// its author and own it outright.
+	//
+	// **The scope backfill is deliberately frozen here**, which is the opposite of
+	// the call ADR 0009 made for rule names — and for the opposite reason. A name
+	// does not reconcile, so freezing one would strand it the first time the pack
+	// reworded it; a scope may *never* change (ADR 0010 makes it immutable, since
+	// flipping one converts every existing entry in a single write), so there is
+	// nothing for a frozen value to diverge from. `seedAgreementKinds` writes a scope
+	// on insert only, never on a bump, so this is the one place an existing kind can
+	// get one.
+	//
+	// The subject backfill reads `author_scope`, so it has to run after it, and reads
+	// `agreement.create` from the audit log — which is exact for who *typed* an
+	// entry. Nothing prunes `audit_log`. No couple has authored an Agreement, so in
+	// practice this touches nothing; it is kept because it costs ten lines and a
+	// later reader should see what the intended derivation was (ADR 0010, "build the
+	// mechanisms, skip the archaeology").
+	[
+		`ALTER TABLE agreement_kinds ADD COLUMN author_scope TEXT NOT NULL DEFAULT 'unscoped'`,
+		`UPDATE agreement_kinds SET author_scope = 'counterpart'
+			WHERE id IN ('protocol', 'ritual')`,
+		`UPDATE agreement_kinds SET author_scope = 'subject' WHERE id = 'limit'`,
+		`ALTER TABLE agreements ADD COLUMN subject TEXT`,
+		// A subject-scoped term is its creator's own — "no marks above the collar" is
+		// a fact about the speaker's body.
+		`UPDATE agreements SET subject = (
+				SELECT actor FROM audit_log
+					WHERE action = 'agreement.create' AND target = agreements.id
+					ORDER BY at LIMIT 1
+			)
+			WHERE kind IN (SELECT id FROM agreement_kinds WHERE author_scope = 'subject')`,
+		// A counterpart-scoped term is about the other member: the dom writes the
+		// protocol, the sub is bound by it.
+		`UPDATE agreements SET subject = (
+				SELECT m.id FROM members m
+					WHERE m.id != (
+						SELECT actor FROM audit_log
+							WHERE action = 'agreement.create' AND target = agreements.id
+							ORDER BY at LIMIT 1
+					)
+					LIMIT 1
+			)
+			WHERE kind IN (SELECT id FROM agreement_kinds WHERE author_scope = 'counterpart')`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";
