@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
+import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -251,7 +252,16 @@ function KindSection({
 	return (
 		<section className="rounded-lg border p-4">
 			<div className="flex items-center justify-between gap-3">
-				<h2 className="text-lg font-semibold">{kind.label}</h2>
+				<div className="flex items-center gap-2">
+					<h2 className="text-lg font-semibold">{kind.label}</h2>
+					{/*
+					 * The couple edited who authors this kind, and a later ship changed
+					 * the shipped default (#159). Their list still applies — the pack
+					 * never overwrites an adopted kind — so this offers the new default
+					 * rather than announcing a change that already happened.
+					 */}
+					{kind.upstream_changed && <Badge tone="accent">new default</Badge>}
+				</div>
 				{canAuthor && !adding && (
 					<Button size="sm" onClick={onAdd}>
 						Add {kind.label.toLowerCase()}

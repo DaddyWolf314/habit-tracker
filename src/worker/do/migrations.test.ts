@@ -145,3 +145,80 @@ describe("v11 rule names", () => {
 		expect(row.enabled).toBe(1);
 	});
 });
+
+/**
+ * v12 — Agreement kinds freeze against the pack (#159, ADR 0010).
+ *
+ * The populated case is the one that matters: a couple paired before v12 already
+ * holds seeded kinds, one of which they may have tightened by hand. The migration
+ * has to add the adoption state without disturbing the author list it protects.
+ */
+describe("v12 agreement kind adoption", () => {
+	/** A DO paired before v12, holding the four seeded kinds with one hand-tightened. */
+	function preV12(): Database.Database {
+		const db = doAtVersion(11);
+		const insert = db.prepare(
+			`INSERT INTO agreement_kinds (id, label, author_permission) VALUES (?, ?, ?)`,
+		);
+		insert.run("protocol", "Protocol", JSON.stringify(["dom", "switch"]));
+		insert.run("ritual", "Ritual", JSON.stringify(["dom", "switch"]));
+		// The #129 workaround: a switch+sub couple tightening limits to the sub alone.
+		insert.run("limit", "Limit", JSON.stringify(["sub"]));
+		insert.run(
+			"safeword",
+			"Safeword",
+			JSON.stringify(["dom", "sub", "switch"]),
+		);
+		return db;
+	}
+
+	function kindRow(
+		db: Database.Database,
+		id: string,
+	): { author_permission: string; adopted: number; upstream_changed: number } {
+		return db
+			.prepare(
+				`SELECT author_permission, adopted, upstream_changed FROM agreement_kinds WHERE id = ?`,
+			)
+			.get(id) as {
+			author_permission: string;
+			adopted: number;
+			upstream_changed: number;
+		};
+	}
+
+	it("adds both columns to a DO that already has kinds", () => {
+		const db = preV12();
+		expect(columns(db, "agreement_kinds")).not.toContain("adopted");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "agreement_kinds")).toContain("adopted");
+		expect(columns(db, "agreement_kinds")).toContain("upstream_changed");
+	});
+
+	it("leaves the couple's author list untouched", () => {
+		// The whole point: the migration must not be the thing that undoes a
+		// tightening, having just added the machinery that protects it.
+		const db = preV12();
+		runMigrations(sqlStorage(db));
+		expect(JSON.parse(kindRow(db, "limit").author_permission)).toEqual(["sub"]);
+	});
+
+	it("defaults every kind to un-adopted and unflagged", () => {
+		// No backfill by design (ADR 0010): nobody has edited a kind, so `DEFAULT 0`
+		// is exact rather than a guess. `consent_history` holds the evidence if that
+		// ever stops being true.
+		const db = preV12();
+		runMigrations(sqlStorage(db));
+		for (const id of ["protocol", "ritual", "limit", "safeword"]) {
+			expect(kindRow(db, id).adopted).toBe(0);
+			expect(kindRow(db, id).upstream_changed).toBe(0);
+		}
+	});
+
+	it("brings a fresh DO up with the columns present", () => {
+		const db = new Database(":memory:");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "agreement_kinds")).toContain("adopted");
+		expect(columns(db, "agreement_kinds")).toContain("upstream_changed");
+	});
+});

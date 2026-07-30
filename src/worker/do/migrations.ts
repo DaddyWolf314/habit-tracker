@@ -256,6 +256,33 @@ export const DO_MIGRATIONS: string[][] = [
 				'-', ' '), '_', ' ')
 			WHERE rule_id NOT GLOB 'R[0-9]*'`,
 	],
+	// v12 — Agreement kinds freeze against the pack (#159, ADR 0010). The v10 table
+	// shipped without the adoption state `rules` has carried since v8/v9, so
+	// `seedAgreementKinds` upserted `author_permission` unconditionally: a couple who
+	// tightened a kind by hand — the only workaround for #129's hole — had that
+	// tightening silently reset by the next kinds ship. A permission regression
+	// delivered as an upgrade, on the one setting whose whole job is safety.
+	//
+	// This is a precondition for the subject/scope change, not a related cleanup.
+	// ADR 0010 makes `author_scope` immutable because flipping a scope converts every
+	// existing entry in one write — and an unconditional pack upsert *is* that flip,
+	// performed by the pack. A scope landing on a clobberable table would leave the
+	// invariant it rests on as decoration.
+	//
+	// Mirrors v9's `rules.upstream_changed` in shape and meaning: `adopted` is set by
+	// `updateAgreementKind`, and `upstream_changed` is the flag (not the audit row)
+	// that drives the "new default" badge — cleared by the couple's next edit, or by
+	// a bump that finds no diff.
+	//
+	// **No backfill**, deliberately. A past edit is recoverable (`edit_kind` writes an
+	// `agreement_edit_kind` row to `consent_history`), but no couple has authored an
+	// Agreement or edited a kind, so there is nothing to reconstruct and `DEFAULT 0`
+	// is exact rather than a guess — ADR 0010, "build the mechanisms, skip the
+	// archaeology".
+	[
+		`ALTER TABLE agreement_kinds ADD COLUMN adopted INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE agreement_kinds ADD COLUMN upstream_changed INTEGER NOT NULL DEFAULT 0`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

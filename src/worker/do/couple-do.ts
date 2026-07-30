@@ -12,6 +12,7 @@ import {
 	type CreateAgreementInput,
 	latestAgreementVersion,
 	type ReviseAgreementInput,
+	reconcileAgreementKinds,
 	type VersionedAgreement,
 	validateAgreementWrite,
 } from "#/shared/agreements.ts";
@@ -1753,8 +1754,15 @@ export class CoupleDO extends DurableObject<Env> {
 			me,
 		);
 		const at = Date.now();
+		// Adoption freezes the kind against the pack (#159), exactly as editing a rule
+		// does (ADR 0002): from here the couple's author list is theirs, and a kinds
+		// bump can only offer them a new default, never apply one. Clearing
+		// `upstream_changed` is what makes the flag the state rather than a log — the
+		// couple has now made their choice about the shipped list.
 		this.sql.exec(
-			`UPDATE agreement_kinds SET author_permission = ? WHERE id = ?`,
+			`UPDATE agreement_kinds
+				SET author_permission = ?, adopted = 1, upstream_changed = 0
+				WHERE id = ?`,
 			JSON.stringify(authorPermission),
 			id,
 		);
@@ -3773,27 +3781,78 @@ export class CoupleDO extends DurableObject<Env> {
 
 	/**
 	 * Seeds the shipped Agreement kinds (#121, ADR 0006) — the categories, never
-	 * the terms. Upserts the definition on a bump like the event types do, so a
-	 * corrected label or author list reaches already-seeded couples; a couple's own
-	 * custom kinds have distinct ids and are untouched.
+	 * the terms. A couple's own custom kinds have distinct ids and are untouched.
 	 *
 	 * Carries its own version key rather than riding the event-type one, so a
 	 * kinds-only change does not need an unrelated pack bump to reach anybody.
+	 *
+	 * **Adopt-on-edit since #159.** This used to upsert `author_permission`
+	 * unconditionally, which meant a couple who tightened a kind by hand had it
+	 * silently reset by the next ship — a permission regression delivered as an
+	 * upgrade. It now runs the same reconciliation `rules` does: install what is
+	 * missing, move un-adopted kinds with the pack, and never overwrite an adopted
+	 * one, flagging the diff instead so the couple is *offered* the new default.
+	 * ADR 0010 depends on this holding before `author_scope` exists.
+	 *
+	 * `label` is written in every case, adopted or not — it has no editing surface
+	 * (`edit_kind` accepts only `author_permission`), so it is pack-owned in the
+	 * same sense a starter event type's definition is.
 	 */
 	private seedAgreementKinds(): void {
 		const seeded = Number(this.getSetting("agreement_kinds_version") ?? "0");
 		if (seeded >= AGREEMENT_KINDS_VERSION) return;
-		for (const kind of DEFAULT_AGREEMENT_KINDS) {
+		// Read once: the reconciliation needs it, and so does the already-flagged
+		// check below, which must see the state as it was *before* this bump wrote
+		// anything — re-reading mid-loop would find the row it had just updated.
+		const installed = this.agreementKinds();
+		const at = Date.now();
+		const reconciliation = reconcileAgreementKinds(
+			DEFAULT_AGREEMENT_KINDS,
+			installed,
+		);
+		for (const kind of reconciliation.added) {
 			this.sql.exec(
 				`INSERT INTO agreement_kinds (id, label, author_permission)
-					VALUES (?, ?, ?)
-					ON CONFLICT(id) DO UPDATE SET
-						label = excluded.label,
-						author_permission = excluded.author_permission`,
+					VALUES (?, ?, ?)`,
 				kind.id,
 				kind.label,
 				JSON.stringify(kind.author_permission),
 			);
+		}
+		for (const kind of reconciliation.upserted) {
+			this.sql.exec(
+				`UPDATE agreement_kinds
+					SET label = ?, author_permission = ?, upstream_changed = 0
+					WHERE id = ?`,
+				kind.label,
+				JSON.stringify(kind.author_permission),
+				kind.id,
+			);
+		}
+		// Adopted kinds the bump skipped: never overwritten, but when the shipped
+		// author list now differs from the couple's, say so — flag it for the "new
+		// default" badge and record one system-actor audit row, which bumps both
+		// members' unread counts because `PACK_ACTOR` is neither of them. The flag
+		// (not the audit row) is the state: the couple's next edit clears it, and so
+		// does a later bump that finds no diff.
+		for (const { id, label, changedUpstream } of reconciliation.skipped) {
+			const alreadyFlagged =
+				installed.find((kind) => kind.id === id)?.upstream_changed === true;
+			this.sql.exec(
+				`UPDATE agreement_kinds SET label = ?, upstream_changed = ? WHERE id = ?`,
+				label,
+				changedUpstream ? 1 : 0,
+				id,
+			);
+			if (changedUpstream && !alreadyFlagged) {
+				this.sql.exec(
+					`INSERT INTO audit_log (at, actor, action, target) VALUES (?, ?, ?, ?)`,
+					at,
+					PACK_ACTOR,
+					agreementChangeAction("kind_upstream_changed"),
+					id,
+				);
+			}
 		}
 		this.setSetting("agreement_kinds_version", String(AGREEMENT_KINDS_VERSION));
 	}
@@ -3840,12 +3899,19 @@ export class CoupleDO extends DurableObject<Env> {
 				id: string;
 				label: string;
 				author_permission: string;
-			}>(`SELECT id, label, author_permission FROM agreement_kinds ORDER BY id`)
+				adopted: number;
+				upstream_changed: number;
+			}>(
+				`SELECT id, label, author_permission, adopted, upstream_changed
+					FROM agreement_kinds ORDER BY id`,
+			)
 			.toArray()
 			.map((row) => ({
 				id: row.id,
 				label: row.label,
 				author_permission: JSON.parse(row.author_permission) as Role[],
+				adopted: row.adopted === 1,
+				upstream_changed: row.upstream_changed === 1,
 			}));
 	}
 

@@ -62,8 +62,106 @@ export const agreementKindSchema = z.object({
 	id: z.string().min(1),
 	label: z.string().min(1),
 	author_permission: permissionListSchema,
+	/**
+	 * Whether the couple has edited this kind's author list (#159). Adoption
+	 * freezes the list against the pack, exactly as it does a rule's definition
+	 * (ADR 0002): a kinds bump stops overwriting it and only raises a notice.
+	 *
+	 * Absent on the pack's own definitions, which carry no couple state — the
+	 * shipped JSON parses through this schema too.
+	 */
+	adopted: z.boolean().optional(),
+	/** Whether the shipped author list now differs from the couple's edited one (#159). */
+	upstream_changed: z.boolean().optional(),
 });
 export type AgreementKind = z.infer<typeof agreementKindSchema>;
+
+/**
+ * Adopt-on-edit reconciliation for the kinds pack (#159), the counterpart of
+ * `rule-reconciliation.ts` for the corpus. Pure: no storage, no clock, so the
+ * decision is testable without a DO.
+ *
+ * Before this existed, `seedAgreementKinds` upserted `author_permission`
+ * unconditionally, so a couple who tightened a kind by hand had it silently
+ * reset by the next ship — a permission regression delivered as an upgrade, on
+ * the one setting whose whole job is safety. ADR 0010 makes it a precondition:
+ * an immutable `author_scope` cannot land on a table the pack rewrites wholesale,
+ * or the invariant it rests on is decoration.
+ *
+ * The three outcomes mirror {@link reconcilePack}:
+ *  - **added** — a pack kind the couple does not have yet, installed whole.
+ *  - **upserted** — an un-adopted kind whose shipped author list moved; the
+ *    couple is still tracking the pack, so it moves with it.
+ *  - **skipped** — an adopted kind, frozen. `changedUpstream` says the shipped
+ *    list now differs from theirs, which raises the notice rather than applying.
+ *
+ * **`label` is carried in every bucket, including `skipped`.** A kind's label has
+ * no editing surface — `edit_kind` accepts only `author_permission` — so it is
+ * pack-owned in the same sense a starter event type's definition is, and an
+ * upsert of it can never clobber a couple's customization. Freezing the whole row
+ * on adoption would instead strand a corrected label forever on exactly the
+ * couples who cared enough to edit the permission beside it.
+ *
+ * Kinds the pack does not ship are ignored entirely, so a couple's own kind is
+ * never touched — the same way `reconcilePack` ignores custom rules.
+ */
+export interface AgreementKindReconciliation {
+	/** Pack kinds absent from the couple; install whole. */
+	added: AgreementKind[];
+	/** Un-adopted kinds whose author list moved upstream; write label + list. */
+	upserted: AgreementKind[];
+	/** Adopted kinds left frozen; write the label only, and flag the diff. */
+	skipped: Array<{ id: string; label: string; changedUpstream: boolean }>;
+}
+
+export function reconcileAgreementKinds(
+	pack: readonly AgreementKind[],
+	installed: readonly AgreementKind[],
+): AgreementKindReconciliation {
+	const byId = new Map(installed.map((kind) => [kind.id, kind]));
+	const reconciliation: AgreementKindReconciliation = {
+		added: [],
+		upserted: [],
+		skipped: [],
+	};
+
+	for (const packKind of pack) {
+		const current = byId.get(packKind.id);
+		if (!current) {
+			reconciliation.added.push(packKind);
+			continue;
+		}
+
+		const changedUpstream = !sameAuthorship(packKind, current);
+		if (current.adopted) {
+			reconciliation.skipped.push({
+				id: packKind.id,
+				label: packKind.label,
+				changedUpstream,
+			});
+		} else if (changedUpstream || packKind.label !== current.label) {
+			reconciliation.upserted.push(packKind);
+		}
+	}
+	return reconciliation;
+}
+
+/**
+ * Whether two kinds permit the same authors. Compared as a **set**, so a
+ * reordered role list is not an upstream change — the pack reordering
+ * `["sub", "switch"]` must not raise a notice claiming the default moved, for the
+ * same reason `sameDefinition` ignores a rule's name: a notice the couple learns
+ * to dismiss is worse than no notice.
+ *
+ * `label` is deliberately not compared. It is pack-owned and always written
+ * (see {@link reconcileAgreementKinds}), so a relabel is applied rather than
+ * announced.
+ */
+function sameAuthorship(a: AgreementKind, b: AgreementKind): boolean {
+	const roles = (kind: AgreementKind) =>
+		[...new Set(kind.author_permission)].sort().join(",");
+	return roles(a) === roles(b);
+}
 
 /**
  * A stable id carrying append-only versions, ascending by `effective_from`.

@@ -9,6 +9,7 @@ import {
 	authorsKind,
 	describeCitation,
 	latestAgreementVersion,
+	reconcileAgreementKinds,
 	type VersionedAgreement,
 	validateAgreementWrite,
 } from "./agreements.ts";
@@ -571,5 +572,111 @@ describe("describeCitation — how a citation reads (story 23)", () => {
 		expect(
 			describeCitation([agreement()], "morning_kneel", MAR, JUN),
 		).toBeNull();
+	});
+});
+
+/**
+ * Adopt-on-edit reconciliation for the kinds pack (#159, ADR 0010).
+ *
+ * The property under test is the one the corpus was shipped without: a couple's
+ * own author list survives a pack bump. Before this, `seedAgreementKinds` upserted
+ * `author_permission` unconditionally, so tightening a kind by hand — the only
+ * workaround for #129's hole — was undone by the next ship.
+ */
+describe("reconcileAgreementKinds", () => {
+	const packLimit: AgreementKind = {
+		id: "limit",
+		label: "Limit",
+		author_permission: ["sub", "switch"],
+	};
+
+	it("installs a kind the couple doesn't have yet", () => {
+		const result = reconcileAgreementKinds([packLimit], []);
+		expect(result.added).toEqual([packLimit]);
+		expect(result.upserted).toEqual([]);
+		expect(result.skipped).toEqual([]);
+	});
+
+	it("moves an un-adopted kind with the pack", () => {
+		// Still tracking the pack, so a changed default applies rather than waiting.
+		const result = reconcileAgreementKinds(
+			[{ ...packLimit, author_permission: ["dom", "sub", "switch"] }],
+			[{ ...packLimit, adopted: false }],
+		);
+		expect(result.upserted).toEqual([
+			{ ...packLimit, author_permission: ["dom", "sub", "switch"] },
+		]);
+		expect(result.skipped).toEqual([]);
+	});
+
+	it("never overwrites an adopted kind, and flags the new default", () => {
+		// The regression this exists to prevent: the couple tightened `limit` to
+		// `[sub]`, and a ship widening it must not silently take that back.
+		const result = reconcileAgreementKinds(
+			[{ ...packLimit, author_permission: ["dom", "sub", "switch"] }],
+			[{ ...packLimit, author_permission: ["sub"], adopted: true }],
+		);
+		expect(result.upserted).toEqual([]);
+		expect(result.skipped).toEqual([
+			{ id: "limit", label: "Limit", changedUpstream: true },
+		]);
+	});
+
+	it("does not flag an adopted kind the pack didn't change", () => {
+		const result = reconcileAgreementKinds(
+			[packLimit],
+			[{ ...packLimit, adopted: true }],
+		);
+		expect(result.skipped).toEqual([
+			{ id: "limit", label: "Limit", changedUpstream: false },
+		]);
+	});
+
+	it("reads a reordered role list as unchanged", () => {
+		// A notice the couple learns to dismiss is worse than no notice, so the
+		// comparison is a set — the same call `sameDefinition` makes about a rename.
+		const result = reconcileAgreementKinds(
+			[{ ...packLimit, author_permission: ["switch", "sub"] }],
+			[{ ...packLimit, adopted: true }],
+		);
+		expect(result.skipped).toEqual([
+			{ id: "limit", label: "Limit", changedUpstream: false },
+		]);
+	});
+
+	it("carries a corrected label to an adopted kind", () => {
+		// `label` has no editing surface, so it is pack-owned and applied rather than
+		// announced. Freezing the whole row would strand a typo fix forever on
+		// exactly the couples who edited the permission beside it.
+		const result = reconcileAgreementKinds(
+			[{ ...packLimit, label: "Limits" }],
+			[{ ...packLimit, adopted: true }],
+		);
+		expect(result.skipped).toEqual([
+			{ id: "limit", label: "Limits", changedUpstream: false },
+		]);
+	});
+
+	it("upserts an un-adopted kind for a label change alone", () => {
+		const result = reconcileAgreementKinds(
+			[{ ...packLimit, label: "Limits" }],
+			[packLimit],
+		);
+		expect(result.upserted).toEqual([{ ...packLimit, label: "Limits" }]);
+	});
+
+	it("ignores a kind the pack doesn't ship", () => {
+		// A couple's own kind is never the pack's business, the same way
+		// `reconcilePack` ignores custom rules.
+		const result = reconcileAgreementKinds(
+			[packLimit],
+			[
+				{ ...packLimit, adopted: false },
+				{ id: "aftercare", label: "Aftercare", author_permission: ["dom"] },
+			],
+		);
+		expect(result.added).toEqual([]);
+		expect(result.upserted).toEqual([]);
+		expect(result.skipped).toEqual([]);
 	});
 });
