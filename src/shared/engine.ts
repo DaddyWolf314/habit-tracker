@@ -86,10 +86,12 @@ export interface RuleEventContext {
 	 */
 	subject_role?: Role;
 	/**
-	 * The timer **definitions** with an open instance, for the ambient-state
-	 * predicate (ADR 0011). Resolved by the caller — the DO from `openTimerRows`,
-	 * the client from the timers it was served — so the engine reads no storage
-	 * and the confirm-sheet preview agrees with the DO by construction.
+	 * The timer **definitions** running at the event's moment, for the ambient-
+	 * state predicate (ADR 0011). Resolved by the caller — both the DO and the
+	 * client through `activeTimerDefinitionsAt`, over the spans each already holds
+	 * — so the engine reads no storage and the confirm-sheet preview agrees with
+	 * the DO by construction. Not `openTimerRows`: that is the `status IS NULL`
+	 * question, which a rebuild's reset makes the wrong one.
 	 *
 	 * Required rather than optional, unlike `awaiting`: omitting `awaiting` only
 	 * surfaces extra near-misses, whereas an omitted timer set would silently read
@@ -133,6 +135,13 @@ export type MatchResult =
 			subject_mismatch?: boolean;
 			state_mismatch?: boolean;
 	  };
+
+/**
+ * The near-miss arm of {@link MatchResult}, named so the predicates over it read
+ * one field list rather than restating it structurally — the last two flags were
+ * each added in two places.
+ */
+type NearMissMatch = Extract<MatchResult, { status: "near_miss" }>;
 
 /** Tests a single rule's condition against an event's composite state. */
 export function matchRule(rule: Rule, ctx: RuleEventContext): MatchResult {
@@ -345,14 +354,7 @@ export function reevaluate(
  * rule would have fired if the mode had been on. A sub reading the ledger can
  * see that the denial escalation was considered and why it stayed out.
  */
-function isSurfaced(
-	nearMiss: {
-		awaiting: string[];
-		subject_mismatch?: boolean;
-		state_mismatch?: boolean;
-	},
-	ctx: RuleEventContext,
-): boolean {
+function isSurfaced(nearMiss: NearMissMatch, ctx: RuleEventContext): boolean {
 	if (nearMiss.subject_mismatch || nearMiss.state_mismatch) return true;
 	if (ctx.awaiting === undefined) return true;
 	return nearMiss.awaiting.some((key) => ctx.awaiting?.includes(key));

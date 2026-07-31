@@ -28,6 +28,7 @@ import type { RoleMember } from "#/shared/identity.ts";
 import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
+	COMPARISON_COPY,
 	describeCondition,
 	describeRule,
 	isPickerEditable,
@@ -472,17 +473,20 @@ interface TimerDraft {
 }
 
 /**
- * The comparison operators offered beside a number field, in the couple's voice
- * — the same wording `rule-describe` renders, so the row and the preview
- * sentence beneath it read alike.
+ * The operators offered beside a number field: plain equality, then each
+ * comparison in `rule-describe`'s own words (ADR 0011). Read from
+ * {@link COMPARISON_COPY} rather than restated, so the row the author builds and
+ * the preview sentence under it cannot drift into two vocabularies — they render
+ * different grammars of the same phrase ("is at most" + "2" against "2 or less"),
+ * which is exactly the pair that drifts unnoticed when it is written twice.
  */
-const COMPARISON_OPS = [
+const COMPARISON_OPS: { op: ConditionDraft["op"]; label: string }[] = [
 	{ op: "eq", label: "is" },
-	{ op: "lt", label: "is under" },
-	{ op: "lte", label: "is at most" },
-	{ op: "gt", label: "is over" },
-	{ op: "gte", label: "is at least" },
-] as const;
+	...(Object.keys(COMPARISON_COPY) as ComparisonClause["op"][]).map((op) => ({
+		op,
+		label: COMPARISON_COPY[op].operator,
+	})),
+];
 
 /**
  * Create/edit editor. Offers only what actually exists — event types (minus the
@@ -1249,7 +1253,7 @@ function draftToEffect(draft: EffectDraft): Effect | null {
  *
  * An incomplete row is not a clause: a blank value, or a comparison whose value
  * is not a number, is dropped rather than coerced (coercing "" would invent
- * `false`/`0`/'' equality, and `Number("")` would invent a threshold of zero).
+ * `false`/`0`/'' equality, and `Number("")` would invent a bound of zero).
  */
 function draftCondition(
 	type: EventType,

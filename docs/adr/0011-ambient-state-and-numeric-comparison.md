@@ -51,7 +51,7 @@ id to expected activity, the same shape and the same complexity class as the
 `metadata` equality map.
 
 ```ts
-timer_active: z.record(z.string(), z.boolean()).default({}),
+timer_active: z.record(z.string(), z.boolean()).optional(),
 ```
 
 `{ denial_period: true }` matches while a denial is running; `{ session_stopwatch:
@@ -68,8 +68,9 @@ Bounded means, concretely:
 - It is a boolean. No count, no remaining time, no comparison against a
   countdown's deadline. "Is it running" is the entire vocabulary.
 - Open means open. A timer that is `completed`, `failed`, `expired`, `canceled`,
-  or `auto_closed` is not active — the same `status IS NULL` the effect side
-  already uses.
+  or `auto_closed` is not active. Read off the instance's *span* rather than its
+  status — see "The predicate reads the span" below, which is where the first
+  draft of this got it wrong.
 
 ### Numeric comparison
 
@@ -104,15 +105,17 @@ So `timer_active` resolves the way `subject_role` does: the **caller** resolves
 it and passes the answer in. `RuleEventContext` gains
 
 ```ts
-/** Timer definitions with an open instance, resolved by the caller. */
-active_timers?: ReadonlySet<string>;
+/** Timer definitions running at the event's moment, resolved by the caller. */
+active_timers: ReadonlySet<string>;
 ```
 
 and `CoupleDO.ruleContext` — already the single seam where `subject_role` and
-`awaiting` are resolved — fills it from `openTimerRows`. The engine stays a pure
-function of its context, the client keeps previewing correctly provided the API
-ships it the same set, and the member-id-free discipline ADR 0003 established for
-roles extends unchanged to timers.
+`awaiting` are resolved — fills it via `activeTimerDefinitionsAt` over
+`timerRows()`. (Not `openTimerRows`: that is the `status IS NULL` question, which
+the next section explains is the wrong one.) The engine stays a pure function of
+its context, the client previews correctly from the timers it already holds, and
+the member-id-free discipline ADR 0003 established for roles extends unchanged to
+timers.
 
 ## The predicate reads the span, not the status
 
@@ -126,11 +129,11 @@ now") was drafted first and is wrong, in a way worth recording because it is not
 obvious:
 
 - **It breaks rebuild, silently and in the scoring direction.**
-  `rebuildCounters` resets every countdown to running (`status = NULL`) before
-  replaying, because only a countdown's event-driven close can be re-derived. A
-  status test therefore reads `denial_period` as active from the very first
-  replayed event, and R26 escalates unpermitted orgasms that predate the denial
-  entirely. The span is untouched by that reset, so it answers correctly.
+  `rebuildCounters` resets rule-closed countdowns to running (`status = NULL`)
+  before replaying, because only a countdown's event-driven close can be
+  re-derived. A status test therefore reads `denial_period` as active from the
+  very first replayed event, and R26 escalates unpermitted orgasms that predate
+  the denial entirely. `opened_at` is never reset, so the span answers correctly.
 - **It makes the predicate un-askable about the past**, which is what an
   amendment needs.
 
@@ -142,6 +145,32 @@ Tuesday" looked unanswerable at first.
 
 A **paused** countdown is active. Pausing freezes the clock; it does not end the
 denial.
+
+### The rebuild has to preserve the span for that to hold
+
+Reading the span is only half the fix, and the first cut of this ADR missed the
+other half. `rebuildCounters` cleared `status` **and** `closed_at` for *every*
+countdown, on the reasoning that replay re-closes them. Replay only re-closes the
+ones an event closed: `expired` is the sweep's and `canceled` is the dom's, both
+off-log, and the rebuild never re-runs the sweeps. So those two came back with no
+`closed_at` at all — an expired `denial_period` read as still running for every
+later replayed event, and R26 escalated orgasms live evaluation had left alone.
+The same rebuild-only, scoring-direction divergence the span was supposed to
+close, moved one step down.
+
+The reset is therefore scoped to the closes replay can re-derive:
+
+```sql
+UPDATE timers SET status = NULL, closed_at = NULL
+  WHERE kind = 'countdown' AND status IN ('completed', 'failed')
+```
+
+**Stopwatches remain a known gap.** They are deleted and re-opened from the log,
+so one the over-max sweep `auto_closed` — an ending no event records — comes back
+open and stays open for the rest of the replay. Nothing in the pack conditions on
+a stopwatch today, so no shipped rule is affected; closing it properly means
+sweeping at each replayed event's timestamp rather than at `now`, which is a
+change to how rebuild handles system jobs generally and not this ADR's to make.
 
 ## An amendment asks what was running then
 
@@ -247,11 +276,11 @@ rather than never matching for the rest of the couple's life.
     readable rule instead of a rewrite of the base case, and R14 keeps closing
     the denial as `failed` independently.
   - **R27 "Check-in flags a low mood"** — `check_in`, `mood ≤ 2` → notify
-    partner. The threshold is exactly the kind of thing one couple wants at 2 and
+    partner. Its bound is exactly the kind of thing one couple wants at 2 and
     another at 3; adopt-on-edit already handles that, and this is a good first
     test of a pack rule whose *number* is the thing couples will edit.
-- Existing rules are untouched: both fields default empty, and an absent
-  `timer_active` map matches regardless of ambient state.
+- Existing rules are untouched: an absent `timer_active` matches regardless of
+  ambient state, and a bare metadata value is still an equality.
 - **The line this ADR draws for the next extension**: a condition may test what
   the event carries, who it is about, and what was running when it happened. It
   may not count, measure elapsed time, or query the log. When that line next

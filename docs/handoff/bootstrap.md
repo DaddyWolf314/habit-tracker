@@ -166,12 +166,12 @@ Events are never mutated or deleted. Post-hoc changes are amendment records:
 
 `when event.type = X [AND metadata equality conditions] → [effects list]`
 
-- **Condition language is deliberately dumb**: equality on `type` and metadata keys. Absent key ⇒ conditional rules silently skip (this is load-bearing — see adjudication). No expressions, no thresholds, no state queries in v1.
+- **Condition language is deliberately dumb**: equality on `type` and metadata keys. Absent key ⇒ conditional rules silently skip (this is load-bearing — see adjudication). No expressions, no thresholds, no state queries in v1. _(Superseded by ADR 0011: numeric comparison and the `timer_active` predicate below are now built. The rest of the line still holds — no counter thresholds, no elapsed-time comparison, no log lookback.)_
 - **Effect verbs (all four exist in v1)**: `increment/decrement counter`, `reset counter`, `reset elapsed-since anchor`, `open/close timer` (with match-on-ref, e.g. `timer.task_id = event.task_id`, and a close status: completed/failed).
 - Rules support **multiple effects per rule** (effects is a list).
 - **Rules route values; they never compute them.** (e.g., a stopwatch's derived duration lands in a counter because the timer close produced it — the rule only says where it goes.)
 - Rule creation validates against the event-type schema (conditioning on a nonexistent key fails at creation, not silently at runtime).
-- **Flagged v2 extension (do not build yet)**: a single bounded state predicate `timer_active(X)` — e.g., "unpermitted orgasm is worse during an active denial period." V1 handles this with flat effects + human response.
+- ~~**Flagged v2 extension (do not build yet)**~~: a single bounded state predicate `timer_active(X)` — e.g., "unpermitted orgasm is worse during an active denial period." V1 handles this with flat effects + human response. _(Built — ADR 0011, #48. The motivating example is R26.)_
 
 ### 4.4 Counters
 
@@ -354,6 +354,6 @@ Each phase ships something usable; a couple could live on phase 2 alone (shared 
 
 - **Naming/positioning** — still open from earlier product threads.
 - **Scoring/rewards/consequences layer** — deferred; it is "just another event consumer" plus effect-waivers on the confirm sheet.
-- **`timer_active(X)` predicate** — the one approved v2 rule-language extension; do not generalize beyond it.
+- ~~**`timer_active(X)` predicate**~~ — the one approved v2 rule-language extension; do not generalize beyond it. _(Decided and built — ADR 0011, #48.)_
 - **Notification transport** (push vs. in-app only) — discretion requirements constrain this heavily; in-app-only is an acceptable v1.
 - **strawberrypatch.love integration** — educational interstitials, template editorial pipeline, and eventual survey-taxonomy sharing are post-v1.

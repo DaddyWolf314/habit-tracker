@@ -2411,9 +2411,18 @@ export class CoupleDO extends DurableObject<Env> {
 		// sweep rather than replayed (a system job, not a logged event). Countdowns
 		// are dom *commands*, not event-derived, so the log cannot re-derive them:
 		// their assignment (and any pause/extend) is durable and survives the
-		// rebuild. Only their event-driven close is re-derived, so reset each to
-		// running and let replay re-close via R4/R14; `expired` is re-derived by the
-		// countdown sweep, mirroring the stopwatch auto-close.
+		// rebuild. Only their event-driven close is re-derived, so reset *those* to
+		// running and let replay re-close via R4/R14.
+		//
+		// Scoped to `completed`/`failed` — the two a rule close writes — rather than
+		// every countdown, because `expired` (the sweep) and `canceled` (the dom)
+		// are off-log: nothing in the replay re-closes them, so a blanket reset
+		// stranded them open for good, losing both the status and the `closed_at`
+		// that says when they ended. That span is what the ambient-state predicate
+		// reads (ADR 0011), so losing it made an expired `denial_period` read as
+		// still running for every later replayed event, and R26 escalate orgasms
+		// live evaluation had left alone — a rebuild-only divergence, in the
+		// scoring direction.
 		// Zero the event-derived counters, but preserve streak counters: their value
 		// is folded by the alarm at rollover ("target met? +1 : 0"), not by any
 		// logged event, so replay cannot re-derive it — like a timer auto-close, it
@@ -2451,7 +2460,8 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		this.sql.exec(`DELETE FROM timers WHERE kind = 'stopwatch'`);
 		this.sql.exec(
-			`UPDATE timers SET status = NULL, closed_at = NULL WHERE kind = 'countdown'`,
+			`UPDATE timers SET status = NULL, closed_at = NULL
+				WHERE kind = 'countdown' AND status IN ('completed', 'failed')`,
 		);
 		// Anchors are event-derived (reset by R7/R11/R12/R17), so clear them and let
 		// replay re-fold each reset. `resetAnchor` is commutative, so the rebuilt

@@ -45,21 +45,29 @@ function valueText(
 }
 
 /**
- * A comparison clause in the couple's voice (ADR 0011) — "2 or less", not
- * "<= 2". The engine's near-miss prose stays symbolic because it is read beside
- * a rule id in the trace; this is read in a sentence on the rules screen.
+ * The couple's voice for each comparison operator (ADR 0011), in the two shapes
+ * the surfaces need: `sentence` completes "Mood is …" once the value is known
+ * ("2 or less"), and `operator` names the op alone, for the editor's select where
+ * the value sits in the next control ("is at most" + "2").
+ *
+ * One table because they are the same vocabulary in two grammars — a rule read on
+ * the rules screen and the same rule being authored have to sound like each
+ * other, and two lists drifted the moment they existed. The engine's near-miss
+ * prose is deliberately *not* here: it stays symbolic ("needs <= 2") because it
+ * is read beside a rule id in the trace, not in a sentence.
  */
+export const COMPARISON_COPY: Record<
+	ComparisonClause["op"],
+	{ operator: string; sentence: (value: number) => string }
+> = {
+	lt: { operator: "is under", sentence: (v) => `under ${v}` },
+	lte: { operator: "is at most", sentence: (v) => `${v} or less` },
+	gt: { operator: "is over", sentence: (v) => `over ${v}` },
+	gte: { operator: "is at least", sentence: (v) => `${v} or more` },
+};
+
 function comparisonText(clause: ComparisonClause): string {
-	switch (clause.op) {
-		case "lt":
-			return `under ${clause.value}`;
-		case "lte":
-			return `${clause.value} or less`;
-		case "gt":
-			return `over ${clause.value}`;
-		case "gte":
-			return `${clause.value} or more`;
-	}
+	return COMPARISON_COPY[clause.op].sentence(clause.value);
 }
 
 /**

@@ -400,3 +400,33 @@ describe("activeTimerDefinitionsAt (ADR 0011)", () => {
 		]);
 	});
 });
+
+describe("the span a rebuild has to preserve (ADR 0011)", () => {
+	const span = (
+		definition: string,
+		opened_at: number | null,
+		closed_at: number | null,
+	) => ({ definition, opened_at, closed_at });
+
+	it("an off-log close still bounds the span", () => {
+		// `expired` and `canceled` are written by the sweep and the dom, and no
+		// replayed event re-closes them. `rebuildCounters` therefore scopes its
+		// reset to the `completed`/`failed` closes replay *can* re-derive — a
+		// blanket reset dropped their `closed_at` and left them reading as running
+		// for every later event, escalating orgasms live evaluation left alone.
+		const expired = [span("denial_period", 100, 200)];
+		expect([...activeTimerDefinitionsAt(expired, 150)]).toEqual([
+			"denial_period",
+		]);
+		expect([...activeTimerDefinitionsAt(expired, 250)]).toEqual([]);
+	});
+
+	it("a reset rule-close reads as running again, which is what replay re-derives", () => {
+		// The reset's whole purpose: R4/R14 re-close it as the replay reaches the
+		// event that closed it, re-stamping the span it just cleared.
+		const reset = [span("denial_period", 100, null)];
+		expect([...activeTimerDefinitionsAt(reset, 250)]).toEqual([
+			"denial_period",
+		]);
+	});
+});

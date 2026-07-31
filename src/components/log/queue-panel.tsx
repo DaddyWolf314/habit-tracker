@@ -23,6 +23,7 @@ import {
 import type { VersionedRule } from "#/shared/rules.ts";
 import {
 	activeTimerDefinitionsAt,
+	spansOf,
 	type TimerSpan,
 	type TimerView,
 } from "#/shared/timers.ts";
@@ -70,15 +71,7 @@ export function QueuePanel({
 	// The timer spans the preview resolves ambient state from (ADR 0011). Mapped
 	// once here rather than per card: each card asks the shared predicate for its
 	// own event's moment, which is the same question the DO will ask on commit.
-	const spans = useMemo(
-		() =>
-			timers.map((t) => ({
-				definition: t.timer,
-				opened_at: t.opened_at,
-				closed_at: t.closed_at,
-			})),
-		[timers],
-	);
+	const spans = useMemo(() => spansOf(timers), [timers]);
 
 	if (queue.length === 0) return null;
 
