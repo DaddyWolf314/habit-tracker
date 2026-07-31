@@ -122,6 +122,76 @@ export const timerViewSchema = z.object({
 });
 export type TimerView = z.infer<typeof timerViewSchema>;
 
+/** The span of one timer instance, all the ambient-state predicate needs of it. */
+export interface TimerSpan {
+	/** The timer definition, e.g. `denial_period`. */
+	definition: string;
+	opened_at: number | null;
+	closed_at: number | null;
+}
+
+/**
+ * The timer definitions running at `at` — the ambient state a rule's
+ * `timer_active` clause reads (ADR 0011).
+ *
+ * Resolved from the durable **span** rather than the current `status`, which is
+ * what makes it answer the same for a past moment as it did live. Two places
+ * depend on that:
+ *
+ * - **Rebuild.** `rebuildCounters` resets rule-closed countdowns to running
+ *   before replaying, so a `status IS NULL` test would read a denial as active
+ *   for events logged before it ever started, and silently escalate them.
+ *   `opened_at` is never reset, so the span answers correctly.
+ * - **Amendments.** A ruling a week late still asks what was true when the act
+ *   happened, so the escalation lands if the denial *was* running then — the
+ *   same `occurred_at` clock an anchor reset and a citing ref already use.
+ *
+ * The span is only as good as what the rebuild preserves, which is why that
+ * reset is scoped to the `completed`/`failed` closes replay can re-derive: an
+ * off-log close (`expired`, `canceled`) keeps its `closed_at` because nothing
+ * would ever restore it. **Stopwatches are the remaining gap** — they are torn
+ * down and re-opened from the log, so an `auto_closed` one (the over-max sweep,
+ * which no event records) comes back open and stays open until the next sweep,
+ * and a `{ session_stopwatch: false }` clause inverts for the rest of that
+ * replay. Nothing in the pack uses that shape today; closing it properly means
+ * sweeping at each replayed event's timestamp rather than at `now`.
+ *
+ * A **paused** countdown is active: pausing freezes the clock, it does not end
+ * the denial. A closed one is not, whatever closed it — the sweep stamps
+ * `closed_at` when it expires a countdown, so an expiry ends the span honestly
+ * without the predicate having to reason about deadlines (which pause and
+ * extend rewrite in place).
+ *
+ * One implementation for the DO and the client, so the confirm sheet's preview
+ * and the commit cannot disagree about what was running.
+ */
+/**
+ * The spans of a list of {@link TimerView}s. The view calls the definition
+ * `timer` and the span calls it `definition`, so this rename lives beside the
+ * predicate that consumes it rather than in whichever component happened to need
+ * it first — the client's adaptation cannot drift from the DO's that way.
+ */
+export function spansOf(timers: readonly TimerView[]): TimerSpan[] {
+	return timers.map((t) => ({
+		definition: t.timer,
+		opened_at: t.opened_at,
+		closed_at: t.closed_at,
+	}));
+}
+
+export function activeTimerDefinitionsAt(
+	spans: readonly TimerSpan[],
+	at: number,
+): ReadonlySet<string> {
+	const active = new Set<string>();
+	for (const span of spans) {
+		if (span.opened_at === null || span.opened_at > at) continue;
+		if (span.closed_at !== null && span.closed_at <= at) continue;
+		active.add(span.definition);
+	}
+	return active;
+}
+
 // ── Stopwatches (accumulating) — handoff §4.5 ──────────────────────────────────
 
 /**

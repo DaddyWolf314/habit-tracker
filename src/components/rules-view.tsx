@@ -28,21 +28,30 @@ import type { RoleMember } from "#/shared/identity.ts";
 import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import type { Role } from "#/shared/roles.ts";
 import {
+	COMPARISON_COPY,
 	describeCondition,
 	describeRule,
 	isPickerEditable,
 } from "#/shared/rule-describe.ts";
 import {
+	type ComparisonClause,
 	currentRule,
 	type Effect,
+	isComparisonClause,
 	latestVersion,
 	type Rule,
+	type RuleCondition,
 	type RuleDefinition,
 	ruleFromVersion,
 	ruleName,
 	type VersionedRule,
 } from "#/shared/rules.ts";
-import { anchorLabel, DEFAULT_ANCHORS } from "#/templates/index.ts";
+import { humanize } from "#/shared/trace.ts";
+import {
+	anchorLabel,
+	DEFAULT_ANCHORS,
+	DEFAULT_TIMERS,
+} from "#/templates/index.ts";
 
 /**
  * The Rules screen (#64, ADR 0002), reached from Settings since #123. Every
@@ -452,7 +461,32 @@ interface EffectDraft {
 interface ConditionDraft {
 	key: string;
 	value: string;
+	/** `eq` is the equality every non-number field is limited to (ADR 0011). */
+	op: "eq" | ComparisonClause["op"];
 }
+
+/** One ambient-state clause being authored (ADR 0011). */
+interface TimerDraft {
+	timer: string;
+	/** Whether the rule wants the timer running, or wants it *not* running. */
+	wanted: boolean;
+}
+
+/**
+ * The operators offered beside a number field: plain equality, then each
+ * comparison in `rule-describe`'s own words (ADR 0011). Read from
+ * {@link COMPARISON_COPY} rather than restated, so the row the author builds and
+ * the preview sentence under it cannot drift into two vocabularies — they render
+ * different grammars of the same phrase ("is at most" + "2" against "2 or less"),
+ * which is exactly the pair that drifts unnoticed when it is written twice.
+ */
+const COMPARISON_OPS: { op: ConditionDraft["op"]; label: string }[] = [
+	{ op: "eq", label: "is" },
+	...(Object.keys(COMPARISON_COPY) as ComparisonClause["op"][]).map((op) => ({
+		op,
+		label: COMPARISON_COPY[op].operator,
+	})),
+];
 
 /**
  * Create/edit editor. Offers only what actually exists — event types (minus the
@@ -500,11 +534,20 @@ function RuleEditor({
 	);
 	const [conditions, setConditions] = useState<ConditionDraft[]>(
 		seed
-			? Object.entries(seed.condition.metadata).map(([key, value]) => ({
-					key,
-					value: String(value),
-				}))
+			? Object.entries(seed.condition.metadata).map(([key, value]) =>
+					isComparisonClause(value)
+						? { key, value: String(value.value), op: value.op }
+						: { key, value: String(value), op: "eq" as const },
+				)
 			: [],
+	);
+	// Ambient-state clauses (ADR 0011). Separate from `conditions` because they
+	// constrain the moment rather than the event — the same split the preview
+	// sentence makes ("… , while a denial period is running").
+	const [timerClauses, setTimerClauses] = useState<TimerDraft[]>(
+		Object.entries(seed?.condition.timer_active ?? {}).map(
+			([timer, wanted]) => ({ timer, wanted }),
+		),
 	);
 	const [effects, setEffects] = useState<EffectDraft[]>(
 		seed ? seed.effects.map(effectToDraft) : [blankEffect()],
@@ -535,25 +578,18 @@ function RuleEditor({
 
 	// Live preview through the one shared phrasing path (rule-describe), so what
 	// the author reads here is exactly what the rules screen and the trace chain
-	// will say — including the subject clause ("… about the dom", ADR 0003).
-	const previewWhen = useMemo(() => {
-		if (!type) return null;
-		const metadata: Record<string, string | number | boolean> = {};
-		for (const c of conditions) {
-			const field = c.key ? type.metadata[c.key] : undefined;
-			if (field && c.value !== "") {
-				metadata[c.key] = coerceValue(field.kind, c.value);
-			}
-		}
-		return describeCondition(
-			{
-				type: type.id,
-				...(subjectRole ? { subject_role: subjectRole } : {}),
-				metadata,
-			},
-			type,
-		);
-	}, [type, subjectRole, conditions]);
+	// will say — including the subject clause ("… about the dom", ADR 0003) and
+	// the ambient one ("… , while a denial period is running", ADR 0011).
+	const previewWhen = useMemo(
+		() =>
+			type
+				? describeCondition(
+						draftCondition(type, subjectRole, conditions, timerClauses),
+						type,
+					)
+				: null,
+		[type, subjectRole, conditions, timerClauses],
+	);
 
 	const build = (): { id: string; def: RuleDefinition } | null => {
 		// First failure wins, and these are checked in the order the fields are read
@@ -567,16 +603,6 @@ function RuleEditor({
 		if (!type) {
 			setError("Pick an event type first.");
 			return null;
-		}
-		const metadata: Record<string, string | number | boolean> = {};
-		for (const c of conditions) {
-			if (!c.key) continue;
-			const field = type.metadata[c.key];
-			// A row with no value picked is incomplete, not a clause — the same
-			// filter the live preview applies, so what gets saved is exactly what
-			// the author read (coercing "" would invent `false`/`0`/'' equality).
-			if (!field || c.value === "") continue;
-			metadata[c.key] = coerceValue(field.kind, c.value);
 		}
 		const built: Effect[] = [];
 		for (const e of effects) {
@@ -593,11 +619,9 @@ function RuleEditor({
 		}
 		const def: RuleDefinition = {
 			name: trimmed,
-			condition: {
-				type: typeId,
-				...(subjectRole ? { subject_role: subjectRole } : {}),
-				metadata,
-			},
+			// The same builder the live preview reads, so what gets saved is exactly
+			// the sentence the author was shown.
+			condition: draftCondition(type, subjectRole, conditions, timerClauses),
 			effects: built,
 			enabled: seed?.enabled ?? true,
 		};
@@ -786,7 +810,11 @@ function RuleEditor({
 									onChange={(e) =>
 										setConditions((cs) =>
 											cs.map((c, j) =>
-												j === i ? { key: e.target.value, value: "" } : c,
+												// Changing the key resets the operator too: a comparison
+												// carried onto an enum is one the server would refuse.
+												j === i
+													? { key: e.target.value, value: "", op: "eq" }
+													: c,
 											),
 										)
 									}
@@ -798,7 +826,36 @@ function RuleEditor({
 										</option>
 									))}
 								</select>
-								<span className="text-muted-foreground">is</span>
+								{/* Only a number can be compared (ADR 0011), so every other
+								    field keeps the plain word it always had rather than a
+								    one-option select. */}
+								{field?.kind === "number" ? (
+									<select
+										aria-label={`Condition ${i + 1} comparison`}
+										className={fieldClass}
+										value={cond.op}
+										onChange={(e) =>
+											setConditions((cs) =>
+												cs.map((c, j) =>
+													j === i
+														? {
+																...c,
+																op: e.target.value as ConditionDraft["op"],
+															}
+														: c,
+												),
+											)
+										}
+									>
+										{COMPARISON_OPS.map((o) => (
+											<option key={o.op} value={o.op}>
+												{o.label}
+											</option>
+										))}
+									</select>
+								) : (
+									<span className="text-muted-foreground">is</span>
+								)}
 								<ConditionValue
 									label={`Condition ${i + 1} value`}
 									field={field}
@@ -827,12 +884,86 @@ function RuleEditor({
 							size="xs"
 							variant="outline"
 							onClick={() =>
-								setConditions((cs) => [...cs, { key: "", value: "" }])
+								setConditions((cs) => [...cs, { key: "", value: "", op: "eq" }])
 							}
 						>
 							Add condition
 						</Button>
 					)}
+				</fieldset>
+			)}
+
+			{/* The ambient-state predicate (ADR 0011), in its own group because it
+			    constrains the moment rather than the event — the same split the
+			    preview sentence makes. Shown only once a type is picked, like the
+			    conditions above, so the form reveals itself in one order. */}
+			{type && (
+				<fieldset className="mt-3 space-y-2">
+					<legend className="text-xs text-muted-foreground">
+						Only while… (optional timers)
+					</legend>
+					{timerClauses.map((clause, i) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: draft rows are positional
+						<div key={i} className="flex items-center gap-2">
+							<select
+								aria-label={`Timer ${i + 1}`}
+								className={fieldClass}
+								value={clause.timer}
+								onChange={(e) =>
+									setTimerClauses((cs) =>
+										cs.map((c, j) =>
+											j === i ? { ...c, timer: e.target.value } : c,
+										),
+									)
+								}
+							>
+								<option value="">timer…</option>
+								{DEFAULT_TIMERS.map((t) => (
+									<option key={t} value={t}>
+										{/* The same de-slug the preview sentence renders, so the
+										    picked option and "while a denial period is running"
+										    are visibly the same thing. */}
+										{humanize(t)}
+									</option>
+								))}
+							</select>
+							<select
+								aria-label={`Timer ${i + 1} state`}
+								className={fieldClass}
+								value={clause.wanted ? "running" : "not_running"}
+								onChange={(e) =>
+									setTimerClauses((cs) =>
+										cs.map((c, j) =>
+											j === i
+												? { ...c, wanted: e.target.value === "running" }
+												: c,
+										),
+									)
+								}
+							>
+								<option value="running">is running</option>
+								<option value="not_running">is not running</option>
+							</select>
+							<Button
+								size="xs"
+								variant="ghost"
+								onClick={() =>
+									setTimerClauses((cs) => cs.filter((_, j) => j !== i))
+								}
+							>
+								×
+							</Button>
+						</div>
+					))}
+					<Button
+						size="xs"
+						variant="outline"
+						onClick={() =>
+							setTimerClauses((cs) => [...cs, { timer: "", wanted: true }])
+						}
+					>
+						Add timer condition
+					</Button>
 				</fieldset>
 			)}
 
@@ -1113,6 +1244,46 @@ function draftToEffect(draft: EffectDraft): Effect | null {
 		case "notify":
 			return { verb: "notify", target: "partner" };
 	}
+}
+
+/**
+ * The condition the drafts describe. One builder for the live preview and the
+ * saved definition, so the sentence the author read is exactly what is stored —
+ * two loops assembling the same shape is how a preview starts lying.
+ *
+ * An incomplete row is not a clause: a blank value, or a comparison whose value
+ * is not a number, is dropped rather than coerced (coercing "" would invent
+ * `false`/`0`/'' equality, and `Number("")` would invent a bound of zero).
+ */
+function draftCondition(
+	type: EventType,
+	subjectRole: Role | "",
+	conditions: ConditionDraft[],
+	timerClauses: TimerDraft[],
+): RuleCondition {
+	const metadata: RuleCondition["metadata"] = {};
+	for (const c of conditions) {
+		const field = c.key ? type.metadata[c.key] : undefined;
+		if (!field || c.value === "") continue;
+		if (c.op === "eq") {
+			metadata[c.key] = coerceValue(field.kind, c.value);
+			continue;
+		}
+		const value = Number(c.value);
+		if (Number.isFinite(value)) metadata[c.key] = { op: c.op, value };
+	}
+	const timerActive: Record<string, boolean> = {};
+	for (const t of timerClauses) {
+		if (t.timer) timerActive[t.timer] = t.wanted;
+	}
+	return {
+		type: type.id,
+		...(subjectRole ? { subject_role: subjectRole } : {}),
+		metadata,
+		// Omitted rather than empty when unused, matching how the pack's rules and
+		// every rule authored before ADR 0011 are shaped.
+		...(Object.keys(timerActive).length ? { timer_active: timerActive } : {}),
+	};
 }
 
 function coerceValue(

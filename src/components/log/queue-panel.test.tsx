@@ -91,6 +91,7 @@ function renderQueue(events: EventView[] = [PENDING]) {
 			rules={RULES}
 			members={MEMBERS}
 			anchors={ANCHORS}
+			timers={[]}
 			selfRole="dom"
 			onAmended={() => {}}
 		/>,

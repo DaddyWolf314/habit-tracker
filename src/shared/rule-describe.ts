@@ -1,8 +1,15 @@
-import { resolveEffect } from "./engine.ts";
+import { NO_ACTIVE_TIMERS, resolveEffect } from "./engine.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
 import { optionLabel } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
-import type { Effect, Rule, RuleCondition } from "./rules.ts";
+import {
+	ambientClauses,
+	type ComparisonClause,
+	type Effect,
+	isComparisonClause,
+	type Rule,
+	type RuleCondition,
+} from "./rules.ts";
 import { humanize, summarizeEffectOp } from "./trace.ts";
 
 /**
@@ -38,10 +45,53 @@ function valueText(
 }
 
 /**
+ * The couple's voice for each comparison operator (ADR 0011), in the two shapes
+ * the surfaces need: `sentence` completes "Mood is …" once the value is known
+ * ("2 or less"), and `operator` names the op alone, for the editor's select where
+ * the value sits in the next control ("is at most" + "2").
+ *
+ * One table because they are the same vocabulary in two grammars — a rule read on
+ * the rules screen and the same rule being authored have to sound like each
+ * other, and two lists drifted the moment they existed. The engine's near-miss
+ * prose is deliberately *not* here: it stays symbolic ("needs <= 2") because it
+ * is read beside a rule id in the trace, not in a sentence.
+ */
+export const COMPARISON_COPY: Record<
+	ComparisonClause["op"],
+	{ operator: string; sentence: (value: number) => string }
+> = {
+	lt: { operator: "is under", sentence: (v) => `under ${v}` },
+	lte: { operator: "is at most", sentence: (v) => `${v} or less` },
+	gt: { operator: "is over", sentence: (v) => `over ${v}` },
+	gte: { operator: "is at least", sentence: (v) => `${v} or more` },
+};
+
+function comparisonText(clause: ComparisonClause): string {
+	return COMPARISON_COPY[clause.op].sentence(clause.value);
+}
+
+/**
+ * The ambient-state predicate as a trailing clause (ADR 0011) — "while a denial
+ * period is running". Trailing rather than folded in with the metadata, because
+ * it is a fact about the moment rather than about the event, and the sentence
+ * should not blur the two.
+ */
+function ambientText(condition: RuleCondition): string {
+	const clauses = ambientClauses(condition).map(([timer, wanted]) =>
+		wanted
+			? `a ${humanize(timer)} is running`
+			: `no ${humanize(timer)} is running`,
+	);
+	return clauses.length ? `, while ${clauses.join(" and ")}` : "";
+}
+
+/**
  * "when a ritual is logged" plus the subject-role qualifier ("about the sub",
- * ADR 0003) and each metadata equality, e.g. "and late is yes". One renderer:
- * the rules screen, the confirm sheet, and the chain view all read the clause
- * through here, so "what will fire" and "what fired" phrase it identically.
+ * ADR 0003), each metadata constraint ("and late is yes", "and mood is 2 or
+ * less"), and the ambient-state clause ("while a denial period is running",
+ * ADR 0011). One renderer: the rules screen, the confirm sheet, and the chain
+ * view all read the clause through here, so "what will fire" and "what fired"
+ * phrase it identically.
  */
 export function describeCondition(
 	condition: RuleCondition,
@@ -51,13 +101,17 @@ export function describeCondition(
 	const clauses = Object.entries(condition.metadata).map(([key, value]) => {
 		const field = type?.metadata[key];
 		const fieldLabel = field?.label ?? humanize(key);
-		return `${fieldLabel} is ${valueText(field, value)}`;
+		const text = isComparisonClause(value)
+			? comparisonText(value)
+			: valueText(field, value);
+		return `${fieldLabel} is ${text}`;
 	});
 	const about = condition.subject_role
 		? ` about the ${condition.subject_role}`
 		: "";
 	const when = `when ${typeLabel} is logged${about}`;
-	return clauses.length ? `${when} and ${clauses.join(" and ")}` : when;
+	const said = clauses.length ? `${when} and ${clauses.join(" and ")}` : when;
+	return `${said}${ambientText(condition)}`;
 }
 
 /**
@@ -68,7 +122,12 @@ export function describeCondition(
  * only the rules screen states up front, is appended to the shared phrase.
  */
 export function describeEffect(effect: Effect): string {
-	const op = resolveEffect(effect, { type: "", metadata: {}, occurred_at: 0 });
+	const op = resolveEffect(effect, {
+		type: "",
+		metadata: {},
+		occurred_at: 0,
+		active_timers: NO_ACTIVE_TIMERS,
+	});
 	const phrase = summarizeEffectOp(op);
 	return effect.verb === "close_timer" && effect.route_duration_to
 		? `${phrase} and add its time to ${humanize(effect.route_duration_to)}`

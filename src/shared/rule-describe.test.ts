@@ -167,3 +167,54 @@ describe("isPickerEditable — timer rules are advanced/read-only (#64)", () => 
 		expect(isPickerEditable(rule)).toBe(false);
 	});
 });
+
+describe("ambient-state and comparison clauses (ADR 0011)", () => {
+	it("renders a comparison in the couple's voice, not symbols", () => {
+		expect(
+			describeCondition(
+				{ type: "check_in", metadata: { mood: { op: "lte", value: 2 } } },
+				types.get("check_in"),
+			),
+		).toContain("2 or less");
+	});
+
+	it("phrases each operator as words", () => {
+		const said = (op: "lt" | "lte" | "gt" | "gte") =>
+			describeCondition({
+				type: "check_in",
+				metadata: { mood: { op, value: 3 } },
+			});
+		expect(said("lt")).toContain("under 3");
+		expect(said("lte")).toContain("3 or less");
+		expect(said("gt")).toContain("over 3");
+		expect(said("gte")).toContain("3 or more");
+	});
+
+	it("renders the ambient clause as a trailing 'while'", () => {
+		expect(
+			describeCondition({
+				type: "orgasm",
+				metadata: { permitted: false },
+				timer_active: { denial_period: true },
+			}),
+		).toBe(
+			"when orgasm is logged and permitted is no, while a denial period is running",
+		);
+	});
+
+	it("renders a negated clause as 'no … is running'", () => {
+		expect(
+			describeCondition({
+				type: "orgasm",
+				metadata: {},
+				timer_active: { session_stopwatch: false },
+			}),
+		).toBe("when orgasm is logged, while no session stopwatch is running");
+	});
+
+	it("says nothing about ambient state when the clause is absent", () => {
+		expect(describeCondition({ type: "orgasm", metadata: {} })).not.toContain(
+			"while",
+		);
+	});
+});

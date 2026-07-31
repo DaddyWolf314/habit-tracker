@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -21,6 +21,12 @@ import {
 	subjectRoleOf,
 } from "#/shared/roles.ts";
 import type { VersionedRule } from "#/shared/rules.ts";
+import {
+	activeTimerDefinitionsAt,
+	spansOf,
+	type TimerSpan,
+	type TimerView,
+} from "#/shared/timers.ts";
 import { anchorLabel } from "#/templates/index.ts";
 import {
 	displayMetaValue,
@@ -45,6 +51,7 @@ export function QueuePanel({
 	rules,
 	members,
 	anchors,
+	timers,
 	selfRole,
 	onAmended,
 }: {
@@ -53,12 +60,18 @@ export function QueuePanel({
 	rules: VersionedRule[];
 	members: RoleMember[];
 	anchors: AnchorView[];
+	timers: TimerView[];
 	selfRole: Role | null;
 	onAmended: () => void;
 }) {
 	// The same fold Today's queue entry counts (#136): two derivations of "what
 	// awaits my ruling" would eventually disagree about what counts.
 	const queue = queueFor({ events, types, members, role: selfRole });
+
+	// The timer spans the preview resolves ambient state from (ADR 0011). Mapped
+	// once here rather than per card: each card asks the shared predicate for its
+	// own event's moment, which is the same question the DO will ask on commit.
+	const spans = useMemo(() => spansOf(timers), [timers]);
 
 	if (queue.length === 0) return null;
 
@@ -80,6 +93,7 @@ export function QueuePanel({
 						rulings={rulings}
 						members={members}
 						anchors={anchors}
+						spans={spans}
 						onAmended={onAmended}
 					/>
 				))}
@@ -95,6 +109,7 @@ function QueueItem({
 	rulings,
 	members,
 	anchors,
+	spans,
 	onAmended,
 }: {
 	event: EventView;
@@ -103,6 +118,7 @@ function QueueItem({
 	rulings: AwaitedRuling[];
 	members: RoleMember[];
 	anchors: AnchorView[];
+	spans: TimerSpan[];
 	onAmended: () => void;
 }) {
 	// Effective-dating keys off the target event's log-time, never the viewing
@@ -150,6 +166,11 @@ function QueueItem({
 			metadata: event.composite_metadata,
 			occurred_at: event.occurred_at,
 			subject_role: subjectRole,
+			// As of the event, not of now (ADR 0011): a ruling a week late still asks
+			// what was running when the act happened, so an escalation lands if the
+			// denial *was* on — the same `occurred_at` clock the anchor resets below
+			// already use. The same shared predicate the DO applies on commit.
+			active_timers: activeTimerDefinitionsAt(spans, event.occurred_at),
 			awaiting: awaitingKeysFor(type.awaiting, subjectRole),
 		};
 		const after = {

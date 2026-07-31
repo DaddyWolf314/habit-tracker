@@ -1,5 +1,5 @@
 {
-	"version": 9,
+	"version": 10,
 	"rules": [
 		{
 			"id": "R1",
@@ -263,6 +263,28 @@
 			"name": "Dom's edge",
 			"condition": { "type": "edge", "subject_role": "dom", "metadata": {} },
 			"effects": [{ "verb": "increment_counter", "counter": "edges_dom" }]
+		},
+		{
+			"id": "R26",
+			"name": "Unpermitted orgasm during denial",
+			"condition": {
+				"type": "orgasm",
+				"subject_role": "sub",
+				"metadata": { "permitted": false },
+				"timer_active": { "denial_period": true }
+			},
+			"effects": [
+				{ "verb": "increment_counter", "counter": "demerits", "by": 2 }
+			]
+		},
+		{
+			"id": "R27",
+			"name": "Check-in flags a low mood",
+			"condition": {
+				"type": "check_in",
+				"metadata": { "mood": { "op": "lte", "value": 2 } }
+			},
+			"effects": [{ "verb": "notify", "target": "partner" }]
 		}
 	]
 }

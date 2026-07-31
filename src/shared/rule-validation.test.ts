@@ -322,3 +322,77 @@ describe("edit-path validation (ADR 0002) — identical to a create", () => {
 		expect(asCreate).toEqual({ ok: true });
 	});
 });
+
+describe("ambient-state and comparison clauses (ADR 0011)", () => {
+	it("accepts a timer_active clause naming a known definition", () => {
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: true },
+			},
+		});
+		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+
+	it("rejects a timer_active clause naming an unknown definition", () => {
+		// A typo'd definition reads as "never active" at runtime and holds the rule
+		// shut for ever — the same invisible failure an unknown metadata key causes.
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denail_period: true },
+			},
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("denail_period");
+	});
+
+	it("accepts a comparison on a number field", () => {
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "check_in",
+				metadata: { mood: { op: "lte", value: 2 } },
+			},
+			effects: [{ verb: "notify", target: "partner" }],
+		});
+		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+
+	it("refuses a comparison on a non-number field", () => {
+		// `severity > "major"` has no answer; refused at creation rather than never
+		// matching for the rest of the couple's life.
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "infraction",
+				metadata: { severity: { op: "gt", value: 2 } },
+			},
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("only numbers can be compared");
+	});
+
+	it("still refuses a comparison on a key the type does not have", () => {
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "check_in",
+				metadata: { moood: { op: "lte", value: 2 } },
+			},
+			effects: [{ verb: "notify", target: "partner" }],
+		});
+		const result = validateRule(r, ctx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("unknown key 'moood'");
+	});
+});

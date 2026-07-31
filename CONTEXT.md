@@ -13,13 +13,44 @@ in and should not.
 - **Amendment** — a post-hoc record against an event: an `adjudication` (ruling),
   a `note_appended`, or a `retracted`. Composite state is the original metadata
   overlaid by amendments in timestamp order — derived, never stored.
-- **Rule** — `when type = X [AND metadata equality] → effects`. Routes values; it
-  never computes them (equality-only condition language). A stable rule id carries
-  one or more effective-dated **rule versions**; authoring is dom/switch-only.
+- **Rule** — `when type = X [AND metadata constraints] [AND ambient state] →
+  effects`. Routes values; it never computes them. The condition language admits
+  what the event carries, who it is about, and what was *running* when it
+  happened — never a count, an elapsed time, or a query over the log (ADR 0011).
+  A stable rule id carries one or more effective-dated **rule versions**;
+  authoring is dom/switch-only.
   _Avoid_: conflating with the **Agreement** an `infraction` cites — machine
   automation, not a term the couple agreed (ADR 0006).
 - **Effect** — one op a fired rule routes: counter increment/decrement/reset,
   anchor reset, timer open/close, notify.
+- **Ambient-state predicate** — the condition clause matching on what was
+  *running* when an event happened: `timer_active`, a map of timer definition to
+  expected activity (`{ denial_period: true }`, `{ session_stopwatch: false }`).
+  The one extension #48 reserved and the only state query the language admits
+  (ADR 0011) — it makes a **timer** ambient context, not just a projection, so a
+  couple can score an act by the mode they were in rather than by a key the
+  author remembered to set. Names a **definition**, never an instance ("is *a*
+  `task_countdown` open", not "is this task's"), and is boolean — no count, no
+  remaining time. Resolved by the *caller* and passed in the rule context exactly
+  as a **subject-role qualifier** is, so the engine stays storage-free and the
+  dom's confirm-sheet preview agrees with the DO. Resolved from each timer's
+  durable **span** (`opened_at`/`closed_at`) rather than its current status, as
+  of the event's **`occurred_at`** — so a ruling a week late still asks what was
+  running when the act happened, on the same clock an anchor reset and a citing
+  ref already use. A **paused** countdown is active: a pause freezes the clock,
+  it does not end the denial. _Avoid_: "state predicate" unqualified — the
+  elapsed and counter forms are refused, not pending; "mode" as a separate
+  primitive, since a timer already is one; reading the predicate off `status`,
+  which a rebuild resets.
+- **Comparison clause** — a numeric constraint (`{ mood: { op: "lte", value: 2 } }`)
+  standing in for a metadata key's bare equality value. **Not** a state query:
+  still a pure fold over the event. The right side is always a *literal* — a
+  clause naming a second key would be computation, and rules route values rather
+  than computing them. Legal only on a `number` field, refused at creation
+  otherwise. It replaces the value on the `metadata` map rather than living in a
+  parallel map, so one key can never carry two contradictory constraints.
+  _Avoid_: "threshold" — a counter threshold is the refused form, and belongs to
+  the deferred scoring layer (#47); "expression".
 - **Rule version** — an effective-dated revision of a rule's **name**, condition,
   and effects. Rules are append-only-versioned: editing adds a version (with an
   `effective_from`), never rewriting the prior, so replay picks the version in force
@@ -382,7 +413,11 @@ consent-record view and the debugging view are the same screen. Lives in the dee
 - **Near-miss** — a rule that matched on type but did not fire because a condition
   key was unset or wrong. Recorded so pending-adjudication state is legible
   ("R12 didn't fire: permitted not set"). Surfaced only when waiting on a key the
-  event type is `awaiting`.
+  event type is `awaiting`. An **ambient-state predicate** misses on a third
+  ground — the mode was wrong — which no ruling can ever resolve, so it never
+  enters `awaiting` and is surfaced only when it was the *sole* miss ("R26 didn't
+  fire: no denial period was active"). Otherwise every act outside a mode would
+  file a row nobody asked for.
 
 The module owns the taxonomy end to end: pure **builders** the write side calls
 (one `writeTrace` sink in `CoupleDO` does the single INSERT), the `encodeDetail`
