@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	activeTimerDefinitionsAt,
 	type Countdown,
 	closeStopwatch,
 	countdownExpiryAt,
@@ -322,6 +323,80 @@ describe("extendChoicesFor (#95 — extend options scaled to the countdown)", ()
 			{ label: "+10m", ms: 10 * MIN },
 			{ label: "+1h", ms: HOUR },
 			{ label: "+6h", ms: 6 * HOUR },
+		]);
+	});
+});
+
+describe("activeTimerDefinitionsAt (ADR 0011)", () => {
+	const span = (
+		definition: string,
+		opened_at: number | null,
+		closed_at: number | null,
+	) => ({ definition, opened_at, closed_at });
+
+	it("is active from the moment it opened", () => {
+		const spans = [span("denial_period", 100, null)];
+		expect([...activeTimerDefinitionsAt(spans, 99)]).toEqual([]);
+		expect([...activeTimerDefinitionsAt(spans, 100)]).toEqual([
+			"denial_period",
+		]);
+		expect([...activeTimerDefinitionsAt(spans, 500)]).toEqual([
+			"denial_period",
+		]);
+	});
+
+	it("stops being active at the moment it closed", () => {
+		const spans = [span("denial_period", 100, 200)];
+		expect([...activeTimerDefinitionsAt(spans, 199)]).toEqual([
+			"denial_period",
+		]);
+		// The close instant belongs to the closed state: an orgasm logged at the
+		// same millisecond the denial ended did not break a running denial.
+		expect([...activeTimerDefinitionsAt(spans, 200)]).toEqual([]);
+	});
+
+	it("answers a past moment the same after the timer has closed", () => {
+		// The property a rebuild depends on: replaying an old event re-derives the
+		// state that event actually met, not today's.
+		const closed = [span("denial_period", 100, 200)];
+		expect([...activeTimerDefinitionsAt(closed, 150)]).toEqual([
+			"denial_period",
+		]);
+	});
+
+	it("ignores a timer that had not opened yet", () => {
+		// The rebuild bug this replaced: `rebuildCounters` resets countdowns to
+		// running, so a status test read every denial as active from event one and
+		// escalated orgasms that predated it.
+		const spans = [span("denial_period", 1_000, null)];
+		expect([...activeTimerDefinitionsAt(spans, 10)]).toEqual([]);
+	});
+
+	it("a never-opened row is never active", () => {
+		expect([...activeTimerDefinitionsAt([span("x", null, null)], 5)]).toEqual(
+			[],
+		);
+	});
+
+	it("collapses several instances of one definition", () => {
+		const spans = [
+			span("task_countdown", 10, 20),
+			span("task_countdown", 15, null),
+		];
+		expect([...activeTimerDefinitionsAt(spans, 18)]).toEqual([
+			"task_countdown",
+		]);
+	});
+
+	it("reports every definition running at once", () => {
+		const spans = [
+			span("denial_period", 10, null),
+			span("session_stopwatch", 12, null),
+			span("task_countdown", 1, 5),
+		];
+		expect([...activeTimerDefinitionsAt(spans, 13)].sort()).toEqual([
+			"denial_period",
+			"session_stopwatch",
 		]);
 	});
 });

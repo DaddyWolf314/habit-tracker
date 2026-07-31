@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	evaluateRules,
+	NO_ACTIVE_TIMERS,
 	type RuleEventContext,
 	reevaluate,
 	rulesEffectiveAt,
@@ -41,7 +42,7 @@ function ctx(
 	type = "ritual_completed",
 	metadata: RuleEventContext["metadata"] = { late: true },
 ): RuleEventContext {
-	return { type, metadata, occurred_at: 1000 };
+	return { type, metadata, occurred_at: 1000, active_timers: NO_ACTIVE_TIMERS };
 }
 
 describe("rulesEffectiveAt — version selection", () => {

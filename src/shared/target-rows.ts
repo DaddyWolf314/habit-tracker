@@ -2,7 +2,7 @@ import type { Counter } from "./counters.ts";
 import type { EventType } from "./event-types.ts";
 import { isCitingRef } from "./refs.ts";
 import type { MetadataValue } from "./roles.ts";
-import type { Rule } from "./rules.ts";
+import { isComparisonClause, type Rule } from "./rules.ts";
 
 /**
  * What Today shows you are aiming at (#135, handoff §9.2 — "today's counter
@@ -121,12 +121,22 @@ function tickFor(
 		// An unconditional rule (the pack's R1) says only "some ritual happened",
 		// which names nothing a tick could cite.
 		if (clauses.length === 0) continue;
-		const allCite = clauses.every(([key]) => {
+		// Every clause must cite an Agreement by ref equality for the rule to name
+		// what a tick would log. A comparison clause (ADR 0011) never can — it
+		// constrains a number, and names nothing outside the event — so a rule
+		// carrying one is not a citation, and the narrowing falls out of the check.
+		const cited: Record<string, MetadataValue> = {};
+		let allCite = true;
+		for (const [key, value] of clauses) {
 			const field = type.metadata[key];
-			return field !== undefined && isCitingRef(field);
-		});
+			if (!field || !isCitingRef(field) || isComparisonClause(value)) {
+				allCite = false;
+				break;
+			}
+			cited[key] = value;
+		}
 		if (!allCite) continue;
-		const logs = { type: type.id, metadata: { ...rule.condition.metadata } };
+		const logs = { type: type.id, metadata: cited };
 		found.set(JSON.stringify(logs), logs);
 	}
 	return found.size === 1 ? [...found.values()][0] : null;

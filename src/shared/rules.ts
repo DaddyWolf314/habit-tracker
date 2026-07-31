@@ -2,27 +2,97 @@ import { z } from "zod";
 import { metadataValueSchema, roleSchema } from "./roles.ts";
 
 /**
- * Rules (handoff §4.3): `when event.type = X [AND metadata equality] → effects`.
+ * Rules (handoff §4.3): `when event.type = X [AND metadata constraints]
+ * [AND ambient state] → effects`.
  *
- * The condition language is deliberately dumb — equality on `type`, metadata
- * keys, and the subject's role only. Absent key ⇒ conditional rules silently
- * skip (load-bearing for adjudication). No expressions, thresholds, or state
- * queries in v1.
+ * The condition language stays deliberately small. It may test what the event
+ * carries, who it is about, and what was *running* when it happened — never a
+ * count, an elapsed time, or a query over the log (ADR 0011). An absent metadata
+ * key ⇒ conditional rules silently skip (load-bearing for adjudication).
  */
+
+/**
+ * A numeric comparison on a metadata key (ADR 0011) — `mood <= 2`. **Not** a
+ * state query: still a pure fold over the event, the same complexity class as
+ * the equality it stands in for.
+ *
+ * The right-hand side is always a literal. A clause naming a second key
+ * (`duration_ms > planned_ms`) would be computation, and rules route values
+ * rather than computing them. Legal only on a `number` field, refused at
+ * creation otherwise ({@link validateRule}).
+ */
+export const comparisonClauseSchema = z.object({
+	op: z.enum(["lt", "lte", "gt", "gte"]),
+	value: z.number(),
+});
+export type ComparisonClause = z.infer<typeof comparisonClauseSchema>;
+
+/**
+ * One constraint on a metadata key: equality against a literal, or a
+ * {@link comparisonClauseSchema}. The comparison replaces the value on the same
+ * map rather than living in a parallel one, so a key can never carry two
+ * contradictory constraints — `{ mood: 3 }` beside `{ mood: { op: "gt", value: 4 } }`
+ * would be valid, unsatisfiable, and silent forever.
+ */
+export const conditionClauseSchema = z.union([
+	metadataValueSchema,
+	comparisonClauseSchema,
+]);
+export type ConditionClause = z.infer<typeof conditionClauseSchema>;
+
+/** Narrows a condition clause to a comparison; anything else is an equality. */
+export function isComparisonClause(
+	clause: ConditionClause,
+): clause is ComparisonClause {
+	return typeof clause === "object" && clause !== null && "op" in clause;
+}
+
 export const ruleConditionSchema = z.object({
 	type: z.string(),
 	/**
 	 * Subject-role qualifier (ADR 0003): the rule matches only when the event's
 	 * subject resolves to this role. Role form only — pack-portable, resolved
 	 * against the couple's member roles at evaluation time; the engine never
-	 * sees member ids. Absent ⇒ matches regardless of subject. Still equality
-	 * on the event itself, never a state query.
+	 * sees member ids. Absent ⇒ matches regardless of subject. Still a fact about
+	 * the event itself, never a state query.
 	 */
 	subject_role: roleSchema.optional(),
-	/** Equality conditions on composite metadata. Empty ⇒ matches on type alone. */
-	metadata: z.record(z.string(), metadataValueSchema).default({}),
+	/** Constraints on composite metadata. Empty ⇒ matches on type alone. */
+	metadata: z.record(z.string(), conditionClauseSchema).default({}),
+	/**
+	 * Ambient-state predicate (ADR 0011) — the one state query the language
+	 * admits, and the extension #48 reserved. Maps a **timer definition** to
+	 * whether an instance of it must be open: `{ denial_period: true }` matches
+	 * while a denial is running, `{ session_stopwatch: false }` only outside a
+	 * session. Empty ⇒ matches regardless of ambient state.
+	 *
+	 * Bounded on purpose. It names a definition, never an instance (there is no
+	 * `match_on` — "is *a* `task_countdown` open", not "is this task's"), and it
+	 * is boolean: no count, no remaining time, no comparison against a deadline.
+	 * The map form is equality on a derived boolean, which keeps it the same
+	 * complexity class as the metadata equality beside it.
+	 *
+	 * Resolved by the *caller* into `RuleEventContext.active_timers`, exactly as
+	 * `subject_role` is, so the engine stays storage-free and the client's
+	 * confirm-sheet preview agrees with the DO.
+	 *
+	 * Optional rather than defaulted (unlike `metadata`, which predates it and is
+	 * near-universal): absent is the honest shape for the rules that have no
+	 * ambient constraint, which is all of them but one. Read it through
+	 * {@link ambientClauses} so the three consumers agree on that.
+	 */
+	timer_active: z.record(z.string(), z.boolean()).optional(),
 });
 export type RuleCondition = z.infer<typeof ruleConditionSchema>;
+
+/**
+ * A condition's ambient-state clauses, as entries. The one place the
+ * absent-means-unconstrained reading lives, so the engine, the validator, and
+ * the describer cannot drift on what a missing `timer_active` means.
+ */
+export function ambientClauses(condition: RuleCondition): [string, boolean][] {
+	return Object.entries(condition.timer_active ?? {});
+}
 
 /** A ref match, e.g. `timer.task_id = event.task_id`, expressed as timer→event keys. */
 const matchOnSchema = z.record(z.string(), z.string());

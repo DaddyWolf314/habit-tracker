@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	applyCounterOp,
 	type EffectOp,
+	NO_ACTIVE_TIMERS,
 	type RuleEventContext,
 	resolveEffect,
 	routeClosedTimerDuration,
@@ -13,7 +14,7 @@ function ctx(
 	metadata: RuleEventContext["metadata"] = {},
 	occurred_at = 5000,
 ): RuleEventContext {
-	return { type, metadata, occurred_at };
+	return { type, metadata, occurred_at, active_timers: NO_ACTIVE_TIMERS };
 }
 
 describe("effect verb resolution (handoff §4.3)", () => {

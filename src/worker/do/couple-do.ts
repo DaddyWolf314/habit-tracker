@@ -148,6 +148,7 @@ import {
 	WEEK_MS,
 } from "#/shared/streaks.ts";
 import {
+	activeTimerDefinitionsAt,
 	type Countdown,
 	closeStopwatch,
 	countdownExpiryAt,
@@ -4373,8 +4374,26 @@ export class CoupleDO extends DurableObject<Env> {
 			metadata,
 			occurred_at: event.occurred_at,
 			subject_role: subjectRole,
+			// As of the event, not of now (ADR 0011) — see `activeTimerDefinitionsAt`
+			// for why the span rather than the status, and why an amendment is asked
+			// what was running *then*.
+			active_timers: this.activeTimersAt(event.occurred_at),
 			awaiting: awaitingKeysFor(awaiting, subjectRole),
 		};
+	}
+
+	/**
+	 * The ambient state a rule's `timer_active` clause reads (ADR 0011). The one
+	 * resolution seam beside `subjectRole`: the engine never touches SQL, so this
+	 * is where the world becomes the plain set it folds over — through the same
+	 * shared predicate the client's confirm-sheet preview uses.
+	 *
+	 * Read fresh per event rather than cached for the request: a replay applies
+	 * opens and closes as it goes, and an append can close a timer that a later
+	 * rule in the same batch must then see as shut.
+	 */
+	private activeTimersAt(at: number): ReadonlySet<string> {
+		return activeTimerDefinitionsAt(this.timerRows(), at);
 	}
 
 	protected memberByIdentity(identityHash: string): MemberRow | undefined {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	evaluateRules,
 	matchRule,
+	NO_ACTIVE_TIMERS,
 	type RuleEventContext,
 	reevaluate,
 } from "./engine.ts";
@@ -20,7 +21,7 @@ function ctx(
 	type: string,
 	metadata: RuleEventContext["metadata"] = {},
 ): RuleEventContext {
-	return { type, metadata, occurred_at: 1000 };
+	return { type, metadata, occurred_at: 1000, active_timers: NO_ACTIVE_TIMERS };
 }
 
 describe("condition matching (handoff §4.3)", () => {
@@ -159,6 +160,7 @@ describe("evaluateRules", () => {
 			type: "orgasm",
 			metadata: { outcome: "full" },
 			occurred_at: 1,
+			active_timers: NO_ACTIVE_TIMERS,
 			awaiting: ["permitted"],
 		});
 		// RN is a wrong-value miss on `outcome` (set, not awaiting) — dropped.
@@ -277,6 +279,7 @@ describe("subject-role qualifier (ADR 0003)", () => {
 			metadata,
 			occurred_at: 1000,
 			subject_role: subjectRole,
+			active_timers: NO_ACTIVE_TIMERS,
 		};
 	}
 
@@ -364,5 +367,189 @@ describe("subject-role qualifier (ADR 0003)", () => {
 			subjectCtx("dom", { permitted: true }),
 		);
 		expect(fired).toEqual([]);
+	});
+});
+
+describe("ambient-state predicate (ADR 0011)", () => {
+	const escalation = rule({
+		id: "R26",
+		condition: {
+			type: "orgasm",
+			metadata: { permitted: false },
+			timer_active: { denial_period: true },
+		},
+	});
+
+	function ambientCtx(
+		active: string[],
+		metadata: RuleEventContext["metadata"] = { permitted: false },
+	): RuleEventContext {
+		return {
+			type: "orgasm",
+			metadata,
+			occurred_at: 1000,
+			active_timers: new Set(active),
+		};
+	}
+
+	it("fires when the named timer is open", () => {
+		expect(matchRule(escalation, ambientCtx(["denial_period"]))).toEqual({
+			status: "fired",
+		});
+	});
+
+	it("does not fire when it is closed, and says so without awaiting anything", () => {
+		// The trace must be able to explain the silence, but no ruling on any key
+		// will make a denial have been running — so the queue is never promised
+		// a resolution that cannot arrive.
+		const result = matchRule(escalation, ambientCtx([]));
+		expect(result).toEqual({
+			status: "near_miss",
+			reason: "R26 didn't fire: denial_period not active",
+			awaiting: [],
+			state_mismatch: true,
+		});
+	});
+
+	it("an unrelated open timer is not the one named", () => {
+		expect(matchRule(escalation, ambientCtx(["task_countdown"])).status).toBe(
+			"near_miss",
+		);
+	});
+
+	it("negation matches only outside the timer", () => {
+		const outside = rule({
+			id: "Rout",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: false },
+			},
+		});
+		expect(matchRule(outside, ambientCtx([])).status).toBe("fired");
+		expect(matchRule(outside, ambientCtx(["denial_period"]))).toEqual({
+			status: "near_miss",
+			reason: "Rout didn't fire: denial_period active",
+			awaiting: [],
+			state_mismatch: true,
+		});
+	});
+
+	it("every clause must hold when several are named", () => {
+		const both = rule({
+			id: "Rboth",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: true, session_stopwatch: false },
+			},
+		});
+		expect(matchRule(both, ambientCtx(["denial_period"])).status).toBe("fired");
+		expect(
+			matchRule(both, ambientCtx(["denial_period", "session_stopwatch"]))
+				.status,
+		).toBe("near_miss");
+	});
+
+	it("a rule with no clause is unaffected by ambient state", () => {
+		const plain = rule({
+			id: "Rplain",
+			condition: { type: "orgasm", metadata: {} },
+		});
+		expect(matchRule(plain, ambientCtx(["denial_period"])).status).toBe(
+			"fired",
+		);
+		expect(matchRule(plain, ambientCtx([])).status).toBe("fired");
+	});
+
+	it("reports the metadata miss, not the ambient one, when both are unmet", () => {
+		// The sole-miss rule: a reader can act on "permitted not set" — a ruling
+		// resolves it. Reporting the denial instead would bury that.
+		const result = matchRule(escalation, ambientCtx([], {}));
+		expect(result).toMatchObject({
+			status: "near_miss",
+			reason: "R26 didn't fire: permitted not set",
+			awaiting: ["permitted"],
+		});
+		expect(result).not.toHaveProperty("state_mismatch");
+	});
+
+	it("surfaces a sole ambient miss even under the awaiting filter", () => {
+		// It earns the row precisely because everything else held: this rule would
+		// have fired if the mode had been on, and the sub can see it was considered.
+		const { nearMisses } = evaluateRules([escalation], {
+			...ambientCtx([]),
+			awaiting: ["permitted"],
+		});
+		expect(nearMisses.map((n) => n.rule_id)).toEqual(["R26"]);
+	});
+
+	it("keeps routine events out of the trace when the metadata missed too", () => {
+		const { nearMisses } = evaluateRules([escalation], {
+			...ambientCtx([], { permitted: true }),
+			awaiting: ["permitted"],
+		});
+		// A set-but-wrong `permitted` is the existing noise case, and the ambient
+		// clause must not smuggle it back in.
+		expect(nearMisses).toEqual([]);
+	});
+});
+
+describe("comparison clauses (ADR 0011)", () => {
+	const lowMood = rule({
+		id: "R27",
+		condition: {
+			type: "check_in",
+			metadata: { mood: { op: "lte", value: 2 } },
+		},
+	});
+
+	it("fires at and below the bound, not above it", () => {
+		expect(matchRule(lowMood, ctx("check_in", { mood: 1 })).status).toBe(
+			"fired",
+		);
+		expect(matchRule(lowMood, ctx("check_in", { mood: 2 })).status).toBe(
+			"fired",
+		);
+		expect(matchRule(lowMood, ctx("check_in", { mood: 3 }))).toEqual({
+			status: "near_miss",
+			reason: "R27 didn't fire: mood is 3, needs <= 2",
+			awaiting: [],
+		});
+	});
+
+	it("covers each operator at its boundary", () => {
+		const at = (op: "lt" | "lte" | "gt" | "gte", value: number, mood: number) =>
+			matchRule(
+				rule({
+					id: "Rop",
+					condition: { type: "check_in", metadata: { mood: { op, value } } },
+				}),
+				ctx("check_in", { mood }),
+			).status;
+		expect(at("lt", 3, 3)).toBe("near_miss");
+		expect(at("lt", 3, 2)).toBe("fired");
+		expect(at("lte", 3, 3)).toBe("fired");
+		expect(at("gt", 3, 3)).toBe("near_miss");
+		expect(at("gt", 3, 4)).toBe("fired");
+		expect(at("gte", 3, 3)).toBe("fired");
+	});
+
+	it("an unset key still awaits, exactly as an equality would", () => {
+		// The pending-adjudication case is about the key being absent, not about
+		// which kind of constraint would have been applied to it.
+		expect(matchRule(lowMood, ctx("check_in", {}))).toEqual({
+			status: "near_miss",
+			reason: "R27 didn't fire: mood not set",
+			awaiting: ["mood"],
+		});
+	});
+
+	it("a non-numeric value fails rather than coercing", () => {
+		// Only reachable if a type's schema changed under a rule validated against
+		// the old one. The rule goes quiet instead of scoring on a string.
+		expect(matchRule(lowMood, ctx("check_in", { mood: "low" })).status).toBe(
+			"near_miss",
+		);
 	});
 });

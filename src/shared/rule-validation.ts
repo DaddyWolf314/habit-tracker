@@ -1,6 +1,12 @@
 import type { EventType, MetadataField } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
-import { type Rule, type RuleVersion, ruleFromVersion } from "./rules.ts";
+import {
+	ambientClauses,
+	isComparisonClause,
+	type Rule,
+	type RuleVersion,
+	ruleFromVersion,
+} from "./rules.ts";
 
 /**
  * Creation-time rule validation (handoff §4.3). A rule is checked against the
@@ -44,8 +50,20 @@ export function validateRule(
 		if (!field) {
 			return fail(`condition references unknown key '${key}' on ${type.id}`);
 		}
-		const valueError = checkConditionValue(key, field, value);
+		const valueError = isComparisonClause(value)
+			? checkComparison(key, field)
+			: checkConditionValue(key, field, value);
 		if (valueError) return fail(valueError);
+	}
+
+	// The ambient-state predicate (ADR 0011) names timer *definitions*, checked
+	// against the same set an effect's timer target is. A typo'd definition would
+	// otherwise read as "never active" and silently hold the rule shut for ever —
+	// the same invisible failure an unknown metadata key would cause.
+	for (const [timer] of ambientClauses(rule.condition)) {
+		if (!ctx.timers.has(timer)) {
+			return fail(`condition references unknown timer '${timer}'`);
+		}
 	}
 
 	// Effect targets must be known projections, and every routed event key
@@ -178,6 +196,19 @@ function checkRouteWhen(
 		if (valueError) return valueError;
 	}
 	return null;
+}
+
+/**
+ * Ensures a comparison clause (ADR 0011) sits on a `number` field. Ordering an
+ * enum or a ref is the kind of thing that reads plausibly in an editor and then
+ * means nothing at runtime — `severity > "major"` has no answer — so it is
+ * refused at creation, beside the unknown-key errors, rather than never matching
+ * for the rest of the couple's life.
+ */
+function checkComparison(key: string, field: MetadataField): string | null {
+	return field.kind === "number"
+		? null
+		: `condition on '${key}' compares a ${field.kind} field; only numbers can be compared`;
 }
 
 /** Ensures a condition's equality value fits the field's kind (catches typos). */

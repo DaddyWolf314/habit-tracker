@@ -19,11 +19,11 @@ const counterIds = new Set(DEFAULT_COUNTERS.map((c) => c.id));
 const anchors = new Set(DEFAULT_ANCHORS);
 const timers = new Set(DEFAULT_TIMERS);
 
-describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)", () => {
-	it("installs exactly R1 through R25", () => {
-		expect(DEFAULT_RULES).toHaveLength(25);
+describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004, ADR 0011)", () => {
+	it("installs exactly R1 through R27", () => {
+		expect(DEFAULT_RULES).toHaveLength(27);
 		expect(DEFAULT_RULES.map((r) => r.id)).toEqual(
-			Array.from({ length: 25 }, (_, i) => `R${i + 1}`),
+			Array.from({ length: 27 }, (_, i) => `R${i + 1}`),
 		);
 	});
 
@@ -75,6 +75,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "infraction",
 			metadata: { severity: "minor", self_reported: true },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "sub",
 		});
 		const demeritEffects = fired.flatMap((f) =>
@@ -90,6 +91,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "infraction",
 			metadata: { severity: "major", self_reported: true },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id)).toContain("R8");
@@ -100,6 +102,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "note",
 			metadata: {},
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 		});
 		expect(fired).toEqual([]);
 		expect(nearMisses).toEqual([]);
@@ -117,6 +120,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 				duration_ms: 3_600_000,
 			},
 			occurred_at: 1000,
+			active_timers: new Set<string>(),
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R22"]);
 		expect(fired[0]?.ops).toEqual([
@@ -136,11 +140,13 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "task_assigned",
 			metadata: { task_id: "t7", duration_ms: 60_000 },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 		});
 		const completed = evaluateRules(DEFAULT_RULES, {
 			type: "task_completed",
 			metadata: { task_id: "t7" },
 			occurred_at: 2,
+			active_timers: new Set<string>(),
 		});
 		const openMatch = assigned.fired[0]?.ops.find(
 			(op) => op.kind === "timer" && op.op === "open",
@@ -168,6 +174,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 				type: "task_assigned",
 				metadata: { task_id: taskId, task_name: "dishes", duration_ms: 60_000 },
 				occurred_at: at,
+				active_timers: new Set<string>(),
 			});
 			const op = fired
 				.flatMap((f) => f.ops)
@@ -196,6 +203,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 				type: "task_completed",
 				metadata: { task_id: row.match.task_id },
 				occurred_at: 3,
+				active_timers: new Set<string>(),
 			});
 			const closeOp = fired
 				.flatMap((f) => f.ops)
@@ -210,6 +218,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "denial_started",
 			metadata: { duration_ms: 86_400_000 },
 			occurred_at: 500,
+			active_timers: new Set<string>(),
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R23"]);
 		expect(fired[0]?.ops).toEqual([
@@ -229,6 +238,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "orgasm",
 			metadata: { permitted: false, outcome: "full" },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id).sort()).toEqual(["R10", "R12", "R14"]);
@@ -241,6 +251,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			// play this would be the max-fan-out shape. None of it may fire.
 			metadata: { outcome: "full" },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "dom",
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R21"]);
@@ -255,12 +266,15 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		]);
 		// The sub-qualified family is dormant, and legibly so: each records a
 		// subject near-miss in the trace ("why didn't the sub's rules fire").
+		// R26 (ADR 0011) joins them: it is sub-qualified too, and its subject
+		// mismatch is checked before the ambient clause is ever reached.
 		expect(nearMisses.map((n) => n.rule_id).sort()).toEqual([
 			"R10",
 			"R11",
 			"R12",
 			"R13",
 			"R14",
+			"R26",
 		]);
 		for (const miss of nearMisses) {
 			expect(miss.reason).toContain("subject is not the sub");
@@ -272,6 +286,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "orgasm",
 			metadata: { permitted: true, outcome: "full" },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id)).not.toContain("R21");
@@ -283,6 +298,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "orgasm",
 			metadata: { permitted: false, outcome: "full" },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "switch",
 		});
 		expect(fired).toEqual([]);
@@ -300,6 +316,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			// the maximum-fan-out shape. None of it may fire.
 			metadata: { severity: "major", self_reported: false },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "dom",
 		});
 		expect(fired).toEqual([]);
@@ -317,6 +334,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "infraction",
 			metadata: { severity: "major", self_reported: false },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id).sort()).toEqual(["R6", "R7", "R8"]);
@@ -341,10 +359,11 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 		// their qualifier in a later bump (#122), so un-qualifying them too would
 		// put them in `upserted` and misdescribe what the ADR 0003 bump changed.
 		const BUMP_AT = 1_000;
-		// This bump predates the edge rules (R24/R25); scope the reconstruction to
-		// the qualifier-era pack so they don't pollute the added/upserted sets.
+		// This bump predates the edge rules (R24/R25) and the ADR 0011 pair
+		// (R26/R27); scope the reconstruction to the qualifier-era pack so later
+		// arrivals don't pollute the added/upserted sets.
 		const qualifierPack = DEFAULT_RULES.filter(
-			(r) => r.id !== "R24" && r.id !== "R25",
+			(r) => !["R24", "R25", "R26", "R27"].includes(r.id),
 		);
 		const oldPack = qualifierPack
 			.filter((r) => r.id !== "R21")
@@ -386,6 +405,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "orgasm",
 			metadata: {},
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "dom" as const,
 		};
 		// Logged before the bump: the unqualified R10 was in force — it fired on
@@ -440,6 +460,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "infraction",
 			metadata: { severity: "major", self_reported: false },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 			subject_role: "dom" as const,
 		};
 		const before = evaluateRules(
@@ -463,6 +484,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "journal_prompt",
 			metadata: { prompt_id: "p1", floor: "shared" },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R19"]);
 		const op = fired[0]?.ops[0];
@@ -480,6 +502,7 @@ describe("R1–R25 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004)
 			type: "journal_entry",
 			metadata: { prompt_id: "p1" },
 			occurred_at: 1,
+			active_timers: new Set<string>(),
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R20"]);
 		expect(fired[0]?.ops[0]).toMatchObject({
@@ -651,5 +674,129 @@ describe("the shipped Agreement kinds", () => {
 				}
 			}
 		}
+	});
+});
+
+describe("R26/R27 — the ADR 0011 pair", () => {
+	function orgasm(active: string[], permitted: boolean) {
+		return evaluateRules(DEFAULT_RULES, {
+			type: "orgasm",
+			metadata: { permitted, outcome: "full" },
+			occurred_at: 1,
+			subject_role: "sub" as const,
+			active_timers: new Set(active),
+		});
+	}
+
+	it("R26 escalates an unpermitted orgasm only while a denial is running", () => {
+		const during = orgasm(["denial_period"], false);
+		const outside = orgasm([], false);
+		expect(during.fired.map((f) => f.rule_id)).toContain("R26");
+		expect(outside.fired.map((f) => f.rule_id)).not.toContain("R26");
+	});
+
+	it("R26 stacks on R12 rather than replacing it: +2 becomes +4", () => {
+		// The escalation is one readable rule, not a rewrite of the base case —
+		// R12 keeps scoring the lapse and R26 adds what the denial made of it.
+		const demerits = (result: ReturnType<typeof orgasm>) =>
+			result.fired
+				.flatMap((f) => f.ops)
+				.filter((op) => op.kind === "counter" && op.counter === "demerits")
+				.reduce(
+					(sum, op) => sum + (op.kind === "counter" ? (op.by ?? 1) : 0),
+					0,
+				);
+		expect(demerits(orgasm([], false))).toBe(2);
+		expect(demerits(orgasm(["denial_period"], false))).toBe(4);
+	});
+
+	it("R14 still closes the denial independently of R26", () => {
+		// The two do different jobs on the same event: R14 ends the period, R26
+		// scores what ending it that way cost.
+		const during = orgasm(["denial_period"], false);
+		expect(during.fired.map((f) => f.rule_id)).toContain("R14");
+	});
+
+	it("R26 leaves a permitted orgasm alone, denial or not", () => {
+		expect(
+			orgasm(["denial_period"], true).fired.map((f) => f.rule_id),
+		).not.toContain("R26");
+	});
+
+	it("R26's silence during no denial is legible in the trace", () => {
+		// Everything else about the event matched, so the near-miss earns its row:
+		// this rule was considered and the mode is why it stayed out.
+		const { nearMisses } = orgasm([], false);
+		const miss = nearMisses.find((n) => n.rule_id === "R26");
+		expect(miss?.reason).toContain("denial_period not active");
+		expect(miss?.awaiting).toEqual([]);
+	});
+
+	it("R27 notifies the partner on a low mood without needing the flag", () => {
+		// R18 needs `wants_conversation` — an explicit ask. R27 reads the number,
+		// which is the point: asking is the hard part on a bad day.
+		const low = evaluateRules(DEFAULT_RULES, {
+			type: "check_in",
+			metadata: { mood: 2 },
+			occurred_at: 1,
+			active_timers: new Set<string>(),
+		});
+		expect(low.fired.map((f) => f.rule_id)).toContain("R27");
+
+		const fine = evaluateRules(DEFAULT_RULES, {
+			type: "check_in",
+			metadata: { mood: 4 },
+			occurred_at: 1,
+			active_timers: new Set<string>(),
+		});
+		expect(fine.fired.map((f) => f.rule_id)).not.toContain("R27");
+	});
+
+	it("R27 stays quiet when no mood was given", () => {
+		// A check-in carrying only a flag must not be read as mood 0.
+		const { fired } = evaluateRules(DEFAULT_RULES, {
+			type: "check_in",
+			metadata: { flag: "wants_conversation" },
+			occurred_at: 1,
+			active_timers: new Set<string>(),
+		});
+		expect(fired.map((f) => f.rule_id)).not.toContain("R27");
+	});
+});
+
+describe("the v10 bump installs the ADR 0011 pair", () => {
+	/** The couple's installed set before v10: everything the pack ships bar R26/R27. */
+	const beforeV10 = DEFAULT_RULES.filter(
+		(r) => r.id !== "R26" && r.id !== "R27",
+	).map((r) => ({
+		id: r.id,
+		origin: "pack" as const,
+		adopted: false,
+		versions: [{ ...r, effective_from: 0 }],
+	}));
+
+	it("adds R26 and R27 and touches nothing else", () => {
+		const bump = reconcilePack(DEFAULT_RULES, beforeV10, 1_000);
+		expect(bump.added.map((r) => r.id)).toEqual(["R26", "R27"]);
+		expect(bump.upserted).toEqual([]);
+	});
+
+	it("still adds them to a couple who has adopted half the pack", () => {
+		// Adoption freezes a rule against overwrites (#159); it must not freeze the
+		// couple out of rules the pack has not shipped them yet.
+		const withAdopted = beforeV10.map((r) =>
+			r.id === "R12" ? { ...r, adopted: true } : r,
+		);
+		const bump = reconcilePack(DEFAULT_RULES, withAdopted, 1_000);
+		expect(bump.added.map((r) => r.id)).toEqual(["R26", "R27"]);
+		expect(bump.skipped.map((s) => s.id)).toEqual(["R12"]);
+	});
+
+	it("re-running the bump adds nothing twice", () => {
+		const settled = reconcilePack(DEFAULT_RULES, beforeV10, 1_000);
+		const installed = [...beforeV10, ...settled.added];
+		const again = reconcilePack(DEFAULT_RULES, installed, 2_000);
+		expect(again.added).toEqual([]);
+		expect(again.upserted).toEqual([]);
 	});
 });

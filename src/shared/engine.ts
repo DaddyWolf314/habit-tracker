@@ -1,6 +1,9 @@
 import { versionInForceAt } from "./effective-dating.ts";
 import type { MetadataValue, Role } from "./roles.ts";
 import {
+	ambientClauses,
+	type ComparisonClause,
+	isComparisonClause,
 	type Rule,
 	type RuleCondition,
 	ruleFromVersion,
@@ -16,10 +19,16 @@ import {
  * never creates events (no cascades, no loops — the log's integrity as a consent
  * record is preserved).
  *
- * The condition language is deliberately dumb: equality on `type` and metadata
- * keys only. An absent key makes a conditional rule *silently skip* — this is
- * load-bearing for adjudication (a pending orgasm's `permitted` is unset, so
- * R11/R12 wait rather than fire), and every such skip surfaces as a near-miss.
+ * The condition language stays small: it may test what the event carries, who it
+ * is about, and what was *running* when it happened — never a count, an elapsed
+ * time, or a query over the log (ADR 0011). An absent metadata key makes a
+ * conditional rule *silently skip* — this is load-bearing for adjudication (a
+ * pending orgasm's `permitted` is unset, so R11/R12 wait rather than fire), and
+ * every such skip surfaces as a near-miss.
+ *
+ * The one state query, `timer_active`, does not breach the no-storage rule: the
+ * *caller* resolves which timer definitions are open and passes them in
+ * ({@link RuleEventContext.active_timers}), exactly as it resolves `subject_role`.
  */
 
 /**
@@ -54,6 +63,14 @@ export function rulesEffectiveAt(
 	return resolved;
 }
 
+/**
+ * No timer of any definition is open — the ambient state for an evaluation that
+ * has none to speak of: a rules-screen description, a pure unit test, a preview
+ * built before the timers have loaded. Shared so those callers state the
+ * assumption once rather than minting an empty set each time.
+ */
+export const NO_ACTIVE_TIMERS: ReadonlySet<string> = new Set<string>();
+
 /** The slice of an event the engine reasons over: its type and composite state. */
 export interface RuleEventContext {
 	type: string;
@@ -69,6 +86,20 @@ export interface RuleEventContext {
 	 */
 	subject_role?: Role;
 	/**
+	 * The timer **definitions** with an open instance, for the ambient-state
+	 * predicate (ADR 0011). Resolved by the caller — the DO from `openTimerRows`,
+	 * the client from the timers it was served — so the engine reads no storage
+	 * and the confirm-sheet preview agrees with the DO by construction.
+	 *
+	 * Required rather than optional, unlike `awaiting`: omitting `awaiting` only
+	 * surfaces extra near-misses, whereas an omitted timer set would silently read
+	 * as "nothing is running" and quietly under-fire every mode-scoped rule. The
+	 * compiler is the guard the ADR asked for. Pass an empty set when a caller
+	 * genuinely has no ambient state (a rule with no `timer_active` clause is
+	 * unaffected either way).
+	 */
+	active_timers: ReadonlySet<string>;
+	/**
 	 * The event type's `awaiting` keys (handoff §5). When provided, only near-
 	 * misses that are *pending* on one of these keys are surfaced — a rule waiting
 	 * on `permitted` is genuine pending-adjudication signal ("R11/R12 waiting on:
@@ -82,13 +113,15 @@ export interface RuleEventContext {
  * The outcome of testing one rule against one event:
  *  - `irrelevant` — the event type doesn't match; the rule is not shown at all.
  *  - `fired`      — type matched, the subject-role qualifier (if any) held, and
- *    every metadata equality held.
+ *    every metadata constraint and ambient-state clause held.
  *  - `near_miss`  — type matched but a condition was unmet. `awaiting` lists the
  *    keys that were simply *unset* (the pending, resolve-on-adjudication case);
  *    a present-but-wrong value is a near-miss too but is not "waiting on"
  *    anything. `subject_mismatch` marks a near-miss on the subject-role
  *    qualifier (ADR 0003): structural — the subject is fixed at logging, so the
  *    rule can never fire on this event, and no adjudication is awaited.
+ *    `state_mismatch` marks one on the ambient-state predicate (ADR 0011): no
+ *    ruling on any key resolves it either, so it is never `awaiting`.
  */
 export type MatchResult =
 	| { status: "irrelevant" }
@@ -98,6 +131,7 @@ export type MatchResult =
 			reason: string;
 			awaiting: string[];
 			subject_mismatch?: boolean;
+			state_mismatch?: boolean;
 	  };
 
 /** Tests a single rule's condition against an event's composite state. */
@@ -117,10 +151,42 @@ export function matchRule(rule: Rule, ctx: RuleEventContext): MatchResult {
 			subject_mismatch: true,
 		};
 	}
-	return classifyMetadata(rule.id, rule.condition, ctx.metadata);
+	// Metadata first, ambient state second — the order the near-miss depends on.
+	// An ambient-state miss is only worth a trace row when it was the *sole*
+	// reason (ADR 0011), so a rule that also missed on metadata reports the
+	// metadata: that is the part a reader can act on. The converse would file
+	// "no denial period was active" against every routine event of the type.
+	const metadata = classifyMetadata(rule.id, rule.condition, ctx.metadata);
+	if (metadata.status !== "fired") return metadata;
+	return classifyAmbientState(rule.id, rule.condition, ctx.active_timers);
 }
 
-/** Compares a condition's metadata equalities against composite state. */
+/**
+ * Tests the ambient-state predicate (ADR 0011) — `timer_active` — against the
+ * timer definitions the caller resolved as open. A miss is never `awaiting`: no
+ * ruling on any metadata key will make a denial period have been running, so
+ * promising the adjudication queue a resolution would be a lie.
+ */
+function classifyAmbientState(
+	ruleId: string,
+	condition: RuleCondition,
+	active: ReadonlySet<string>,
+): MatchResult {
+	const unmet: string[] = [];
+	for (const [timer, wanted] of ambientClauses(condition)) {
+		if (active.has(timer) === wanted) continue;
+		unmet.push(wanted ? `${timer} not active` : `${timer} active`);
+	}
+	if (unmet.length === 0) return { status: "fired" };
+	return {
+		status: "near_miss",
+		reason: `${ruleId} didn't fire: ${unmet.join(", ")}`,
+		awaiting: [],
+		state_mismatch: true,
+	};
+}
+
+/** Compares a condition's metadata constraints against composite state. */
 function classifyMetadata(
 	ruleId: string,
 	condition: RuleCondition,
@@ -131,7 +197,20 @@ function classifyMetadata(
 	for (const [key, expected] of Object.entries(condition.metadata)) {
 		const actual = metadata[key];
 		if (actual === undefined) {
+			// Unset ⇒ awaiting, for a comparison exactly as for an equality: the
+			// pending-adjudication case is about the key being absent, not about
+			// which constraint would have been applied to it.
 			awaiting.push(key);
+		} else if (isComparisonClause(expected)) {
+			// A non-numeric value can only reach here on a type whose schema changed
+			// under a rule validated against the old one; it fails the comparison
+			// rather than coercing, so the rule goes quiet instead of scoring on a
+			// string. Creation-time validation is what keeps this unreachable.
+			if (typeof actual !== "number" || !satisfies(actual, expected)) {
+				mismatched.push(
+					`${key} is ${format(actual)}, needs ${describeComparison(expected)}`,
+				);
+			}
 		} else if (actual !== expected) {
 			mismatched.push(`${key} is ${format(actual)}, needs ${format(expected)}`);
 		}
@@ -149,6 +228,30 @@ function classifyMetadata(
 
 function format(value: MetadataValue): string {
 	return typeof value === "string" ? value : String(value);
+}
+
+/** Whether a numeric metadata value satisfies a comparison clause (ADR 0011). */
+function satisfies(actual: number, clause: ComparisonClause): boolean {
+	switch (clause.op) {
+		case "lt":
+			return actual < clause.value;
+		case "lte":
+			return actual <= clause.value;
+		case "gt":
+			return actual > clause.value;
+		case "gte":
+			return actual >= clause.value;
+	}
+}
+
+/**
+ * A comparison in near-miss prose. Terse and symbolic, matching the rest of the
+ * engine's reasons, which are read in the trace beside a rule id — the couple's
+ * voice ("2 or less") is `rule-describe`'s job, not this one's.
+ */
+function describeComparison(clause: ComparisonClause): string {
+	const symbol = { lt: "<", lte: "<=", gt: ">", gte: ">=" }[clause.op];
+	return `${symbol} ${clause.value}`;
 }
 
 /** A rule that fired, with the projection ops it produced (see resolveEffect). */
@@ -235,12 +338,22 @@ export function reevaluate(
  * for the other role went dormant on this event, and the consent-record view
  * must be able to answer "why didn't the sub's orgasm rules fire" on a
  * dom-subject orgasm without a debugger.
+ *
+ * An ambient-state mismatch (ADR 0011) is always surfaced too, and `matchRule`
+ * has already done the filtering that earns it: it is only ever reported when
+ * every other clause held, so the row says the one thing worth knowing — this
+ * rule would have fired if the mode had been on. A sub reading the ledger can
+ * see that the denial escalation was considered and why it stayed out.
  */
 function isSurfaced(
-	nearMiss: { awaiting: string[]; subject_mismatch?: boolean },
+	nearMiss: {
+		awaiting: string[];
+		subject_mismatch?: boolean;
+		state_mismatch?: boolean;
+	},
 	ctx: RuleEventContext,
 ): boolean {
-	if (nearMiss.subject_mismatch) return true;
+	if (nearMiss.subject_mismatch || nearMiss.state_mismatch) return true;
 	if (ctx.awaiting === undefined) return true;
 	return nearMiss.awaiting.some((key) => ctx.awaiting?.includes(key));
 }

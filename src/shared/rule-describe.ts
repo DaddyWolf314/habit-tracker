@@ -1,8 +1,15 @@
-import { resolveEffect } from "./engine.ts";
+import { NO_ACTIVE_TIMERS, resolveEffect } from "./engine.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
 import { optionLabel } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
-import type { Effect, Rule, RuleCondition } from "./rules.ts";
+import {
+	ambientClauses,
+	type ComparisonClause,
+	type Effect,
+	isComparisonClause,
+	type Rule,
+	type RuleCondition,
+} from "./rules.ts";
 import { humanize, summarizeEffectOp } from "./trace.ts";
 
 /**
@@ -38,10 +45,45 @@ function valueText(
 }
 
 /**
+ * A comparison clause in the couple's voice (ADR 0011) — "2 or less", not
+ * "<= 2". The engine's near-miss prose stays symbolic because it is read beside
+ * a rule id in the trace; this is read in a sentence on the rules screen.
+ */
+function comparisonText(clause: ComparisonClause): string {
+	switch (clause.op) {
+		case "lt":
+			return `under ${clause.value}`;
+		case "lte":
+			return `${clause.value} or less`;
+		case "gt":
+			return `over ${clause.value}`;
+		case "gte":
+			return `${clause.value} or more`;
+	}
+}
+
+/**
+ * The ambient-state predicate as a trailing clause (ADR 0011) — "while a denial
+ * period is running". Trailing rather than folded in with the metadata, because
+ * it is a fact about the moment rather than about the event, and the sentence
+ * should not blur the two.
+ */
+function ambientText(condition: RuleCondition): string {
+	const clauses = ambientClauses(condition).map(([timer, wanted]) =>
+		wanted
+			? `a ${humanize(timer)} is running`
+			: `no ${humanize(timer)} is running`,
+	);
+	return clauses.length ? `, while ${clauses.join(" and ")}` : "";
+}
+
+/**
  * "when a ritual is logged" plus the subject-role qualifier ("about the sub",
- * ADR 0003) and each metadata equality, e.g. "and late is yes". One renderer:
- * the rules screen, the confirm sheet, and the chain view all read the clause
- * through here, so "what will fire" and "what fired" phrase it identically.
+ * ADR 0003), each metadata constraint ("and late is yes", "and mood is 2 or
+ * less"), and the ambient-state clause ("while a denial period is running",
+ * ADR 0011). One renderer: the rules screen, the confirm sheet, and the chain
+ * view all read the clause through here, so "what will fire" and "what fired"
+ * phrase it identically.
  */
 export function describeCondition(
 	condition: RuleCondition,
@@ -51,13 +93,17 @@ export function describeCondition(
 	const clauses = Object.entries(condition.metadata).map(([key, value]) => {
 		const field = type?.metadata[key];
 		const fieldLabel = field?.label ?? humanize(key);
-		return `${fieldLabel} is ${valueText(field, value)}`;
+		const text = isComparisonClause(value)
+			? comparisonText(value)
+			: valueText(field, value);
+		return `${fieldLabel} is ${text}`;
 	});
 	const about = condition.subject_role
 		? ` about the ${condition.subject_role}`
 		: "";
 	const when = `when ${typeLabel} is logged${about}`;
-	return clauses.length ? `${when} and ${clauses.join(" and ")}` : when;
+	const said = clauses.length ? `${when} and ${clauses.join(" and ")}` : when;
+	return `${said}${ambientText(condition)}`;
 }
 
 /**
@@ -68,7 +114,12 @@ export function describeCondition(
  * only the rules screen states up front, is appended to the shared phrase.
  */
 export function describeEffect(effect: Effect): string {
-	const op = resolveEffect(effect, { type: "", metadata: {}, occurred_at: 0 });
+	const op = resolveEffect(effect, {
+		type: "",
+		metadata: {},
+		occurred_at: 0,
+		active_timers: NO_ACTIVE_TIMERS,
+	});
 	const phrase = summarizeEffectOp(op);
 	return effect.verb === "close_timer" && effect.route_duration_to
 		? `${phrase} and add its time to ${humanize(effect.route_duration_to)}`

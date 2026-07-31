@@ -91,6 +91,25 @@ const TYPES: EventType[] = [
 		awaiting: [],
 		journaling: false,
 	},
+	// A number field, so the editor's comparison operator (ADR 0011) has
+	// something to attach to.
+	{
+		id: "check_in",
+		label: "Check-in",
+		valence: "neutral",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: false,
+		metadata: {
+			mood: {
+				kind: "number",
+				label: "Mood",
+				required: false,
+				set_permission: ["dom", "sub", "switch"],
+			},
+		},
+		awaiting: [],
+		journaling: false,
+	},
 ];
 
 const RULE: VersionedRule = {
@@ -402,5 +421,116 @@ describe("renaming an advanced rule", () => {
 		click("Cancel");
 		expect(vi.mocked(renameRule)).not.toHaveBeenCalled();
 		expect(screen.queryByLabelText("Name")).toBeNull();
+	});
+});
+
+/**
+ * The two clause forms ADR 0011 added. Both are authored through the same live
+ * preview the rules screen and the trace chain read, so these assert the
+ * sentence rather than the payload — if the preview says it, the builder that
+ * saves it produced it.
+ */
+describe("authoring the ADR 0011 clauses", () => {
+	afterEach(cleanup);
+
+	async function openEditorOn(typeId: string) {
+		await renderRules();
+		fireEvent.click(screen.getByRole("button", { name: "New rule" }));
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "When this happens" }),
+			{ target: { value: typeId } },
+		);
+	}
+
+	it("offers a comparison operator on a number field", async () => {
+		await openEditorOn("check_in");
+		fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Condition 1 key" }),
+			{
+				target: { value: "mood" },
+			},
+		);
+		const op = screen.getByRole("combobox", { name: "Condition 1 comparison" });
+		expect(
+			[...op.querySelectorAll("option")].map((o) => o.textContent),
+		).toEqual(["is", "is under", "is at most", "is over", "is at least"]);
+	});
+
+	it("gives a non-number field no operator to pick", async () => {
+		// A comparison on a ref is one the server would refuse; the form never
+		// offers it rather than reporting it after a save.
+		await openEditorOn("ritual_completed");
+		fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Condition 1 key" }),
+			{
+				target: { value: "ritual_id" },
+			},
+		);
+		expect(
+			screen.queryByRole("combobox", { name: "Condition 1 comparison" }),
+		).toBeNull();
+	});
+
+	it("previews a comparison in the couple's voice", async () => {
+		await openEditorOn("check_in");
+		fireEvent.click(screen.getByRole("button", { name: /add condition/i }));
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Condition 1 key" }),
+			{
+				target: { value: "mood" },
+			},
+		);
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Condition 1 comparison" }),
+			{ target: { value: "lte" } },
+		);
+		fireEvent.change(
+			screen.getByRole("spinbutton", { name: "Condition 1 value" }),
+			{
+				target: { value: "2" },
+			},
+		);
+		expect(screen.getByText(/Mood is 2 or less/)).toBeTruthy();
+	});
+
+	it("previews an ambient clause as a trailing 'while'", async () => {
+		await openEditorOn("check_in");
+		fireEvent.click(
+			screen.getByRole("button", { name: /add timer condition/i }),
+		);
+		fireEvent.change(screen.getByRole("combobox", { name: "Timer 1" }), {
+			target: { value: "denial_period" },
+		});
+		expect(screen.getByText(/while a denial period is running/)).toBeTruthy();
+	});
+
+	it("previews the negated clause too", async () => {
+		await openEditorOn("check_in");
+		fireEvent.click(
+			screen.getByRole("button", { name: /add timer condition/i }),
+		);
+		fireEvent.change(screen.getByRole("combobox", { name: "Timer 1" }), {
+			target: { value: "session_stopwatch" },
+		});
+		fireEvent.change(screen.getByRole("combobox", { name: "Timer 1 state" }), {
+			target: { value: "not_running" },
+		});
+		expect(
+			screen.getByText(/while no session stopwatch is running/),
+		).toBeTruthy();
+	});
+
+	it("ignores a timer row with nothing picked", async () => {
+		// An empty row is an unfinished thought, not a clause — the same rule the
+		// condition rows follow.
+		await openEditorOn("check_in");
+		fireEvent.click(
+			screen.getByRole("button", { name: /add timer condition/i }),
+		);
+		// Matched against the preview's trailing clause, not the fieldset legend
+		// ("Only while… (optional timers)"), which is always on screen.
+		expect(screen.queryByText(/, while /)).toBeNull();
 	});
 });
