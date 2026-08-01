@@ -3783,26 +3783,44 @@ export class CoupleDO extends DurableObject<Env> {
 	 * (the v8 arrangement for rules).
 	 */
 	private versionedCounters(): VersionedCounter[] {
+		// Built from `counter_versions` alone — no join back to `counters` — because
+		// `writeCounterDefinition` is the only path that inserts a counter row and it
+		// always writes a version alongside, so the two sets cannot differ. The
+		// values live on the identity row and no caller of this wants them: resolving
+		// a policy for a moment is all this is for.
 		const versionsById = new Map<string, CounterVersion[]>();
-		for (const row of this.sql
-			.exec<CounterVersionRow>(
-				`SELECT counter_id, effective_from, definition FROM counter_versions
-					ORDER BY counter_id, effective_from`,
-			)
-			.toArray()) {
-			const parsed = JSON.parse(row.definition) as CounterDefinition;
+		for (const row of this.counterVersionQuery()) {
 			const versions = versionsById.get(row.counter_id) ?? [];
-			versions.push(versionFromCounterDefinition(parsed, row.effective_from));
+			versions.push(this.counterVersionOf(row));
 			versionsById.set(row.counter_id, versions);
 		}
-		return this.counterRows()
-			.filter((row) => (versionsById.get(row.id)?.length ?? 0) > 0)
-			.map((row) => ({
-				id: row.id,
-				value: row.value,
-				updated_at: row.updated_at,
-				versions: versionsById.get(row.id) ?? [],
-			}));
+		return [...versionsById].map(([id, versions]) => ({ id, versions }));
+	}
+
+	/** Every stored version, ordered by counter then by when it took force. */
+	private counterVersionQuery(id?: string): CounterVersionRow[] {
+		return id === undefined
+			? this.sql
+					.exec<CounterVersionRow>(
+						`SELECT counter_id, effective_from, definition FROM counter_versions
+							ORDER BY counter_id, effective_from`,
+					)
+					.toArray()
+			: this.sql
+					.exec<CounterVersionRow>(
+						`SELECT counter_id, effective_from, definition FROM counter_versions
+							WHERE counter_id = ? ORDER BY effective_from`,
+						id,
+					)
+					.toArray();
+	}
+
+	/** One stored row as a version. The stored JSON holds a full definition. */
+	private counterVersionOf(row: CounterVersionRow): CounterVersion {
+		return versionFromCounterDefinition(
+			JSON.parse(row.definition) as CounterDefinition,
+			row.effective_from,
+		);
 	}
 
 	/**
@@ -4466,19 +4484,9 @@ export class CoupleDO extends DurableObject<Env> {
 
 	/** One counter's versions, ascending by `effective_from`. */
 	private counterVersionRows(id: string): CounterVersion[] {
-		return this.sql
-			.exec<CounterVersionRow>(
-				`SELECT counter_id, effective_from, definition FROM counter_versions
-					WHERE counter_id = ? ORDER BY effective_from`,
-				id,
-			)
-			.toArray()
-			.map((row) =>
-				versionFromCounterDefinition(
-					JSON.parse(row.definition) as CounterDefinition,
-					row.effective_from,
-				),
-			);
+		return this.counterVersionQuery(id).map((row) =>
+			this.counterVersionOf(row),
+		);
 	}
 
 	private uniqueCounterId(base: string): string {

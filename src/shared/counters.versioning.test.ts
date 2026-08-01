@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	type CounterVersion,
+	counterDefinitionSchema,
 	countersEffectiveAt,
-	latestCounterVersion,
 	sameCounterPolicy,
 	type VersionedCounter,
 	versionFromCounterDefinition,
@@ -37,12 +37,7 @@ function version(
 }
 
 function counter(versions: CounterVersion[]): VersionedCounter {
-	return {
-		id: "rituals_completed_today",
-		value: 0,
-		updated_at: null,
-		versions,
-	};
+	return { id: "rituals_completed_today", versions };
 }
 
 describe("countersEffectiveAt", () => {
@@ -89,10 +84,39 @@ describe("countersEffectiveAt", () => {
 	});
 });
 
-describe("latestCounterVersion", () => {
-	it("picks the greatest effective_from regardless of order", () => {
-		const subject = counter([version(5_000, { daily_target: 5 }), version(0)]);
-		expect(latestCounterVersion(subject).daily_target).toBe(5);
+describe("versionFromCounterDefinition", () => {
+	it("versions every policy field the schema declares", () => {
+		// The guard on the drift this function used to invite. It once copied the
+		// seven fields across by hand, so a field added to `counterDefinitionSchema`
+		// would have been silently dropped from every version written — policy that
+		// exists live and vanishes from history. Deriving it from the schema fixes
+		// that; this fails if anyone reintroduces a hand-written literal.
+		const expected = Object.keys(counterDefinitionSchema.shape).filter(
+			(key) => key !== "id",
+		);
+		const full = versionFromCounterDefinition(
+			{
+				name: "Rituals completed today",
+				valence: "positive",
+				daily_target: 1,
+				weekly_target: 7,
+				reset: "daily",
+				streak: { counter: "other", period: "daily" },
+				modify_permission: ["dom", "sub", "switch"],
+			},
+			0,
+		);
+		expect(Object.keys(full).sort()).toEqual(
+			[...expected, "effective_from"].sort(),
+		);
+	});
+
+	it("strips an id, which is identity rather than policy", () => {
+		const stamped = versionFromCounterDefinition(
+			{ ...version(0), id: "rituals_completed_today" },
+			0,
+		);
+		expect(stamped).not.toHaveProperty("id");
 	});
 });
 

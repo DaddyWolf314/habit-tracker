@@ -96,11 +96,9 @@ export const counterVersionSchema = counterDefinitionSchema
 	.extend({ effective_from: z.number().int() });
 export type CounterVersion = z.infer<typeof counterVersionSchema>;
 
-/** A counter's stable identity, its full version history, and its cached value. */
+/** A counter's stable identity and its full version history. */
 export interface VersionedCounter {
 	id: string;
-	value: number;
-	updated_at: number | null;
 	versions: CounterVersion[];
 }
 
@@ -113,29 +111,25 @@ export function counterFromVersion(
 	return { id, ...definition };
 }
 
+/**
+ * A definition stamped as the version taking force at `effectiveFrom`.
+ *
+ * Derived by parsing through {@link counterVersionSchema} rather than copying
+ * fields across by hand, so a field added to `counterDefinitionSchema` versions
+ * itself. A hand-written literal here would silently drop the new field from
+ * every version written — the same rot the rebuild's status list avoids by
+ * binding `TIMER_CLOSE_STATUSES` to the rule schema's own enum (ADR 0012).
+ *
+ * Any `id` on the input is stripped: the id is the stable identity, not policy.
+ */
 export function versionFromCounterDefinition(
-	definition: Omit<CounterDefinition, "id">,
+	definition: Omit<CounterDefinition, "id"> & { id?: string },
 	effectiveFrom: number,
 ): CounterVersion {
-	return {
+	return counterVersionSchema.parse({
+		...definition,
 		effective_from: effectiveFrom,
-		name: definition.name,
-		valence: definition.valence,
-		daily_target: definition.daily_target,
-		weekly_target: definition.weekly_target,
-		reset: definition.reset,
-		streak: definition.streak,
-		modify_permission: definition.modify_permission,
-	};
-}
-
-/** A counter's current (latest) version — the greatest `effective_from`. */
-export function latestCounterVersion(
-	counter: VersionedCounter,
-): CounterVersion {
-	return counter.versions.reduce((a, b) =>
-		b.effective_from >= a.effective_from ? b : a,
-	);
+	});
 }
 
 /**
