@@ -147,14 +147,13 @@ export interface TimerSpan {
  *   same `occurred_at` clock an anchor reset and a citing ref already use.
  *
  * The span is only as good as what the rebuild preserves, which is why that
- * reset is scoped to the `completed`/`failed` closes replay can re-derive: an
- * off-log close (`expired`, `canceled`) keeps its `closed_at` because nothing
- * would ever restore it. **Stopwatches are the remaining gap** — they are torn
- * down and re-opened from the log, so an `auto_closed` one (the over-max sweep,
- * which no event records) comes back open and stays open until the next sweep,
- * and a `{ session_stopwatch: false }` clause inverts for the rest of that
- * replay. Nothing in the pack uses that shape today; closing it properly means
- * sweeping at each replayed event's timestamp rather than at `now`.
+ * reset is scoped to the closes replay can re-derive — the `completed`/`failed`
+ * ones a `close_timer` effect writes. An off-log close (`expired`, `canceled`,
+ * `auto_closed`) keeps its `closed_at` because nothing would ever restore it:
+ * a sweep stamps the moment it *noticed*, which no replay can reproduce (ADR
+ * 0012). Stopwatches were the remaining gap here until #167 — torn down and
+ * re-opened from the log, so an `auto_closed` one came back open — and are now
+ * preserved on exactly the same terms as countdowns.
  *
  * A **paused** countdown is active: pausing freezes the clock, it does not end
  * the denial. A closed one is not, whatever closed it — the sweep stamps

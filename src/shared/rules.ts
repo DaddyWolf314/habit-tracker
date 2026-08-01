@@ -98,6 +98,24 @@ export function ambientClauses(condition: RuleCondition): [string, boolean][] {
 const matchOnSchema = z.record(z.string(), z.string());
 
 /**
+ * The dispositions a *rule* may close a timer with — and so, exactly the closes
+ * a replay can re-derive from the log.
+ *
+ * That second reading is load-bearing, which is why this is a named export
+ * rather than an inline enum. `rebuildCounters` resets precisely these before
+ * replaying and preserves every other disposition, because the others
+ * (`expired`, `canceled`, `auto_closed`) are written by a sweep or a dom command
+ * and no event records them (ADR 0012). Deriving that reset list from here means
+ * adding a verb-writable status cannot silently leave the rebuild resetting the
+ * wrong set — the failure the timer projection has already had five times.
+ */
+export const timerCloseStatusSchema = z.enum(["completed", "failed"]);
+export type TimerCloseStatus = z.infer<typeof timerCloseStatusSchema>;
+/** The same set as a plain array, for binding into the rebuild's reset query. */
+export const TIMER_CLOSE_STATUSES: readonly TimerCloseStatus[] =
+	timerCloseStatusSchema.options;
+
+/**
  * Effect verbs — the complete v1 set. Rules route values; they never compute
  * them. Multiple effects per rule (effects is a list).
  */
@@ -136,7 +154,7 @@ export const effectSchema = z.discriminatedUnion("verb", [
 		verb: z.literal("close_timer"),
 		timer: z.string(),
 		match_on: matchOnSchema.optional(),
-		status: z.enum(["completed", "failed"]),
+		status: timerCloseStatusSchema,
 		/**
 		 * The counter the timer's derived duration is routed into on close (e.g.
 		 * R16 → `service_minutes_week`). The duration is computed by the timer

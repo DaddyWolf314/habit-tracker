@@ -118,7 +118,12 @@ in and should not.
   were required; "expiry".
 - **Counter / Timer / Anchor** — the three **projection** flavors: a materialized
   tally, a stopwatch/countdown, and an elapsed-since timestamp. Each is a **cache**
-  rebuildable by replaying the log. **Clocks** is the UI's word for the anchors
+  rebuildable by replaying the log — with one standing exception: state no event
+  records (a sweep's close, a dom's cancel or extend, a streak fold) is *preserved*
+  across a rebuild rather than re-derived, because replay has nothing to
+  reconstruct it from. A rebuild resets exactly what a rule wrote (ADR 0012);
+  reading "cache" as "everything here is disposable" is what produced five
+  scoring-direction divergences. **Clocks** is the UI's word for the anchors
   read together ("days since …", Today since #88) — a display grouping, never a
   fourth flavor. _Avoid_: "clock" for a timer, which counts toward something
   rather than since it.

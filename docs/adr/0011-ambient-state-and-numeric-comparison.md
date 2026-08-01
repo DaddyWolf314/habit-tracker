@@ -158,19 +158,18 @@ later replayed event, and R26 escalated orgasms live evaluation had left alone.
 The same rebuild-only, scoring-direction divergence the span was supposed to
 close, moved one step down.
 
-The reset is therefore scoped to the closes replay can re-derive:
+The reset is therefore scoped to the closes replay can re-derive.
 
-```sql
-UPDATE timers SET status = NULL, closed_at = NULL
-  WHERE kind = 'countdown' AND status IN ('completed', 'failed')
-```
-
-**Stopwatches remain a known gap.** They are deleted and re-opened from the log,
-so one the over-max sweep `auto_closed` — an ending no event records — comes back
-open and stays open for the rest of the replay. Nothing in the pack conditions on
-a stopwatch today, so no shipped rule is affected; closing it properly means
-sweeping at each replayed event's timestamp rather than at `now`, which is a
-change to how rebuild handles system jobs generally and not this ADR's to make.
+**This is now the subject of its own decision — see ADR 0012, which owns it.**
+What is written above is the shape of the problem as this ADR found it; the rule
+that settles it ("reset exactly what a rule wrote, preserve everything a rule
+could not have written"), the four further defects in the same seam, and the
+stopwatch gap this ADR left open are all recorded there. Two things stated here
+have since changed and 0012 is authoritative on both: the reset keys off the
+disposition rather than the timer kind, and the fix this ADR proposed for
+stopwatches — sweeping at each replayed event's timestamp — is rejected, because
+a sweep stamps the moment it noticed rather than the boundary it crossed, so
+replaying it reproduces *whether* a timer closed but not *when*.
 
 ## An amendment asks what was running then
 
