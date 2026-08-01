@@ -60,11 +60,15 @@ in and should not.
   copy — the engine never reads it, the trace still cites the stable **id**, and
   reconciliation ignores it, so renaming a pack rule is not an upstream change.
   _Avoid_: "edit" as if a rule mutates in place; the id as a stand-in for the name.
-- **Effective-dating** — a rule version governs only events logged while it was in
-  force. Rule changes are **forward-only**: already-logged events keep the
-  consequences they received, and a rebuild re-derives each event under the version
-  current at *its* log-time — reproducing history, not rewriting it. _Avoid_:
-  "retroactive" rule changes.
+- **Effective-dating** — a versioned definition governs only what happened while it
+  was in force. Changes are **forward-only**: the past keeps the consequences it
+  received, and a rebuild re-derives under the version current *then* — reproducing
+  history, not rewriting it. Three things carry versions, and each resolves against
+  a different clock: a **rule** at an event's log-time (ADR 0002), an **Agreement**
+  at an event's `occurred_at` (ADR 0006), and a **counter** at the rollover boundary
+  being folded (ADR 0013), since a counter's policy is read by a system job rather
+  than by any event. _Avoid_: "retroactive" changes; treating the clock as an
+  implementation detail — it is the semantics.
 - **Adopted rule** — a default-pack rule (`R#`) a couple has edited. Adoption freezes
   it against upstream: a pack version bump no longer overwrites its definition (only
   surfaces an upstream-changed notice), while un-adopted pack rules still track the
@@ -119,11 +123,12 @@ in and should not.
 - **Counter / Timer / Anchor** — the three **projection** flavors: a materialized
   tally, a stopwatch/countdown, and an elapsed-since timestamp. Each is a **cache**
   rebuildable by replaying the log — with one standing exception: state no event
-  records (a sweep's close, a dom's cancel or extend, a streak fold) is *preserved*
-  across a rebuild rather than re-derived, because replay has nothing to
-  reconstruct it from. A rebuild resets exactly what a rule wrote (ADR 0012);
-  reading "cache" as "everything here is disposable" is what produced five
-  scoring-direction divergences. **Clocks** is the UI's word for the anchors
+  records *and* nothing can reconstruct (a sweep's close, a dom's cancel or extend)
+  is *preserved* across a rebuild rather than re-derived, because a sweep stamps
+  the moment it noticed. Off-log state that *is* reproducible — period resets,
+  streak folds — is replayed instead (ADR 0013). A rebuild resets exactly what a
+  rule wrote (ADR 0012); reading "cache" as "everything here is disposable" is what
+  produced five scoring-direction divergences. **Clocks** is the UI's word for the anchors
   read together ("days since …", Today since #88) — a display grouping, never a
   fourth flavor. _Avoid_: "clock" for a timer, which counts toward something
   rather than since it.

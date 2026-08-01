@@ -35,8 +35,15 @@ import {
 import type {
 	Counter,
 	CounterDefinition,
+	CounterVersion,
 	CreateCounterInput,
 	UpdateCounterInput,
+	VersionedCounter,
+} from "#/shared/counters.ts";
+import {
+	countersEffectiveAt,
+	sameCounterPolicy,
+	versionFromCounterDefinition,
 } from "#/shared/counters.ts";
 import { versionInForceAt } from "#/shared/effective-dating.ts";
 import {
@@ -284,6 +291,13 @@ interface CounterRow {
 	definition: string;
 	value: number;
 	updated_at: number | null;
+	[key: string]: SqlStorageValue;
+}
+
+interface CounterVersionRow {
+	counter_id: string;
+	effective_from: number;
+	definition: string;
 	[key: string]: SqlStorageValue;
 }
 
@@ -1264,8 +1278,12 @@ export class CoupleDO extends DurableObject<Env> {
 		// leave the stale body while advancing the version, silently stranding the
 		// fix. A counter's live value/updated_at is preserved (only policy changes),
 		// and a rule's `enabled` is preserved so a couple's toggle survives a bump.
+		// Effective from 0 on the first seed, so the pack's policy covers the whole
+		// log; a later bump stamps at the bump time, so a changed target binds only
+		// the periods folded after it (forward-only, exactly as a rule edit does).
+		const counterEffectiveFrom = seeded === 0 ? 0 : Date.now();
 		for (const counter of DEFAULT_COUNTERS) {
-			this.writeCounterDefinition(counter);
+			this.writeCounterDefinition(counter, counterEffectiveFrom);
 		}
 		// Adopt-on-edit reconciliation (ADR 0002): install brand-new pack rules and
 		// upsert un-adopted ones the pack changed, but never overwrite a rule the
@@ -1856,8 +1874,8 @@ export class CoupleDO extends DurableObject<Env> {
 		// The target lands before the streak that folds it, which is the same
 		// ordering `createCounter` enforces with an explicit guard — a streak whose
 		// target does not exist folds nothing, for ever.
-		this.writeCounterDefinition(plan.counter);
-		this.writeCounterDefinition(plan.streak);
+		this.writeCounterDefinition(plan.counter, at);
+		this.writeCounterDefinition(plan.streak, at);
 		// The rule goes through the checks `createRule` runs, not around them:
 		// conditioning on a nonexistent key or targeting an unknown projection is
 		// caught at creation rather than silently never firing. The counters exist
@@ -2256,23 +2274,23 @@ export class CoupleDO extends DurableObject<Env> {
 			streak: input.streak,
 			modify_permission: input.modify_permission,
 		};
-		this.sql.exec(
-			`INSERT INTO counters (id, definition, value, updated_at) VALUES (?, ?, 0, NULL)`,
-			definition.id,
-			JSON.stringify(definition),
-		);
+		// Effective from now: a counter created today governs the periods folded
+		// after it and none before, so a rebuild folds nothing for it in a rollover
+		// that predates its existence (ADR 0013).
+		this.writeCounterDefinition(definition, Date.now());
 		return { ...definition, value: 0, updated_at: null };
 	}
 
 	/**
-	 * Edits a counter's definition in place (name, valence, targets, cadence,
-	 * streak). The `id` is the stable key events reference, so it is fixed and
-	 * never rewritten — only the policy changes. The cached value is left as-is and
-	 * catches up on the next **rollover**; a rebuild will not re-derive it, because
-	 * a counter definition carries no effective-dated history the way a rule does
-	 * (ADR 0002), so replaying a streak fold would score every past period against
-	 * whatever the target says today. That is why the rebuild preserves streak
-	 * values rather than reconstructing them (ADR 0012). Ungated like
+	 * Revises a counter's policy (name, valence, targets, cadence, streak). The
+	 * `id` is the stable key events reference, so it is fixed and never rewritten,
+	 * and the cached value is left alone for the next rollover or rebuild to
+	 * re-derive.
+	 *
+	 * Forward-only (ADR 0013): the edit *appends* a version rather than rewriting
+	 * the policy, so a period already folded keeps the target it was folded
+	 * against. Raising a daily target does not retroactively turn met days into
+	 * missed ones the next time the log is replayed. Ungated like
 	 * {@link createCounter}: any member of a live couple may shape a shared counter.
 	 */
 	async updateCounter(
@@ -2306,11 +2324,10 @@ export class CoupleDO extends DurableObject<Env> {
 			streak: input.streak,
 			modify_permission: input.modify_permission,
 		};
-		this.sql.exec(
-			`UPDATE counters SET definition = ? WHERE id = ?`,
-			JSON.stringify(definition),
-			counterId,
-		);
+		// Forward-only: the edit appends a version rather than rewriting the policy,
+		// so periods already folded keep the target they were folded against and a
+		// rebuild reproduces them instead of re-scoring under the new one (ADR 0013).
+		this.writeCounterDefinition(definition, Date.now());
 		return this.rowToCounter(this.requireCounterRow(counterId));
 	}
 
@@ -2342,6 +2359,13 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 		this.sql.exec(`DELETE FROM counters WHERE id = ?`, counterId);
+		// The versions go with the identity: a counter id is free to be reused
+		// (`uniqueCounterId` only avoids *live* collisions), and a stale history
+		// would then attach a new counter to a deleted one's policy.
+		this.sql.exec(
+			`DELETE FROM counter_versions WHERE counter_id = ?`,
+			counterId,
+		);
 		return { id: counterId };
 	}
 
@@ -2398,6 +2422,14 @@ export class CoupleDO extends DurableObject<Env> {
 	 * construction — the proof that the materialized value is only ever a cache
 	 * (handoff §4.4) and that every change has a recorded cause (handoff §4.6).
 	 *
+	 * "By construction" has exactly one deliberate exception, recorded in ADR 0013:
+	 * a genuinely *missed* alarm collapses several elapsed periods into one
+	 * catch-up fire (`catchUpFireAt`), while a replay walks every boundary. The
+	 * rebuild repairs what the missed alarm lost rather than reproducing it — a
+	 * streak should not survive days the couple did nothing. Everything else,
+	 * including the moment a rollover stamps, is reproducible and is required to
+	 * agree; see {@link runScheduledJob} for why that stamp is the boundary.
+	 *
 	 * Semantics: the replay resolves the rule version in force at each event's own
 	 * log-time (`rulesAt`, ADR 0002), so editing a rule never re-scores the history
 	 * that was logged under the old one. Amendments fold in the same way they did
@@ -2414,11 +2446,10 @@ export class CoupleDO extends DurableObject<Env> {
 	 * - `expired` / `canceled` / `auto_closed` timer closes are written by a sweep
 	 *   or a dom command, stamped with the moment they were *noticed* rather than a
 	 *   boundary, so nothing could reconstruct them and the rows are kept;
-	 * - period resets are off-log too, but unlike a sweep they are a pure function
-	 *   of the calendar, so they are re-derived between replay steps rather than
-	 *   preserved;
-	 * - streak folds are the one exception that is preserved despite being
-	 *   reproducible — see the note at the zeroing below.
+	 * - period resets and streak folds are off-log too, but unlike a sweep they are
+	 *   a pure function of the calendar and the counter policy in force, so they
+	 *   are re-derived between replay steps rather than preserved
+	 *   (`replayRollovers`, ADR 0013).
 	 *
 	 * Getting that split wrong is this projection's characteristic failure: five
 	 * rebuild-only divergences have landed in it (#163's two, #165, #166, and the
@@ -2428,45 +2459,21 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
-		// Zero the event-derived counters, but preserve streak counters. This is the
-		// one preserved projection that replay *could* reconstruct: a fold is
-		// `target met? +1 : 0` over the target counter's end-of-period value, and
-		// both the value and the boundaries are derivable. It is preserved anyway
-		// because the target it compares against lives on the counter *definition*,
-		// and counter definitions are not effective-dated the way rules are (ADR
-		// 0002) — so re-deriving would score every past period against today's
-		// target, which is precisely the retroactive re-scoring effective dating
-		// exists to prevent. Versioning counter definitions is what unblocks it.
-		const defs = this.counterDefinitions();
-		const streakIds = new Set(
-			defs.filter((def) => def.streak).map((def) => def.id),
-		);
-		// Daily/weekly counters are cleared by the off-log `scheduled_reset` alarm, not
-		// by any logged event. Replaying the whole log would therefore re-add every
-		// increment ever recorded and inflate them to lifetime totals. Repair this by
-		// replaying the resets alongside the folds: whenever a day/week boundary falls
-		// between two consecutive replay steps (or after the last one, up to now) the
-		// matching counters are zeroed, so each ends the rebuild holding only its
-		// current period's increments — the same value the live cache carries.
-		const dailyResetIds = new Set(
-			defs.filter((def) => def.reset === "daily").map((def) => def.id),
-		);
-		const weeklyResetIds = new Set(
-			defs.filter((def) => def.reset === "weekly").map((def) => def.id),
-		);
-		// One set-based zeroing rather than an UPDATE per counter. Streak values are
-		// preserved (folded by the alarm, not the log), so exclude them; with no streak
-		// counters the NOT IN clause would be empty SQL, so zero everything instead.
-		const streakIdList = [...streakIds];
-		if (streakIdList.length === 0) {
-			this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
-		} else {
-			const placeholders = streakIdList.map(() => "?").join(", ");
-			this.sql.exec(
-				`UPDATE counters SET value = 0, updated_at = NULL WHERE id NOT IN (${placeholders})`,
-				...streakIdList,
-			);
-		}
+		// Zero every counter, streaks included (ADR 0013). Streaks used to be
+		// carried across a rebuild — the one projection replay could reconstruct but
+		// was not allowed to, because the target a fold compares against lives on
+		// the counter definition and definitions had no effective-dated history, so
+		// re-deriving would have scored every past period against today's target.
+		// `counter_versions` removed that obstacle, so the fold is now replayed at
+		// each boundary against the policy in force *for that boundary*, and no
+		// projection is exempt from the rebuild any more.
+		//
+		// Daily/weekly counters and streak folds alike are the alarm's work, not any
+		// logged event's, so replaying only the events would inflate a period
+		// counter to its lifetime total and leave a streak frozen. Both are repaired
+		// by walking the rollover boundaries that fall between consecutive replay
+		// steps — see `replayRollovers`.
+		this.sql.exec(`UPDATE counters SET value = 0, updated_at = NULL`);
 		// One rule for both timer kinds: reopen exactly the closes a rule wrote and
 		// leave every other row alone. The status list is bound from the rule
 		// schema's own enum, so a new verb-writable disposition cannot leave this
@@ -2542,23 +2549,14 @@ export class CoupleDO extends DurableObject<Env> {
 		const now = Date.now();
 		let cursor: number | null = null;
 		for (const step of steps) {
-			// Clear any daily/weekly counters whose reset boundary the alarm would
-			// have crossed since the previous step, before folding this one in.
-			if (cursor !== null) {
-				this.replayScheduledResets(
-					cursor,
-					step.at,
-					dailyResetIds,
-					weeklyResetIds,
-				);
-			}
+			// Run every rollover the alarm would have fired since the previous step —
+			// folding streaks and clearing period counters — before folding this one in.
+			if (cursor !== null) this.replayRollovers(cursor, step.at);
 			cursor = step.at;
 			step.run();
 		}
-		// Resets that fired after the last step (up to now) still cleared the caches.
-		if (cursor !== null) {
-			this.replayScheduledResets(cursor, now, dailyResetIds, weeklyResetIds);
-		}
+		// Rollovers that fired after the last step (up to now) still moved the caches.
+		if (cursor !== null) this.replayRollovers(cursor, now);
 		// The replay rewrote the open-timer set, so re-arm at the new minimum.
 		this.armAlarm();
 		return this.counterRows().map((r) => this.rowToCounter(r));
@@ -3775,6 +3773,57 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * The counters with their full effective-dated version history (ADR 0013),
+	 * ordered by id so a replay is deterministic and each counter's versions
+	 * ascend by `effective_from`.
+	 *
+	 * Only the reads that resolve a *moment* need this — the rollover fold and the
+	 * rebuild replay. Every other read goes through `counterRows`, whose
+	 * `definition` column the write path keeps as a mirror of the latest version
+	 * (the v8 arrangement for rules).
+	 */
+	private versionedCounters(): VersionedCounter[] {
+		// Built from `counter_versions` alone — no join back to `counters` — because
+		// `writeCounterDefinition` is the only path that inserts a counter row and it
+		// always writes a version alongside, so the two sets cannot differ. The
+		// values live on the identity row and no caller of this wants them: resolving
+		// a policy for a moment is all this is for.
+		const versionsById = new Map<string, CounterVersion[]>();
+		for (const row of this.counterVersionQuery()) {
+			const versions = versionsById.get(row.counter_id) ?? [];
+			versions.push(this.counterVersionOf(row));
+			versionsById.set(row.counter_id, versions);
+		}
+		return [...versionsById].map(([id, versions]) => ({ id, versions }));
+	}
+
+	/** Every stored version, ordered by counter then by when it took force. */
+	private counterVersionQuery(id?: string): CounterVersionRow[] {
+		return id === undefined
+			? this.sql
+					.exec<CounterVersionRow>(
+						`SELECT counter_id, effective_from, definition FROM counter_versions
+							ORDER BY counter_id, effective_from`,
+					)
+					.toArray()
+			: this.sql
+					.exec<CounterVersionRow>(
+						`SELECT counter_id, effective_from, definition FROM counter_versions
+							WHERE counter_id = ? ORDER BY effective_from`,
+						id,
+					)
+					.toArray();
+	}
+
+	/** One stored row as a version. The stored JSON holds a full definition. */
+	private counterVersionOf(row: CounterVersionRow): CounterVersion {
+		return versionFromCounterDefinition(
+			JSON.parse(row.definition) as CounterDefinition,
+			row.effective_from,
+		);
+	}
+
+	/**
 	 * The installed rules with their full effective-dated version history (#64,
 	 * ADR 0002), ordered by id so evaluation is deterministic (matters for
 	 * replay/rebuild) and each rule's versions ascending by `effective_from`. Each
@@ -4395,16 +4444,48 @@ export class CoupleDO extends DurableObject<Env> {
 	/** A free counter id from a slug base, suffixing `_2`, `_3`… on collision. */
 	/**
 	 * Upserts a counter's *definition*, leaving its value alone — a counter's value
-	 * is a cache the log rebuilds, only its policy is being written here. Shared by
-	 * pack seeding and ritual tracking so the two cannot drift.
+	 * is a cache the log rebuilds, only its policy is being written here.
+	 *
+	 * The single write path for both the identity row and the effective-dated
+	 * versions (ADR 0013), so `counters.definition` cannot drift from the latest
+	 * version: everything that changes a counter's policy comes through here, and
+	 * the mirror is what every read that does *not* resolve a moment uses.
+	 *
+	 * A version is appended only when the policy actually changed. A pack bump
+	 * calls this for every default counter, most of them untouched, and a version
+	 * per counter per bump would be history that records nothing happening.
 	 */
-	private writeCounterDefinition(definition: CounterDefinition): void {
+	private writeCounterDefinition(
+		definition: CounterDefinition,
+		effectiveFrom: number,
+	): void {
 		this.sql.exec(
 			`INSERT INTO counters (id, definition, value, updated_at)
 				VALUES (?, ?, 0, NULL)
 				ON CONFLICT(id) DO UPDATE SET definition = excluded.definition`,
 			definition.id,
 			JSON.stringify(definition),
+		);
+		const { id: _id, ...policy } = definition;
+		const version = versionFromCounterDefinition(policy, effectiveFrom);
+		const existing = this.counterVersionRows(definition.id);
+		const latest = existing[existing.length - 1];
+		if (latest && sameCounterPolicy(latest, version)) return;
+		this.sql.exec(
+			`INSERT INTO counter_versions (counter_id, effective_from, definition)
+				VALUES (?, ?, ?)
+				ON CONFLICT(counter_id, effective_from) DO UPDATE SET
+					definition = excluded.definition`,
+			definition.id,
+			effectiveFrom,
+			JSON.stringify(definition),
+		);
+	}
+
+	/** One counter's versions, ascending by `effective_from`. */
+	private counterVersionRows(id: string): CounterVersion[] {
+		return this.counterVersionQuery(id).map((row) =>
+			this.counterVersionOf(row),
 		);
 	}
 
@@ -4597,7 +4678,7 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		const now = Date.now();
 		for (const item of dueItems(this.scheduleRows(), now)) {
-			this.runScheduledJob(item, now);
+			this.runScheduledJob(item);
 			const payload = this.schedulePayload(item);
 			const interval = payload.interval_ms ?? 0;
 			if (interval > 0) {
@@ -4620,14 +4701,32 @@ export class CoupleDO extends DurableObject<Env> {
 	 * Runs one due schedule job (handoff §3.2). The rollover jobs evaluate streaks
 	 * and clear scheduled counters; an unknown kind is an inert no-op so a stale or
 	 * future job type never throws mid-drain.
+	 *
+	 * A rollover is stamped with **`item.next_fire_at` — the boundary it is for —
+	 * not the moment the alarm happened to wake**. The two differ by however late
+	 * the platform ran, which is never zero, and the difference lands in
+	 * `counters.updated_at` and in every rollover trace row. Stamping the wake
+	 * moment made those unreproducible: a rebuild replays each boundary at the
+	 * boundary, so every rebuild silently shifted the ledger by the wake delay.
+	 * `next_fire_at` is boundary-aligned by construction (`insertScheduleIfAbsent`
+	 * seeds it from `nextDailyRollover`/`nextWeeklyRollover`, and `catchUpFireAt`
+	 * advances it by whole intervals), so this makes the stamp a pure function of
+	 * the schedule and the two paths agree.
+	 *
+	 * This is safe here and would not be for a timer sweep, which ADR 0012
+	 * deliberately keeps stamped at the noticing moment: a sweep's `closed_at` is
+	 * read as the *end of a span* by the ambient-state predicate, so moving it
+	 * backwards retroactively shuts a timer that was live at the time. Nothing
+	 * reads a rollover's `updated_at` as a span end — it is "when this counter last
+	 * moved" — so the boundary is simply the truer answer.
 	 */
-	private runScheduledJob(item: ScheduleRow, now: number): void {
+	private runScheduledJob(item: ScheduleRow): void {
 		switch (item.kind) {
 			case "daily_rollover":
-				this.runRollover("daily", now);
+				this.runRollover("daily", item.next_fire_at);
 				return;
 			case "weekly_rollover":
-				this.runRollover("weekly", now);
+				this.runRollover("weekly", item.next_fire_at);
 				return;
 		}
 	}
@@ -4638,16 +4737,31 @@ export class CoupleDO extends DurableObject<Env> {
 	 * `target met? +1 : 0`, so the reset that clears that target must come after.
 	 * Every outcome is written to the trace as a `system_job` (no causing event),
 	 * making the rollover legible in the same transparency log as rule effects.
+	 *
+	 * `at` is the **boundary this rollover is for**, never the moment of the call —
+	 * live it comes from the schedule's `next_fire_at` and on a replay from the
+	 * boundary being walked, which is what lets the two agree (see
+	 * {@link runScheduledJob}). It is what stamps `updated_at` and the trace rows.
 	 */
-	private runRollover(period: "daily" | "weekly", now: number): void {
-		// One read of the counters covers everything: parse the definitions and keep a
-		// value map from the same rows, rather than re-querying each value back out with
-		// counterById. The streak loop reads its target's pre-reset value here, so the
-		// map is refreshed as streaks fold, keeping it consistent for the reset loop.
+	private runRollover(
+		period: "daily" | "weekly",
+		at: number,
+		policies?: CounterDefinition[],
+	): void {
+		// The values always come from the live rows — a rollover folds whatever the
+		// counters hold right now, and the map is refreshed as streaks fold so the
+		// reset loop below sees what the streak loop already read.
+		//
+		// The *policies* may not. `policies` is how a rebuild replays a past
+		// boundary: it passes the versions in force at that moment (ADR 0013), so a
+		// period folded years ago is scored against the target the couple actually
+		// had then. Live it is omitted and the mirror on the identity row — always
+		// the latest version — is parsed out of the same rows instead. Same code,
+		// both paths; only the policy clock differs.
 		const rows = this.counterRows();
-		const defs = rows.map(
-			(row) => JSON.parse(row.definition) as CounterDefinition,
-		);
+		const defs =
+			policies ??
+			rows.map((row) => JSON.parse(row.definition) as CounterDefinition);
 		const valueById = new Map(rows.map((r) => [r.id, r.value]));
 		for (const def of defs) {
 			const streak = def.streak;
@@ -4666,12 +4780,12 @@ export class CoupleDO extends DurableObject<Env> {
 			this.sql.exec(
 				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
 				to,
-				now,
+				at,
 				def.id,
 			);
 			valueById.set(def.id, to);
 			this.writeTrace(
-				traceStreakRollover(now, def.id, {
+				traceStreakRollover(at, def.id, {
 					period,
 					target_counter: streak.counter,
 					met,
@@ -4686,11 +4800,11 @@ export class CoupleDO extends DurableObject<Env> {
 			if (value === 0) continue;
 			this.sql.exec(
 				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ?`,
-				now,
+				at,
 				def.id,
 			);
 			this.writeTrace(
-				traceScheduledReset(now, def.id, { period, from: value, to: 0 }),
+				traceScheduledReset(at, def.id, { period, from: value, to: 0 }),
 			);
 		}
 	}
@@ -4729,36 +4843,41 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Replays the alarm's scheduled resets across a time gap during a counter rebuild
-	 * (see {@link rebuildCounters}). If a daily and/or weekly UTC boundary falls in
-	 * `(from, to]`, the matching reset counters are zeroed — reproducing off-log
-	 * `scheduled_reset`s the event log itself never recorded. Multiple boundaries of
-	 * the same period in one gap collapse to a single zeroing: a gap spans no events,
-	 * so nothing accrues between them.
+	 * Replays the alarm's rollovers across a time gap during a rebuild (see
+	 * {@link rebuildCounters}) — every daily and weekly UTC boundary in `(from,
+	 * to]`, in the order the alarm would have fired them, each through the same
+	 * {@link runRollover} the alarm calls.
+	 *
+	 * **Every boundary, not just the first.** This replaced a version that
+	 * collapsed multiple boundaries of one period into a single zeroing, on the
+	 * reasoning that a gap spans no events so nothing accrues between them. That
+	 * holds for a reset, which is idempotent. It is false for a streak fold, which
+	 * is not: a met day followed by three idle ones folds `+1, 0, 0, 0` and ends at
+	 * zero, while one collapsed fold would score the met day and stop — leaving a
+	 * streak alive across days the couple did nothing (ADR 0013).
+	 *
+	 * On a coincident boundary — Monday 00:00 UTC is both — daily runs before
+	 * weekly, matching `scheduleRows`' `ORDER BY next_fire_at, id`.
+	 *
+	 * The versions are resolved once and the policy in force is picked per boundary
+	 * in memory, so a couple dormant for a year costs one query rather than 365.
 	 */
-	private replayScheduledResets(
-		from: number,
-		to: number,
-		dailyResetIds: Set<string>,
-		weeklyResetIds: Set<string>,
-	): void {
-		const dailyAt = nextDailyRollover(from);
-		if (dailyAt <= to) this.zeroResetCounters(dailyResetIds, dailyAt);
-		const weeklyAt = nextWeeklyRollover(from);
-		if (weeklyAt <= to) this.zeroResetCounters(weeklyResetIds, weeklyAt);
-	}
-
-	/**
-	 * Zeroes the given reset counters at `at`, skipping any already at 0 — mirroring
-	 * the live rollover's no-op guard so an untouched counter keeps its prior
-	 * `updated_at` rather than being stamped by a reset that changed nothing.
-	 */
-	private zeroResetCounters(ids: Set<string>, at: number): void {
-		for (const id of ids) {
-			this.sql.exec(
-				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ? AND value != 0`,
-				at,
-				id,
+	private replayRollovers(from: number, to: number): void {
+		const versioned = this.versionedCounters();
+		const boundaries: { at: number; period: "daily" | "weekly" }[] = [];
+		for (let at = nextDailyRollover(from); at <= to; at += DAY_MS) {
+			boundaries.push({ at, period: "daily" });
+		}
+		for (let at = nextWeeklyRollover(from); at <= to; at += WEEK_MS) {
+			boundaries.push({ at, period: "weekly" });
+		}
+		// Daily before weekly on a tie, as the schedule's id ordering gives live.
+		boundaries.sort((a, b) => a.at - b.at || a.period.localeCompare(b.period));
+		for (const boundary of boundaries) {
+			this.runRollover(
+				boundary.period,
+				boundary.at,
+				countersEffectiveAt(versioned, boundary.at),
 			);
 		}
 	}

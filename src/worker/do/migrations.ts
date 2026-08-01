@@ -338,6 +338,41 @@ export const DO_MIGRATIONS: string[][] = [
 			)
 			WHERE kind IN (SELECT id FROM agreement_kinds WHERE author_scope = 'counterpart')`,
 	],
+	// v14 — counter definitions become effective-dated (ADR 0013). The third
+	// instance of the identity-plus-append-only-versions shape, after
+	// `rule_versions` (v8) and `agreement_versions` (v10), and shaped after v8:
+	// `counters.definition` is retained as a mirror of the latest version, kept in
+	// step by the single write path, so only the reads that actually resolve a
+	// moment — the rollover fold and the rebuild replay — go through the versions.
+	//
+	// What it unblocks: streak counters were the one projection `rebuildCounters`
+	// preserved despite replay being able to reconstruct it (ADR 0012). A fold is
+	// `target met? +1 : 0` over the target's end-of-period value, and both are
+	// derivable — but the *target* lives on the definition, so re-deriving without
+	// versions would score every past period against whatever the target says
+	// today. That is the retroactive re-scoring ADR 0002 exists to prevent.
+	//
+	// Everything but the `id` versions, for the reason ADR 0009 gave for rule
+	// names: a counter's name is displayed against its own history, so a name on
+	// the identity row would retroactively rewrite what a past trace row said the
+	// counter was called.
+	//
+	// Backfill: one version per counter, effective from 0, carrying today's
+	// definition — byte-for-byte the v8 rule backfill. It cannot recover targets
+	// that changed *before* this migration, because nothing recorded them; the set
+	// of counters that affects is empty (no couple has edited one, and an unedited
+	// pack counter re-derives identically). Build the mechanism, skip the
+	// archaeology.
+	[
+		`CREATE TABLE IF NOT EXISTS counter_versions (
+			counter_id TEXT NOT NULL,
+			effective_from INTEGER NOT NULL,
+			definition TEXT NOT NULL,
+			PRIMARY KEY (counter_id, effective_from)
+		)`,
+		`INSERT INTO counter_versions (counter_id, effective_from, definition)
+			SELECT id, 0, definition FROM counters`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";
