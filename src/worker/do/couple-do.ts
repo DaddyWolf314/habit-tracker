@@ -130,6 +130,7 @@ import {
 	latestVersion,
 	ruleDefinitionSchema,
 	ruleSchema,
+	TIMER_CLOSE_STATUSES,
 	versionFromDefinition,
 } from "#/shared/rules.ts";
 import {
@@ -2266,10 +2267,13 @@ export class CoupleDO extends DurableObject<Env> {
 	/**
 	 * Edits a counter's definition in place (name, valence, targets, cadence,
 	 * streak). The `id` is the stable key events reference, so it is fixed and
-	 * never rewritten — only the policy changes. The cached value is left as-is: a
-	 * cadence or streak change re-derives on the next rebuild/rollover, just as a
-	 * rule edit does (handoff §4.4). Ungated like {@link createCounter}: any member
-	 * of a live couple may shape a shared counter.
+	 * never rewritten — only the policy changes. The cached value is left as-is and
+	 * catches up on the next **rollover**; a rebuild will not re-derive it, because
+	 * a counter definition carries no effective-dated history the way a rule does
+	 * (ADR 0002), so replaying a streak fold would score every past period against
+	 * whatever the target says today. That is why the rebuild preserves streak
+	 * values rather than reconstructing them (ADR 0012). Ungated like
+	 * {@link createCounter}: any member of a live couple may shape a shared counter.
 	 */
 	async updateCounter(
 		identityHash: string,
@@ -2394,40 +2398,45 @@ export class CoupleDO extends DurableObject<Env> {
 	 * construction — the proof that the materialized value is only ever a cache
 	 * (handoff §4.4) and that every change has a recorded cause (handoff §4.6).
 	 *
-	 * Semantics: the replay uses the *current* rule set (rules aren't effective-
-	 * dated yet), so after a rule is added or edited a rebuild re-derives history
-	 * under today's rules and may differ from the incrementally-maintained cache,
-	 * which only ever saw the rules in force at each append. That's the intended
-	 * meaning of rebuild here; proper per-event rule versioning is a later phase.
-	 * Amendments fold in the same way they did live: each adjudication re-runs
-	 * its target's re-evaluation at the ruling's own timestamp (handoff §4.2, §7),
-	 * so effects a ruling unlocked survive the rebuild.
+	 * Semantics: the replay resolves the rule version in force at each event's own
+	 * log-time (`rulesAt`, ADR 0002), so editing a rule never re-scores the history
+	 * that was logged under the old one. Amendments fold in the same way they did
+	 * live: each adjudication re-runs its target's re-evaluation at the ruling's own
+	 * timestamp (handoff §4.2, §7), against the rules in force when the *target* was
+	 * logged, so effects a ruling unlocked survive the rebuild.
+	 *
+	 * What is reset and what is preserved follows one rule (ADR 0012): **reset
+	 * exactly what a rule wrote, preserve everything a rule could not have
+	 * written.** Every projection here is one or the other —
+	 *
+	 * - counters, anchors, trace, and rule-closed timers are rule-written, so they
+	 *   are cleared and re-derived by the replay;
+	 * - `expired` / `canceled` / `auto_closed` timer closes are written by a sweep
+	 *   or a dom command, stamped with the moment they were *noticed* rather than a
+	 *   boundary, so nothing could reconstruct them and the rows are kept;
+	 * - period resets are off-log too, but unlike a sweep they are a pure function
+	 *   of the calendar, so they are re-derived between replay steps rather than
+	 *   preserved;
+	 * - streak folds are the one exception that is preserved despite being
+	 *   reproducible — see the note at the zeroing below.
+	 *
+	 * Getting that split wrong is this projection's characteristic failure: five
+	 * rebuild-only divergences have landed in it (#163's two, #165, #166, and the
+	 * auto-closed service-minutes credit), every one silent and in the scoring
+	 * direction, because a rebuild is the only thing that re-derives a couple's
+	 * demerits from scratch.
 	 */
 	async rebuildCounters(identityHash: string): Promise<Counter[]> {
 		this.requireMember(identityHash);
-		// Reset every projection cache; all are rebuilt below purely from the log.
-		// Stopwatches are torn down (R15/R16 reopen/close them on replay), keeping
-		// them an honest cache — an over-max auto-close is re-derived by the next
-		// sweep rather than replayed (a system job, not a logged event). Countdowns
-		// are dom *commands*, not event-derived, so the log cannot re-derive them:
-		// their assignment (and any pause/extend) is durable and survives the
-		// rebuild. Only their event-driven close is re-derived, so reset *those* to
-		// running and let replay re-close via R4/R14.
-		//
-		// Scoped to `completed`/`failed` — the two a rule close writes — rather than
-		// every countdown, because `expired` (the sweep) and `canceled` (the dom)
-		// are off-log: nothing in the replay re-closes them, so a blanket reset
-		// stranded them open for good, losing both the status and the `closed_at`
-		// that says when they ended. That span is what the ambient-state predicate
-		// reads (ADR 0011), so losing it made an expired `denial_period` read as
-		// still running for every later replayed event, and R26 escalate orgasms
-		// live evaluation had left alone — a rebuild-only divergence, in the
-		// scoring direction.
-		// Zero the event-derived counters, but preserve streak counters: their value
-		// is folded by the alarm at rollover ("target met? +1 : 0"), not by any
-		// logged event, so replay cannot re-derive it — like a timer auto-close, it
-		// is system-job state carried across the rebuild and advanced by the next
-		// rollover, not reconstructed here.
+		// Zero the event-derived counters, but preserve streak counters. This is the
+		// one preserved projection that replay *could* reconstruct: a fold is
+		// `target met? +1 : 0` over the target counter's end-of-period value, and
+		// both the value and the boundaries are derivable. It is preserved anyway
+		// because the target it compares against lives on the counter *definition*,
+		// and counter definitions are not effective-dated the way rules are (ADR
+		// 0002) — so re-deriving would score every past period against today's
+		// target, which is precisely the retroactive re-scoring effective dating
+		// exists to prevent. Versioning counter definitions is what unblocks it.
 		const defs = this.counterDefinitions();
 		const streakIds = new Set(
 			defs.filter((def) => def.streak).map((def) => def.id),
@@ -2458,10 +2467,35 @@ export class CoupleDO extends DurableObject<Env> {
 				...streakIdList,
 			);
 		}
-		this.sql.exec(`DELETE FROM timers WHERE kind = 'stopwatch'`);
+		// One rule for both timer kinds: reopen exactly the closes a rule wrote and
+		// leave every other row alone. The status list is bound from the rule
+		// schema's own enum, so a new verb-writable disposition cannot leave this
+		// resetting a stale set (`TIMER_CLOSE_STATUSES`).
+		//
+		// A timer's *open* is event-derived — R15/R22/R23 fire on `session_started`,
+		// `task_assigned`, `denial_started` — so replay re-derives it, and the
+		// replayed open re-adopts the row its own event created rather than
+		// inserting a second (see `openTimer`). Its *close* may or may not be: R4,
+		// R14 and R16 write `completed`/`failed` and replay re-derives those, but
+		// the expiry sweep, the over-max sweep and the dom's cancel write `expired`,
+		// `auto_closed` and `canceled` — none of which any event records, and all of
+		// which are stamped with the moment the system noticed rather than the
+		// boundary crossed. Keeping those rows is the only way they survive.
+		//
+		// Stopwatches were torn down wholesale here until #167, on the theory that
+		// an over-max auto-close would be "re-derived by the next sweep". It was
+		// not: the row came back open, stayed open for the whole replay, and — worse
+		// than the inverted `{ session_stopwatch: false }` clause already documented
+		// in ADR 0011 — a session the sweep had `auto_closed` came back `completed`
+		// on replay, routing its duration into `service_minutes_week`. A rebuild
+		// therefore credited service minutes the live path had deliberately withheld
+		// pending review. Preserving them, exactly as countdowns are preserved,
+		// fixes both.
+		const closePlaceholders = TIMER_CLOSE_STATUSES.map(() => "?").join(", ");
 		this.sql.exec(
 			`UPDATE timers SET status = NULL, closed_at = NULL
-				WHERE kind = 'countdown' AND status IN ('completed', 'failed')`,
+				WHERE status IN (${closePlaceholders})`,
+			...TIMER_CLOSE_STATUSES,
 		);
 		// Anchors are event-derived (reset by R7/R11/R12/R17), so clear them and let
 		// replay re-fold each reset. `resetAnchor` is commutative, so the rebuilt
@@ -2917,6 +2951,34 @@ export class CoupleDO extends DurableObject<Env> {
 	 * real elapsed span, not the log time.
 	 */
 	private openTimer(event: Event, ruleId: string, op: TimerOp): void {
+		// Re-adopt the instance this same event already opened, rather than adding a
+		// second one (#165). Live this can never match: the event was inserted moments
+		// ago and this is the first time the rule has fired on it. On *replay* it
+		// always matches for a countdown, because `rebuildCounters` deliberately
+		// leaves countdown rows in place — they carry `expired`/`canceled` closes and
+		// dom pause/extend state, all off-log and unreconstructable — while ADR 0004
+		// made their *open* event-derived via R22/R23, so replay re-derives it. Before
+		// this check, every rebuild inserted a duplicate running row per countdown
+		// event and they accumulated, which inverted R26's `timer_active` clause for
+		// every later event. Stopwatches are torn down before replay, so nothing
+		// matches and they open exactly as they did live.
+		//
+		// Re-adopting rather than rewriting is the point: the row keeps its id (so the
+		// rebuilt trace names the same timer), its extended deadline, and any pause —
+		// none of which the log could say. Replay still re-derives the close, because
+		// `closeTimer` matches only *open* rows: a countdown the dom canceled before
+		// its closing event was logged stays canceled, exactly as it did live.
+		const existing = this.timerOpenedBy(event.id, op.timer);
+		if (existing) {
+			this.writeTrace(
+				traceTimerOpen(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+					timer_id: existing.id,
+					match_on: op.match_on,
+					tag: op.tag,
+				}),
+			);
+			return;
+		}
 		const id = ulid(event.logged_at);
 		// A rule-opened *countdown* is one whose open routes a duration: `task_assigned`
 		// and `denial_started` carry `duration_from: duration_ms` (ADR 0004), so the
@@ -2985,7 +3047,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 */
 	private closeTimer(event: Event, ruleId: string, op: TimerOp): void {
 		const target = this.matchOpenTimer(
-			this.openTimerRows(op.timer),
+			this.openTimerRows(op.timer, event.occurred_at),
 			op.match_on,
 		);
 		if (!target) {
@@ -3307,8 +3369,8 @@ export class CoupleDO extends DurableObject<Env> {
 		return expired;
 	}
 
-	private openTimerRows(definition: string): TimerRow[] {
-		return this.sql
+	private openTimerRows(definition: string, at?: number): TimerRow[] {
+		const rows = this.sql
 			.exec<TimerRow>(
 				`SELECT id, kind, definition, state, status, opened_at, closed_at
 					FROM timers WHERE definition = ? AND status IS NULL
@@ -3316,6 +3378,45 @@ export class CoupleDO extends DurableObject<Env> {
 				definition,
 			)
 			.toArray();
+		// Bounded by the closing event's own moment when the caller passes one: a
+		// timer that had not opened yet is not open *to that event*, however its
+		// status column reads. Live the two agree, because nothing can be running
+		// before it started. On replay they diverge sharply — `rebuildCounters`
+		// resets rule-closed countdowns to running before replaying, so every one of
+		// them reads as open from the first replayed event onward, and the earliest
+		// unpermitted orgasm in the log would close a denial that began hours later,
+		// stamping a `closed_at` earlier than its own `opened_at`. The corrupted span
+		// then read as shut for the rest of the replay and R26 scored nothing.
+		//
+		// This is the same span test `activeTimerDefinitionsAt` applies for the
+		// `timer_active` condition (ADR 0011); a close and a condition asking about
+		// the same instant must not get different answers.
+		if (at === undefined) return rows;
+		return rows.filter((row) => row.opened_at !== null && row.opened_at <= at);
+	}
+
+	/**
+	 * The instance of `definition` a given event opened, whatever became of it —
+	 * what lets a replayed open re-adopt its own row instead of duplicating it
+	 * (#165, and see `openTimer`). Deliberately unfiltered by status: the rows this
+	 * has to find are precisely the ones closed off-log, which are never open.
+	 *
+	 * `opened_by` lives inside the state JSON rather than a column, so this filters
+	 * in JS — the same way every other read of that JSON does. The scan is bounded
+	 * by one definition's instances, and only replay ever reaches it more than once.
+	 */
+	private timerOpenedBy(eventId: string, definition: string): TimerRow | null {
+		const rows = this.sql
+			.exec<TimerRow>(
+				`SELECT id, kind, definition, state, status, opened_at, closed_at
+					FROM timers WHERE definition = ?
+					ORDER BY opened_at ASC, id ASC`,
+				definition,
+			)
+			.toArray();
+		return (
+			rows.find((row) => this.timerState(row).opened_by === eventId) ?? null
+		);
 	}
 
 	/**

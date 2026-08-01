@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { sqlStorage } from "./harness.ts";
 import { DO_MIGRATIONS, runMigrations } from "./migrations.ts";
 
 /**
@@ -15,25 +16,9 @@ import { DO_MIGRATIONS, runMigrations } from "./migrations.ts";
  * to repair it through.
  *
  * `better-sqlite3` is the same engine the DO embeds, so the SQL here is the SQL
- * that will run. The shim below is the whole of the Workers `SqlStorage` surface
- * `runMigrations` touches.
+ * that will run. The `SqlStorage` shim these tests started with now lives in
+ * `harness.ts`, which drives the whole DO over it (#164).
  */
-
-/** The slice of `SqlStorage` the migration runner uses, over better-sqlite3. */
-function sqlStorage(db: Database.Database): SqlStorage {
-	return {
-		exec(query: string, ...bindings: unknown[]) {
-			const statement = db.prepare(query);
-			// better-sqlite3 refuses `.all()` on a statement that returns no columns,
-			// which is most of a migration; `.run()` is the path for those.
-			const rows = statement.reader ? statement.all(...bindings) : [];
-			if (!statement.reader) statement.run(...bindings);
-			return { toArray: () => rows } as unknown as SqlStorageCursor<
-				Record<string, SqlStorageValue>
-			>;
-		},
-	} as SqlStorage;
-}
 
 /** A DO that stopped at `version` — the state a couple paired before v11 is in. */
 function doAtVersion(version: number): Database.Database {
