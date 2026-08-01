@@ -102,6 +102,22 @@ repairs what the missed alarm lost rather than reproducing it. It is recorded
 here because ADR 0012 claims a rebuild reproduces live by construction, and this
 is the one place that claim is deliberately not met.
 
+**It was very nearly two.** The first cut of this change had the live rollover
+stamp `updated_at` and its trace rows with `Date.now()` at wake, while the replay
+stamped the boundary — so every rebuild silently shifted the ledger by however
+late the platform had run, which is never zero. That is the same trade this ADR's
+sibling rejects for swept closes, arrived at from the other side, and it was
+invisible to the tests because the alarm helper wakes exactly on the boundary.
+The rollover now takes its stamp from the schedule's `next_fire_at`, which is
+boundary-aligned by construction, so both paths agree and only the catch-up case
+above remains.
+
+The asymmetry with a sweep is the point, and it is not arbitrary: a sweep's
+`closed_at` is read as the *end of a span* by the ambient-state predicate, so
+moving it backwards retroactively shuts a timer that was live at the time.
+Nothing reads a rollover's `updated_at` as a span end — it is "when this counter
+last moved" — so there the boundary is simply the truer answer.
+
 ## Backfill
 
 One version per counter, effective from 0, carrying today's definition — the v8
@@ -133,6 +149,10 @@ the archaeology (ADR 0010).
 - A pack bump appends a version only for counters whose policy actually changed
   (`sameCounterPolicy`). Otherwise every bump would write a version per counter
   recording that nothing happened.
-- The rollover replay costs one query for the version history plus an in-memory
-  resolution per boundary, so a couple dormant for a year is one query and 365
-  folds rather than 365 queries.
+- The rollover replay reads the version history once per *gap* and resolves the
+  policy per boundary in memory, so version resolution costs one query per gap
+  rather than one per boundary. The folds themselves are not free: `runRollover`
+  still reads the counters and writes an update and a trace row per counter it
+  moves, at every boundary. A couple dormant for a year therefore replays ~365
+  rollovers, and the rebuilt trace carries a row for each one that changed
+  something — which is the same ledger the live alarm would have written.

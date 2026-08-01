@@ -1025,6 +1025,44 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 		expect((await counters(couple))[streak.id]).toBe(0);
 	});
 
+	it("stamps the boundary, not the moment the alarm woke", async () => {
+		// The platform never wakes a DO exactly on the boundary, so `Date.now()` at
+		// wake is always a little past it. Stamping that moment made the rollover's
+		// `updated_at` and trace rows unreproducible — a replay walks each boundary
+		// *at* the boundary, so every rebuild silently shifted the ledger by however
+		// late the alarm ran. The fold is a fact about the period, not about when
+		// the scheduler got round to it.
+		//
+		// `advanceFiringAlarms` cannot catch this: it sets the clock exactly to the
+		// armed time, which is the one case where the two agree. This drives the
+		// alarm by hand, late, on purpose.
+		const couple = await activeCouple();
+		await ritual(couple);
+		const boundary = couple.alarmAt();
+		if (boundary === null) throw new Error("no rollover armed");
+
+		vi.setSystemTime(boundary + 90_000); // woke a minute and a half late
+		await couple.fireAlarm();
+
+		const stamps = () =>
+			couple.db
+				.prepare(
+					`SELECT id, updated_at FROM counters
+						WHERE id IN ('ritual_streak_days', 'rituals_completed_today')
+						ORDER BY id`,
+				)
+				.all();
+		const live = stamps();
+		expect(live).toEqual([
+			{ id: "ritual_streak_days", updated_at: boundary },
+			{ id: "rituals_completed_today", updated_at: boundary },
+		]);
+
+		await couple.do.rebuildCounters(DOM);
+
+		expect(stamps()).toEqual(live);
+	});
+
 	it("rebuilds the rollover trace the alarm wrote", async () => {
 		// Replaying rollovers through `runRollover` rather than a bare UPDATE means
 		// the streak and scheduled-reset trace rows come back too — before ADR 0013

@@ -2282,10 +2282,10 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Edits a counter's definition in place (name, valence, targets, cadence,
-	 * streak). The `id` is the stable key events reference, so it is fixed and
-	 * never rewritten — only the policy changes, and the cached value is left alone
-	 * for the next rollover or rebuild to re-derive.
+	 * Revises a counter's policy (name, valence, targets, cadence, streak). The
+	 * `id` is the stable key events reference, so it is fixed and never rewritten,
+	 * and the cached value is left alone for the next rollover or rebuild to
+	 * re-derive.
 	 *
 	 * Forward-only (ADR 0013): the edit *appends* a version rather than rewriting
 	 * the policy, so a period already folded keeps the target it was folded
@@ -2421,6 +2421,14 @@ export class CoupleDO extends DurableObject<Env> {
 	 * reuses the live code, the rebuilt values and trace match live application by
 	 * construction — the proof that the materialized value is only ever a cache
 	 * (handoff §4.4) and that every change has a recorded cause (handoff §4.6).
+	 *
+	 * "By construction" has exactly one deliberate exception, recorded in ADR 0013:
+	 * a genuinely *missed* alarm collapses several elapsed periods into one
+	 * catch-up fire (`catchUpFireAt`), while a replay walks every boundary. The
+	 * rebuild repairs what the missed alarm lost rather than reproducing it — a
+	 * streak should not survive days the couple did nothing. Everything else,
+	 * including the moment a rollover stamps, is reproducible and is required to
+	 * agree; see {@link runScheduledJob} for why that stamp is the boundary.
 	 *
 	 * Semantics: the replay resolves the rule version in force at each event's own
 	 * log-time (`rulesAt`, ADR 0002), so editing a rule never re-scores the history
@@ -4662,7 +4670,7 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		const now = Date.now();
 		for (const item of dueItems(this.scheduleRows(), now)) {
-			this.runScheduledJob(item, now);
+			this.runScheduledJob(item);
 			const payload = this.schedulePayload(item);
 			const interval = payload.interval_ms ?? 0;
 			if (interval > 0) {
@@ -4685,14 +4693,32 @@ export class CoupleDO extends DurableObject<Env> {
 	 * Runs one due schedule job (handoff §3.2). The rollover jobs evaluate streaks
 	 * and clear scheduled counters; an unknown kind is an inert no-op so a stale or
 	 * future job type never throws mid-drain.
+	 *
+	 * A rollover is stamped with **`item.next_fire_at` — the boundary it is for —
+	 * not the moment the alarm happened to wake**. The two differ by however late
+	 * the platform ran, which is never zero, and the difference lands in
+	 * `counters.updated_at` and in every rollover trace row. Stamping the wake
+	 * moment made those unreproducible: a rebuild replays each boundary at the
+	 * boundary, so every rebuild silently shifted the ledger by the wake delay.
+	 * `next_fire_at` is boundary-aligned by construction (`insertScheduleIfAbsent`
+	 * seeds it from `nextDailyRollover`/`nextWeeklyRollover`, and `catchUpFireAt`
+	 * advances it by whole intervals), so this makes the stamp a pure function of
+	 * the schedule and the two paths agree.
+	 *
+	 * This is safe here and would not be for a timer sweep, which ADR 0012
+	 * deliberately keeps stamped at the noticing moment: a sweep's `closed_at` is
+	 * read as the *end of a span* by the ambient-state predicate, so moving it
+	 * backwards retroactively shuts a timer that was live at the time. Nothing
+	 * reads a rollover's `updated_at` as a span end — it is "when this counter last
+	 * moved" — so the boundary is simply the truer answer.
 	 */
-	private runScheduledJob(item: ScheduleRow, now: number): void {
+	private runScheduledJob(item: ScheduleRow): void {
 		switch (item.kind) {
 			case "daily_rollover":
-				this.runRollover("daily", now);
+				this.runRollover("daily", item.next_fire_at);
 				return;
 			case "weekly_rollover":
-				this.runRollover("weekly", now);
+				this.runRollover("weekly", item.next_fire_at);
 				return;
 		}
 	}
@@ -4703,22 +4729,27 @@ export class CoupleDO extends DurableObject<Env> {
 	 * `target met? +1 : 0`, so the reset that clears that target must come after.
 	 * Every outcome is written to the trace as a `system_job` (no causing event),
 	 * making the rollover legible in the same transparency log as rule effects.
+	 *
+	 * `at` is the **boundary this rollover is for**, never the moment of the call —
+	 * live it comes from the schedule's `next_fire_at` and on a replay from the
+	 * boundary being walked, which is what lets the two agree (see
+	 * {@link runScheduledJob}). It is what stamps `updated_at` and the trace rows.
 	 */
 	private runRollover(
 		period: "daily" | "weekly",
-		now: number,
+		at: number,
 		policies?: CounterDefinition[],
 	): void {
-		// One read of the counters covers everything: parse the definitions and keep a
-		// value map from the same rows, rather than re-querying each value back out with
-		// counterById. The streak loop reads its target's pre-reset value here, so the
-		// map is refreshed as streaks fold, keeping it consistent for the reset loop.
+		// The values always come from the live rows — a rollover folds whatever the
+		// counters hold right now, and the map is refreshed as streaks fold so the
+		// reset loop below sees what the streak loop already read.
 		//
-		// `policies` is how a rebuild replays a *past* boundary: it passes the
-		// versions in force at that moment (ADR 0013), so a period folded years ago
-		// is scored against the target the couple actually had then. Live it is
-		// omitted, and the mirror on the identity row — always the latest version —
-		// is read instead. Same code, both paths; only the policy clock differs.
+		// The *policies* may not. `policies` is how a rebuild replays a past
+		// boundary: it passes the versions in force at that moment (ADR 0013), so a
+		// period folded years ago is scored against the target the couple actually
+		// had then. Live it is omitted and the mirror on the identity row — always
+		// the latest version — is parsed out of the same rows instead. Same code,
+		// both paths; only the policy clock differs.
 		const rows = this.counterRows();
 		const defs =
 			policies ??
@@ -4741,12 +4772,12 @@ export class CoupleDO extends DurableObject<Env> {
 			this.sql.exec(
 				`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
 				to,
-				now,
+				at,
 				def.id,
 			);
 			valueById.set(def.id, to);
 			this.writeTrace(
-				traceStreakRollover(now, def.id, {
+				traceStreakRollover(at, def.id, {
 					period,
 					target_counter: streak.counter,
 					met,
@@ -4761,11 +4792,11 @@ export class CoupleDO extends DurableObject<Env> {
 			if (value === 0) continue;
 			this.sql.exec(
 				`UPDATE counters SET value = 0, updated_at = ? WHERE id = ?`,
-				now,
+				at,
 				def.id,
 			);
 			this.writeTrace(
-				traceScheduledReset(now, def.id, { period, from: value, to: 0 }),
+				traceScheduledReset(at, def.id, { period, from: value, to: 0 }),
 			);
 		}
 	}

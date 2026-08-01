@@ -65,9 +65,9 @@ in and should not.
   received, and a rebuild re-derives under the version current *then* — reproducing
   history, not rewriting it. Three things carry versions, and each resolves against
   a different clock: a **rule** at an event's log-time (ADR 0002), an **Agreement**
-  at its `occurred_at` (ADR 0006), and a **counter** at the rollover boundary being
-  folded (ADR 0013), since a counter's policy is read by a system job rather than
-  by any event. _Avoid_: "retroactive" changes; treating the clock as an
+  at an event's `occurred_at` (ADR 0006), and a **counter** at the rollover boundary
+  being folded (ADR 0013), since a counter's policy is read by a system job rather
+  than by any event. _Avoid_: "retroactive" changes; treating the clock as an
   implementation detail — it is the semantics.
 - **Adopted rule** — a default-pack rule (`R#`) a couple has edited. Adoption freezes
   it against upstream: a pack version bump no longer overwrites its definition (only
