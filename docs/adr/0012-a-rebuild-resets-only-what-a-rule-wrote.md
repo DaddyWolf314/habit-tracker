@@ -36,7 +36,7 @@ Applied to the projections that exist today:
 | timer close `canceled` | preserved | a dom live-control command; no event records it |
 | countdown `deadline_at`, `paused_at` | preserved | moved by the dom's pause and extend, off-log |
 | period resets (daily / weekly) | re-derived between replay steps | off-log, but a pure function of the calendar |
-| streak folds | preserved | see "the exception", below |
+| streak folds | re-derived at each boundary | *was* the one exception — closed by ADR 0013 |
 
 The second column is the whole ADR. The first two rows are the easy case; the
 rest are where it went wrong.
@@ -140,25 +140,25 @@ A swept close therefore records *when the system noticed*, which is a true thing
 about a system that can only notice on waking — and being unreproducible is what
 makes preserving it mandatory rather than optional.
 
-## The exception: streak folds
+## The exception that was: streak folds
 
-Streaks are preserved despite being the one projection replay could reconstruct.
-A fold is `target met? +1 : 0` over the target counter's end-of-period value, and
-both the value and the boundaries are derivable — `replayScheduledResets` already
-computes exactly those boundaries.
+**Closed by ADR 0013 — this section records why it existed.**
 
-They are preserved because the *target* the fold compares against lives on the
-counter **definition**, and counter definitions are not effective-dated the way
-rules are (ADR 0002). Re-deriving a streak would score every past period against
-today's `daily_target` — retroactive re-scoring, which is the thing effective
-dating exists to prevent, and which this ADR would otherwise be reintroducing
-through the back door.
+Streaks were preserved despite being the one projection replay could
+reconstruct. A fold is `target met? +1 : 0` over the target counter's
+end-of-period value, and both the value and the boundaries are derivable —
+`replayScheduledResets` already computed exactly those boundaries.
 
-So this is a deliberate, temporary departure from the invariant, recorded as
-such. Versioning counter definitions is what unblocks it; until then the streak
-is carried across the rebuild and advanced only by the next rollover.
-`updateCounter`'s doc comment used to claim a streak change "re-derives on the
-next rebuild/rollover" — only the second half was ever true, and it now says so.
+They were preserved because the *target* the fold compares against lives on the
+counter **definition**, and counter definitions were not effective-dated the way
+rules are (ADR 0002). Re-deriving a streak would have scored every past period
+against today's `daily_target` — retroactive re-scoring, which is the thing
+effective dating exists to prevent, and which this ADR would otherwise have
+reintroduced through the back door.
+
+ADR 0013 gives counter definitions that history, so the fold now replays against
+the policy in force for each boundary and the exception is gone. The invariant
+above holds without a carve-out.
 
 ## Consequences
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { versionInForceAt } from "./effective-dating.ts";
 import { permissionListSchema, valenceSchema } from "./roles.ts";
 
 /**
@@ -80,6 +81,107 @@ export const counterSchema = counterDefinitionSchema.extend({
 	updated_at: z.number().int().nullable(),
 });
 export type Counter = z.infer<typeof counterSchema>;
+
+// ── Effective-dated definitions (ADR 0013) ───────────────────────────────────
+
+/**
+ * One version of a counter's policy, taking force at `effective_from`.
+ *
+ * Everything but the `id` versions, for the reason ADR 0009 gave for rule names:
+ * a counter's history is *displayed*, so a name on the identity row would
+ * retroactively rewrite what a past trace row said the counter was called.
+ */
+export const counterVersionSchema = counterDefinitionSchema
+	.omit({ id: true })
+	.extend({ effective_from: z.number().int() });
+export type CounterVersion = z.infer<typeof counterVersionSchema>;
+
+/** A counter's stable identity, its full version history, and its cached value. */
+export interface VersionedCounter {
+	id: string;
+	value: number;
+	updated_at: number | null;
+	versions: CounterVersion[];
+}
+
+/** A version of a counter's policy, flattened back to a definition. */
+export function counterFromVersion(
+	id: string,
+	version: CounterVersion,
+): CounterDefinition {
+	const { effective_from: _effectiveFrom, ...definition } = version;
+	return { id, ...definition };
+}
+
+export function versionFromCounterDefinition(
+	definition: Omit<CounterDefinition, "id">,
+	effectiveFrom: number,
+): CounterVersion {
+	return {
+		effective_from: effectiveFrom,
+		name: definition.name,
+		valence: definition.valence,
+		daily_target: definition.daily_target,
+		weekly_target: definition.weekly_target,
+		reset: definition.reset,
+		streak: definition.streak,
+		modify_permission: definition.modify_permission,
+	};
+}
+
+/** A counter's current (latest) version — the greatest `effective_from`. */
+export function latestCounterVersion(
+	counter: VersionedCounter,
+): CounterVersion {
+	return counter.versions.reduce((a, b) =>
+		b.effective_from >= a.effective_from ? b : a,
+	);
+}
+
+/**
+ * Whether two versions carry the same policy, ignoring when each took force.
+ * What decides if an edit is a real edit: a pack bump rewrites every default
+ * counter, and appending a version for one whose policy is unchanged would be
+ * history recording that nothing happened.
+ */
+export function sameCounterPolicy(
+	a: CounterVersion,
+	b: CounterVersion,
+): boolean {
+	const policy = ({ effective_from: _ignored, ...rest }: CounterVersion) =>
+		rest;
+	return JSON.stringify(policy(a)) === JSON.stringify(policy(b));
+}
+
+/**
+ * The counter policies in force at `atMs` — the seam a rebuild resolves history
+ * through, exactly as `rulesEffectiveAt` is for rules (ADR 0013).
+ *
+ * **The clock is the rollover boundary**, which is neither of the two clocks
+ * `effective-dating.ts` already names. A rule version resolves at an event's
+ * log-time (the machine acted); an Agreement version resolves at `occurred_at`
+ * (the person was bound). A counter's policy is read by a *system job* — the
+ * daily or weekly rollover — so the moment that governs is the boundary being
+ * folded, not any event's. That is what lets a replay fold each past period
+ * against the target that was actually in force for it, instead of scoring the
+ * couple's whole history against whatever the target says today.
+ *
+ * A counter whose earliest version begins after `atMs` did not exist yet and is
+ * omitted, so a rollover replayed from before a counter was created folds
+ * nothing for it.
+ */
+export function countersEffectiveAt(
+	counters: VersionedCounter[],
+	atMs: number,
+): CounterDefinition[] {
+	const resolved: CounterDefinition[] = [];
+	for (const counter of counters) {
+		const version = versionInForceAt(counter.versions, atMs);
+		if (!version) continue;
+		resolved.push(counterFromVersion(counter.id, version));
+	}
+	return resolved;
+}
 
 /** Payload for a direct +N / −N adjustment (the "+1 tap" sugar). */
 export const adjustCounterInputSchema = z.object({

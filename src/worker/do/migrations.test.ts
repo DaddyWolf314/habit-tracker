@@ -339,3 +339,104 @@ describe("v13 agreement subject and author scope", () => {
 		expect(columns(db, "agreements")).toContain("subject");
 	});
 });
+
+/**
+ * v14 — counter definitions become effective-dated (ADR 0013).
+ */
+describe("v14 counter versions", () => {
+	/** A DO paired before v14, holding a pack counter and a couple-authored one. */
+	function preV14(): Database.Database {
+		const db = doAtVersion(13);
+		const insert = db.prepare(
+			`INSERT INTO counters (id, definition, value, updated_at) VALUES (?, ?, ?, ?)`,
+		);
+		insert.run(
+			"rituals_completed_today",
+			JSON.stringify({
+				id: "rituals_completed_today",
+				name: "Rituals completed today",
+				valence: "positive",
+				daily_target: 1,
+				reset: "daily",
+				modify_permission: ["dom", "sub", "switch"],
+			}),
+			2,
+			1000,
+		);
+		insert.run(
+			"custom_tally",
+			JSON.stringify({
+				id: "custom_tally",
+				name: "Custom tally",
+				valence: "neutral",
+				reset: "never",
+				modify_permission: ["dom"],
+			}),
+			7,
+			2000,
+		);
+		return db;
+	}
+
+	function versionsOf(db: Database.Database, id: string) {
+		return db
+			.prepare(
+				`SELECT effective_from, definition FROM counter_versions
+					WHERE counter_id = ? ORDER BY effective_from`,
+			)
+			.all(id) as { effective_from: number; definition: string }[];
+	}
+
+	it("backfills one version per counter, effective from 0", () => {
+		// Effective from 0 so a replay before any edit is byte-for-byte unchanged —
+		// the same call the v8 rule backfill made.
+		const db = preV14();
+		runMigrations(sqlStorage(db));
+		for (const id of ["rituals_completed_today", "custom_tally"]) {
+			const versions = versionsOf(db, id);
+			expect(versions).toHaveLength(1);
+			expect(versions[0]?.effective_from).toBe(0);
+		}
+	});
+
+	it("carries the counter's existing policy into its first version", () => {
+		const db = preV14();
+		runMigrations(sqlStorage(db));
+		const [version] = versionsOf(db, "rituals_completed_today");
+		expect(JSON.parse(version?.definition ?? "{}")).toMatchObject({
+			daily_target: 1,
+			reset: "daily",
+		});
+	});
+
+	it("leaves the cached values alone", () => {
+		// A policy backfill is not a projection change: the values stay put and the
+		// next rebuild re-derives them from the log as always.
+		const db = preV14();
+		runMigrations(sqlStorage(db));
+		const rows = db
+			.prepare(`SELECT id, value, updated_at FROM counters ORDER BY id`)
+			.all() as { id: string; value: number; updated_at: number }[];
+		expect(rows).toEqual([
+			{ id: "custom_tally", value: 7, updated_at: 2000 },
+			{ id: "rituals_completed_today", value: 2, updated_at: 1000 },
+		]);
+	});
+
+	it("is a no-op on a DO that already has versions", () => {
+		const db = preV14();
+		runMigrations(sqlStorage(db));
+		expect(() => runMigrations(sqlStorage(db))).not.toThrow();
+		expect(versionsOf(db, "custom_tally")).toHaveLength(1);
+	});
+
+	it("brings a fresh DO up with the table", () => {
+		const db = new Database(":memory:");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "counter_versions")).toEqual([
+			"counter_id",
+			"effective_from",
+			"definition",
+		]);
+	});
+});

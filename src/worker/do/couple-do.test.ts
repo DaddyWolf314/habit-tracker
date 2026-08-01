@@ -640,10 +640,11 @@ describe("the single alarm", () => {
 		expect((await counters(couple)).ritual_streak_days).toBe(0);
 	});
 
-	it("carries the streak across a rebuild rather than re-deriving it", async () => {
-		// The one preserved projection replay could reconstruct but must not — the
-		// target it folds against lives on an un-versioned counter definition, so
-		// re-deriving would score past periods under today's target (ADR 0012).
+	it("re-derives the streak on a rebuild, matching what the alarm folded", async () => {
+		// Streaks were carried across a rebuild until ADR 0013 — the one projection
+		// replay could reconstruct but was not allowed to, because the target a fold
+		// compares against had no effective-dated history. Now they replay like
+		// everything else.
 		const couple = await activeCouple();
 		await couple.do.logEvent(SUB, {
 			type: "ritual_completed",
@@ -657,7 +658,7 @@ describe("the single alarm", () => {
 
 		await couple.do.rebuildCounters(DOM);
 
-		expect((await counters(couple)).ritual_streak_days).toBe(1);
+		expect(await counters(couple)).toEqual(live);
 	});
 
 	it("disarms rather than firing consequences while paused", async () => {
@@ -881,6 +882,170 @@ describe("a ruling never performs retroactive timer surgery", () => {
 		expect(rebuilt.some((row) => row.detail.kind === "timer_skipped")).toBe(
 			true,
 		);
+	});
+});
+
+describe("rebuildCounters — streaks (ADR 0013)", () => {
+	async function ritual(couple: ActiveCouple): Promise<void> {
+		await couple.do.logEvent(SUB, {
+			type: "ritual_completed",
+			metadata: {},
+			subject: couple.subId,
+			visibility: "shared",
+		});
+	}
+
+	it("walks every boundary in a gap, not just the first", async () => {
+		// The defect this pins. Rollover replay used to collapse multiple boundaries
+		// of one period into a single pass, on the reasoning that a gap spans no
+		// events so nothing accrues between them. True for a reset, which is
+		// idempotent; false for a streak fold, which is not. A met day then three
+		// idle ones folds +1, 0, 0, 0 and ends at zero — a single collapsed fold
+		// would score the met day and stop, leaving a streak alive across days the
+		// couple did nothing.
+		const couple = await activeCouple();
+		await ritual(couple);
+		await advanceFiringAlarms(couple, DAY);
+		expect((await counters(couple)).ritual_streak_days).toBe(1);
+
+		await advanceFiringAlarms(couple, 3 * DAY);
+		const live = await counters(couple);
+		expect(live.ritual_streak_days).toBe(0);
+
+		await couple.do.rebuildCounters(DOM);
+
+		expect(await counters(couple)).toEqual(live);
+	});
+
+	it("reproduces a run of met days", async () => {
+		const couple = await activeCouple();
+		for (let day = 0; day < 3; day += 1) {
+			await ritual(couple);
+			await advanceFiringAlarms(couple, DAY);
+		}
+		const live = await counters(couple);
+		expect(live.ritual_streak_days).toBe(3);
+
+		await couple.do.rebuildCounters(DOM);
+		expect(await counters(couple)).toEqual(live);
+	});
+
+	it("is stable across repeated rebuilds", async () => {
+		const couple = await activeCouple();
+		await ritual(couple);
+		await advanceFiringAlarms(couple, DAY);
+		await ritual(couple);
+		await advanceFiringAlarms(couple, 2 * DAY);
+
+		await couple.do.rebuildCounters(DOM);
+		const once = await counters(couple);
+		await couple.do.rebuildCounters(DOM);
+		expect(await counters(couple)).toEqual(once);
+	});
+
+	it("scores a past period against the target in force then, not today's", async () => {
+		// The whole reason counter definitions had to be versioned before streaks
+		// could be re-derived. One ritual a day meets a target of 1; raising the
+		// target to 5 afterwards must not retroactively turn those met days into
+		// missed ones on the next rebuild.
+		const couple = await activeCouple();
+		await ritual(couple);
+		await advanceFiringAlarms(couple, DAY);
+		await ritual(couple);
+		await advanceFiringAlarms(couple, DAY);
+		const live = await counters(couple);
+		expect(live.ritual_streak_days).toBe(2);
+
+		await couple.do.updateCounter(DOM, "rituals_completed_today", {
+			name: "Rituals completed today",
+			valence: "positive",
+			daily_target: 5,
+			reset: "daily",
+			modify_permission: ["dom", "sub", "switch"],
+		});
+
+		await couple.do.rebuildCounters(DOM);
+
+		// Both past days were met under the target of 1 that was actually in force.
+		expect((await counters(couple)).ritual_streak_days).toBe(2);
+	});
+
+	it("applies a raised target only to the periods after the edit", async () => {
+		// The forward half of the same claim: once the new target takes force, a day
+		// that would have met the old one breaks the streak.
+		const couple = await activeCouple();
+		await ritual(couple);
+		await advanceFiringAlarms(couple, DAY);
+		expect((await counters(couple)).ritual_streak_days).toBe(1);
+
+		await couple.do.updateCounter(DOM, "rituals_completed_today", {
+			name: "Rituals completed today",
+			valence: "positive",
+			daily_target: 5,
+			reset: "daily",
+			modify_permission: ["dom", "sub", "switch"],
+		});
+
+		await ritual(couple); // one ritual, against a target of five
+		await advanceFiringAlarms(couple, DAY);
+		const live = await counters(couple);
+		expect(live.ritual_streak_days).toBe(0);
+
+		await couple.do.rebuildCounters(DOM);
+		expect(await counters(couple)).toEqual(live);
+	});
+
+	it("folds nothing for a counter that did not exist yet", async () => {
+		// A version history that begins after a boundary means the counter was not
+		// there to be folded, which is different from being there and unmet.
+		const couple = await activeCouple();
+		await advanceFiringAlarms(couple, 2 * DAY);
+
+		await couple.do.createCounter(DOM, {
+			name: "Late arrival",
+			valence: "positive",
+			daily_target: 1,
+			reset: "daily",
+			modify_permission: ["dom", "sub", "switch"],
+		});
+		const streak = await couple.do.createCounter(DOM, {
+			name: "Late arrival streak",
+			valence: "positive",
+			reset: "never",
+			streak: { counter: "late_arrival", period: "daily" },
+			modify_permission: ["dom", "sub", "switch"],
+		});
+
+		await advanceFiringAlarms(couple, DAY);
+		const live = await counters(couple);
+
+		await couple.do.rebuildCounters(DOM);
+
+		expect(await counters(couple)).toEqual(live);
+		expect((await counters(couple))[streak.id]).toBe(0);
+	});
+
+	it("rebuilds the rollover trace the alarm wrote", async () => {
+		// Replaying rollovers through `runRollover` rather than a bare UPDATE means
+		// the streak and scheduled-reset trace rows come back too — before ADR 0013
+		// the rebuild zeroed period counters without recording why.
+		const couple = await activeCouple();
+		await ritual(couple);
+		await advanceFiringAlarms(couple, DAY);
+		const live = await couple.do.getCounterTrace(DOM, "ritual_streak_days");
+		expect(live.rows.length).toBeGreaterThan(0);
+
+		await couple.do.rebuildCounters(DOM);
+
+		const rebuilt = await couple.do.getCounterTrace(DOM, "ritual_streak_days");
+		const meaningful = (rows: typeof live.rows) =>
+			rows.map(({ at, cause, projection, detail }) => ({
+				at,
+				cause,
+				projection,
+				detail,
+			}));
+		expect(meaningful(rebuilt.rows)).toEqual(meaningful(live.rows));
 	});
 });
 

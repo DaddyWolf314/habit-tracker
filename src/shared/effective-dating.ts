@@ -1,7 +1,7 @@
 /**
  * Effective-dating (CONTEXT §Effective-dating) — the one mechanism behind every
- * append-only versioned definition in the app, shared so the two things that use
- * it cannot drift apart.
+ * append-only versioned definition in the app, shared so the three things that
+ * use it cannot drift apart.
  *
  * A stable id carries versions, each stamped with the moment it takes force;
  * resolving asks "which version governed at time T". What differs between
@@ -11,10 +11,13 @@
  *    version governs when the machine acted.
  *  - **Agreement versions** resolve at an event's **`occurred_at`** (ADR 0006) —
  *    an Agreement version governs what the person was bound by when they acted.
+ *  - **Counter versions** resolve at a **rollover boundary** (ADR 0013) — a
+ *    counter's policy is read by a system job rather than by an event at all, so
+ *    the moment that governs is the period being folded.
  *
  * The choice of clock is the semantics and stays with each caller. Picking the
  * version is mechanism and lives here, because the tie-break is subtle enough
- * that two copies of it would eventually disagree.
+ * that three copies of it would eventually disagree.
  */
 
 /** The minimum a version must carry to be resolvable. */
