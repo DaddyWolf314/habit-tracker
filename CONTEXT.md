@@ -633,7 +633,12 @@ consent-record view and the debugging view are the same screen. Lives in the dee
   enters `awaiting` and is surfaced only when it was the *sole* miss ("R26 didn't
   fire: no denial period was active"). Otherwise every act outside a mode would
   file a row nobody asked for. A **counter-value predicate** misses on the same
-  footing and follows the same rule. A **Waiver** is never a near-miss: the rule
+  footing and follows the same rule. *Sole* scopes over the **kind** of miss, not
+  the count of clauses: the row is filed when nothing in the metadata missed, and
+  it then names every unmet ambient and counter clause together, comma-joined.
+  Suppressing one because another also missed would leave a rule that failed on
+  two grounds recording nothing at all — which is the silence the near-miss exists
+  to prevent, not an instance of the rule. A **Waiver** is never a near-miss: the rule
   matched and was overruled, and blurring the two would leave the ledger unable to
   tell "this never applied to you" from "this applied and I let it go".
 

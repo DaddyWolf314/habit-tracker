@@ -529,6 +529,32 @@ describe("ambient-state predicate (ADR 0011)", () => {
 		).toBe("near_miss");
 	});
 
+	it("names every unmet clause in one row rather than picking one", () => {
+		// What "sole miss" scopes over: the *kind* of miss, not the count of
+		// clauses. Two unmet ambient clauses have always been comma-joined into a
+		// single reason, and this pins it — the behaviour predates the counter-value
+		// predicate and is what licenses that clause joining the same row (ADR 0015).
+		//
+		// The alternative reading, suppressing each miss because another also
+		// missed, would leave this rule filing nothing at all: it would fail to fire
+		// and record no reason, which is the silence a near-miss exists to prevent.
+		const both = rule({
+			id: "Rpair",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: true, session_stopwatch: true },
+			},
+		});
+		expect(matchRule(both, ambientCtx([]))).toEqual({
+			status: "near_miss",
+			reason:
+				"Rpair didn't fire: denial_period not active, session_stopwatch not active",
+			awaiting: [],
+			state_mismatch: true,
+		});
+	});
+
 	it("a rule with no clause is unaffected by ambient state", () => {
 		const plain = rule({
 			id: "Rplain",
@@ -712,6 +738,9 @@ describe("the counter-value predicate (ADR 0015)", () => {
 	});
 
 	it("says both things in one row when only state missed", () => {
+		// The same shape two unmet *ambient* clauses have always taken (see "names
+		// every unmet clause in one row"), extended to the pair. "Sole miss" is
+		// about metadata-vs-state, and the metadata held here.
 		const both = rule({
 			id: "R33",
 			condition: {
