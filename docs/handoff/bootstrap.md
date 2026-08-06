@@ -166,7 +166,7 @@ Events are never mutated or deleted. Post-hoc changes are amendment records:
 
 `when event.type = X [AND metadata equality conditions] → [effects list]`
 
-- **Condition language is deliberately dumb**: equality on `type` and metadata keys. Absent key ⇒ conditional rules silently skip (this is load-bearing — see adjudication). No expressions, no thresholds, no state queries in v1. _(Superseded by ADR 0011: numeric comparison and the `timer_active` predicate below are now built. The rest of the line still holds — no counter thresholds, no elapsed-time comparison, no log lookback.)_
+- **Condition language is deliberately dumb**: equality on `type` and metadata keys. Absent key ⇒ conditional rules silently skip (this is load-bearing — see adjudication). No expressions, no thresholds, no state queries in v1. _(Superseded by ADR 0011: numeric comparison and the `timer_active` predicate below are now built. The rest of the line still holds — no elapsed-time comparison, no log lookback.)_ _(Counter thresholds are now admitted too — ADR 0015's `counter_value`, reading the score as it stood before this event's own effects.)_
 - **Effect verbs (all four exist in v1)**: `increment/decrement counter`, `reset counter`, `reset elapsed-since anchor`, `open/close timer` (with match-on-ref, e.g. `timer.task_id = event.task_id`, and a close status: completed/failed).
 - Rules support **multiple effects per rule** (effects is a list).
 - **Rules route values; they never compute them.** (e.g., a stopwatch's derived duration lands in a counter because the timer close produced it — the rule only says where it goes.)
@@ -307,7 +307,7 @@ Chosen so each stresses a different part of the machinery. Acceptance test: **ev
 1. **Entry**: badge on today view — "2 awaiting your ruling." All notification surfaces are content-free.
 2. **Queue screen**: reverse-chronological cards — type icon + label, subject, `occurred_at` ("last night, 11:03pm") **and** time-in-queue ("waiting 9h" — gentle dominance-as-practice pressure, no nagging), sub's note verbatim, awaited key(s).
 3. **Ruling**: awaited key renders by kind — boolean as two large buttons, enum as segmented control. Optional response note.
-4. **Confirm sheet shows mechanical fallout before commit**: "This will fire: +1 unpermitted orgasms, +2 demerits, reset good-behavior streak, mark denial period failed." (Forward-running trace. V1: visibility only, no effect-waiving — waivers are a scoring-layer concern.)
+4. **Confirm sheet shows mechanical fallout before commit**: "This will fire: +1 unpermitted orgasms, +2 demerits, reset good-behavior streak, mark denial period failed." (Forward-running trace. V1: visibility only, no effect-waiving — waivers are a scoring-layer concern.) _(ADR 0016: each line becomes waivable, and an unchecked effect is **suppressed** rather than fired-then-compensated.)_
 5. **Post-ruling**: card animates out; event shows ruling inline with both timestamps in the main log.
 
 ### Sub side
@@ -353,7 +353,7 @@ Each phase ships something usable; a couple could live on phase 2 alone (shared 
 ## 11. Open Decisions (intentionally unresolved)
 
 - **Naming/positioning** — still open from earlier product threads.
-- **Scoring/rewards/consequences layer** — deferred; it is "just another event consumer" plus effect-waivers on the confirm sheet.
+- ~~**Scoring/rewards/consequences layer**~~ — deferred; it is "just another event consumer" plus effect-waivers on the confirm sheet. _(Decided — ADR 0015 (a rule may read a counter; cap targets; rungs), ADR 0016 (waiving and reversal), ADR 0017 (priced reward items). A score turned out to be a counter, so the layer mints no primitive; the waivers were real and unblock #184.)_
 - ~~**`timer_active(X)` predicate**~~ — the one approved v2 rule-language extension; do not generalize beyond it. _(Decided and built — ADR 0011, #48.)_
 - **Notification transport** (push vs. in-app only) — discretion requirements constrain this heavily; in-app-only is an acceptable v1.
 - **strawberrypatch.love integration** — educational interstitials, template editorial pipeline, and eventual survey-taxonomy sharing are post-v1.
