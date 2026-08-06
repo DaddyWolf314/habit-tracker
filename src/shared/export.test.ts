@@ -201,7 +201,29 @@ describe("amendmentToExportRow", () => {
 			patch: JSON.stringify({ verdict: "pass" }),
 			note: "ruled",
 			supersedes: "amd-0",
+			waived: null,
+			suppresses: null,
 		});
+	});
+
+	it("carries a waiver's effects — the whole of what it says (ADR 0016)", () => {
+		// Exporting that a mercy happened without saying what it was over would be a
+		// record of nothing. The `(rule, index)` pairs are the content.
+		const amendment: Amendment = {
+			kind: "waiver",
+			id: "amd-3",
+			target_event_id: "evt-1",
+			actor: "member-a",
+			created_at: 2200,
+			waived: [{ rule_id: "R12", effect_index: 2 }],
+			suppresses: "amd-1",
+		};
+		const row = amendmentToExportRow(amendment);
+		expect(row.waived).toBe(
+			JSON.stringify([{ rule_id: "R12", effect_index: 2 }]),
+		);
+		expect(row.suppresses).toBe("amd-1");
+		expect(row.patch).toBeNull();
 	});
 
 	it("flattens a retraction with null patch/supersedes", () => {
@@ -221,6 +243,8 @@ describe("amendmentToExportRow", () => {
 			patch: null,
 			note: null,
 			supersedes: null,
+			waived: null,
+			suppresses: null,
 		});
 	});
 

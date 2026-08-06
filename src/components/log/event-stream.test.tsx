@@ -14,12 +14,13 @@ vi.mock("#/lib/api.ts", () => ({
 	getEventTrace: vi.fn(() => Promise.resolve({ rows: [] })),
 }));
 
-import { ackUpdates, amendEvent } from "#/lib/api.ts";
+import { ackUpdates, amendEvent, getEventTrace } from "#/lib/api.ts";
 import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { Amendment } from "#/shared/amendments.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import { decodeTraceRow, type TraceRowColumns } from "#/shared/trace.ts";
 import { STARTER_EVENT_TYPES } from "#/templates/index.ts";
 import { EventStream } from "./event-stream.tsx";
 
@@ -365,5 +366,117 @@ describe("receiving a partner's response", () => {
 		// The tap is the moment they actually receive it; acking on load would
 		// clear the signal before they had read anything (#136).
 		expect(vi.mocked(ackUpdates)).toHaveBeenCalled();
+	});
+});
+
+/**
+ * Waiving a landed effect from the chain (#191, ADR 0016). The entry point sits
+ * on the chain rather than the row's action bar because what is waived is one
+ * *effect*, and the chain is the only place effects are individually visible.
+ */
+describe("the standalone waiver on a chain row", () => {
+	afterEach(cleanup);
+
+	/** One landed counter effect of R2, named by rule and position. */
+	const R2_DEMERIT: TraceRowColumns = {
+		id: 1,
+		at: 1_700_000_000_000,
+		caused_by_event: "evt-1",
+		caused_by_rule: "R2",
+		caused_by_amendment: null,
+		actor: null,
+		effect_index: 0,
+		projection: "counter:demerits",
+		detail: JSON.stringify({
+			kind: "counter",
+			op: "increment",
+			by: 1,
+			from: 0,
+			to: 1,
+		}),
+	};
+
+	async function openChain(
+		selfRole: "dom" | "sub",
+		rows: TraceRowColumns[] = [R2_DEMERIT],
+	) {
+		vi.mocked(getEventTrace).mockResolvedValue({
+			rows: rows.map(decodeTraceRow),
+		});
+		render(
+			<EventStream
+				events={[event({ type: "ritual_completed", actor: "m2" })]}
+				types={TYPES}
+				members={MEMBERS}
+				selfId="m1"
+				selfRole={selfRole}
+			/>,
+		);
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { expanded: false }));
+		});
+	}
+
+	it("offers a waive on a standing effect for a role that may author rules", async () => {
+		await openChain("dom");
+		expect(screen.getByRole("button", { name: "Waive" })).not.toBeNull();
+	});
+
+	it("offers none to a role that may not — the server's own gate", async () => {
+		// A second, client-side rule about who may waive is how a screen ends up
+		// offering a button whose write is refused.
+		await openChain("sub");
+		expect(screen.queryByRole("button", { name: "Waive" })).toBeNull();
+	});
+
+	it("offers none on an effect already waived", async () => {
+		const waived = {
+			...R2_DEMERIT,
+			id: 2,
+			caused_by_amendment: "w1",
+			detail: JSON.stringify({
+				kind: "waived",
+				mechanic: "reversed",
+				op: { kind: "counter", counter: "demerits", op: "increment", by: 1 },
+				from: 1,
+				to: 0,
+			}),
+		};
+		await openChain("dom", [R2_DEMERIT, waived]);
+		expect(screen.queryByRole("button", { name: "Waive" })).toBeNull();
+	});
+
+	it("does not mark a declined reversal with the near-miss glyph", async () => {
+		// CONTEXT, **Effect**: "_Avoid_: reading a waived effect as a near-miss; the
+		// rule fired and was overruled." The "○" says the rule never fired, and this
+		// row means the opposite — the effect fired, could not be un-fired, and is
+		// still standing. It stays muted, but it keeps the effect bullet.
+		const declined = {
+			...R2_DEMERIT,
+			id: 3,
+			caused_by_amendment: "w1",
+			detail: JSON.stringify({
+				kind: "reversal_declined",
+				reason: "demerits was reset since, so the inverse no longer commutes",
+				op: { kind: "counter", counter: "demerits", op: "increment", by: 1 },
+			}),
+		};
+		await openChain("dom", [declined]);
+		const line = screen.getByText(/could not reverse/);
+		expect(line.textContent).toContain("•");
+		expect(line.textContent).not.toContain("○");
+	});
+
+	it("names the effect by rule and position on confirm", async () => {
+		await openChain("dom");
+		fireEvent.click(screen.getByRole("button", { name: "Waive" }));
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Yes, waive" }));
+		});
+		expect(amendEvent).toHaveBeenCalledWith({
+			kind: "waiver",
+			target_event_id: "evt-1",
+			waived: [{ rule_id: "R2", effect_index: 0 }],
+		});
 	});
 });

@@ -1,8 +1,13 @@
-import type { Amendment, AmendmentInput } from "./amendments.ts";
+import {
+	type Amendment,
+	type AmendmentInput,
+	type WaivedEffect,
+	waivedEffectKey,
+} from "./amendments.ts";
 import { checkMetadataValue, type EventType } from "./event-types.ts";
 import type { Event } from "./events.ts";
 import { compositeMetadata, isPending, isRetracted } from "./projections.ts";
-import type { Role } from "./roles.ts";
+import { type Role, rolePermits } from "./roles.ts";
 
 /**
  * Authoring-time amendment validation (handoff §4.2). An amendment is checked
@@ -41,6 +46,28 @@ export type AmendmentValidation =
 	| { ok: true }
 	/** `forbidden` marks an authorization refusal (a 403) vs a malformed/conflicting one (a 400). */
 	| { ok: false; error: string; forbidden?: boolean };
+
+/**
+ * The roles that may waive an effect (ADR 0016) — the roles that may author
+ * rules (ADR 0002). Whoever may write a rule may overrule its output.
+ *
+ * Deliberately *not* the type's `adjudicated_by`, which was the obvious
+ * alternative and is wrong for the case waiving exists to serve: an
+ * unconditional effect like R2's (`ritual_completed AND late=true → demerits
+ * +1`) sits on a type with no awaited key at all, so an `adjudicated_by` gate
+ * would leave exactly that effect ungated.
+ */
+export const WAIVER_ROLES: readonly Role[] = ["dom", "switch"];
+
+/**
+ * Whether a role may waive an effect. Exported so a surface can gate the
+ * affordance on the same question the server gates the write on, in the shape
+ * `canRespondTo` established — a second, client-side rule about who may waive is
+ * how a screen ends up offering a button whose write is refused.
+ */
+export function canWaiveEffects(role: Role | null | undefined): boolean {
+	return rolePermits(role, WAIVER_ROLES);
+}
 
 /** The keys a role may rule on for a type — its `adjudicated_by` grants. */
 export function adjudicableKeys(
@@ -83,7 +110,39 @@ export function validateAmendment(
 			return { ok: true };
 		case "response":
 			return validateResponse(ctx);
+		case "waiver":
+			return validateWaivedEffects(input.waived, ctx);
 	}
+}
+
+/**
+ * The shape and authorization checks a waiver's effect list must pass (ADR
+ * 0016), shared by the standalone `waiver` and by the `waive` list an
+ * adjudication carries from the confirm sheet — the two are the same act with
+ * different timing, so they may not drift on who is allowed to perform it.
+ *
+ * What is *not* checked here: whether the named effects actually fired. That is a
+ * question about the trace, which this pure module deliberately cannot see; the
+ * DO answers it before writing, so a waiver never names an effect that does not
+ * exist. Nor is the event's pending status consulted — waiving an effect is not
+ * ruling on a fact, and the effects most in need of it (R2's, at append) sit on
+ * events that were never pending at all.
+ */
+function validateWaivedEffects(
+	waived: WaivedEffect[],
+	ctx: AmendmentContext,
+): AmendmentValidation {
+	if (!canWaiveEffects(ctx.actorRole)) {
+		return fail("your role may not waive an effect", true);
+	}
+	if (waived.length === 0) return fail("a waiver must name an effect");
+	const seen = new Set<string>();
+	for (const effect of waived) {
+		const key = waivedEffectKey(effect);
+		if (seen.has(key)) return fail(`waived twice: ${key}`);
+		seen.add(key);
+	}
+	return { ok: true };
 }
 
 /**
@@ -151,6 +210,16 @@ function validateAdjudication(
 		if (activeId !== undefined && activeId !== input.supersedes) {
 			return fail(`'${key}' is already ruled; supersede the prior ruling`);
 		}
+	}
+	// Effects unchecked on the confirm sheet ride along with the ruling (ADR
+	// 0016), and are gated on authoring a rule rather than on adjudicating this
+	// key: a role may be `adjudicated_by` for a key on a custom type without being
+	// allowed to overrule what the couple's rules do with it.
+	// An empty list is an ordinary ruling that waived nothing, not a waiver with no
+	// effects — refusing it would gate every adjudicator on the rule-authoring
+	// roles for sending a field they meant as absent.
+	if (input.waive?.length) {
+		return validateWaivedEffects(input.waive, ctx);
 	}
 	return { ok: true };
 }

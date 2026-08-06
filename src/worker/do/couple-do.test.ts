@@ -1311,3 +1311,686 @@ describe("rebuildCounters — period resets", () => {
 		expect(await counters(couple)).toEqual(once);
 	});
 });
+
+/**
+ * Waiving and reversing (#191, ADR 0016) — the two mechanics end to end, over the
+ * pack's R12, whose four effects are exactly the asymmetry this ADR had to state:
+ *
+ * ```
+ * 0: orgasms_unpermitted +1     reversible
+ * 1: reset since_last_orgasm    never
+ * 2: demerits +2                reversible, unless something reset demerits since
+ * 3: reset since_last_infraction never
+ * ```
+ *
+ * #184 deferred all of this to #47 on the grounds that partial reversal would be
+ * worse than an honest limit. What changed is not the asymmetry — it is that the
+ * asymmetry is now *in the ledger*, as `reversal_declined` rows the couple can
+ * read, rather than silent in the model.
+ */
+describe("waiving an effect (ADR 0016)", () => {
+	/** R12's effects, by position — the pair a waiver names. */
+	const UNPERMITTED_TALLY = 0;
+	const ORGASM_ANCHOR = 1;
+	const DEMERITS = 2;
+
+	/** An orgasm logged by the sub, pending the dom's ruling on `permitted`. */
+	async function orgasmAwaitingRuling(): Promise<{
+		couple: ActiveCouple;
+		eventId: string;
+	}> {
+		const couple = await activeCouple();
+		advance(HOUR);
+		const event = await couple.do.logEvent(SUB, {
+			type: "orgasm",
+			metadata: { outcome: "full" },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		return { couple, eventId: event.id };
+	}
+
+	/** The trace rows an event produced, by detail kind. */
+	async function rowsOfKind(
+		couple: ActiveCouple,
+		eventId: string,
+		kind: string,
+	) {
+		const rows = await couple.do.getEventTrace(DOM, eventId);
+		return rows.filter((row) => row.detail.kind === kind);
+	}
+
+	describe("suppressed — waived on the confirm sheet before it lands", () => {
+		async function ruledWithDemeritsWaived(): Promise<{
+			couple: ActiveCouple;
+			eventId: string;
+		}> {
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			advance(HOUR);
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+				waive: [{ rule_id: "R12", effect_index: DEMERITS }],
+			});
+			return { couple, eventId };
+		}
+
+		it("never applies the effect — the counter holds no peak that never existed", async () => {
+			const { couple, eventId } = await ruledWithDemeritsWaived();
+			expect((await counters(couple)).demerits).toBe(0);
+			// The ruling itself landed, and so did every effect that was not waived.
+			expect((await counters(couple)).orgasms_unpermitted).toBe(1);
+
+			// Not fired-then-compensated: there is no counter row on demerits at all,
+			// so nothing in the history ever read 2. That is the property that keeps
+			// the materialized value provably a cache.
+			const rows = await couple.do.getEventTrace(DOM, eventId);
+			const demeritMoves = rows.filter(
+				(row) =>
+					row.projection === "counter:demerits" &&
+					row.detail.kind === "counter",
+			);
+			expect(demeritMoves).toEqual([]);
+		});
+
+		it("records both halves in one row: what R12 proposed, and the waiver", async () => {
+			const { couple, eventId } = await ruledWithDemeritsWaived();
+			const waived = await rowsOfKind(couple, eventId, "waived");
+			expect(waived).toHaveLength(1);
+			const row = waived[0];
+			if (row.detail.kind !== "waived") throw new Error("unreachable");
+			expect(row.detail.mechanic).toBe("suppressed");
+			expect(row.detail.op).toEqual({
+				kind: "counter",
+				counter: "demerits",
+				op: "increment",
+				by: 2,
+			});
+			// It lands on the counter's own chain, so "why is this not 2" is
+			// answerable from the counter the dom waived it on.
+			expect(row.projection).toBe("counter:demerits");
+			expect(row.cause.by).toBe("amendment");
+			if (row.cause.by !== "amendment") throw new Error("unreachable");
+			expect(row.cause.rule).toBe("R12");
+			expect(row.cause.effect_index).toBe(DEMERITS);
+		});
+
+		it("a waived effect is not a near-miss", async () => {
+			// The ledger must distinguish "this never applied to you" — a rule that
+			// did not match — from "this applied and I let it go". R12 *fired* under
+			// the ruling; only one of its effects was withheld.
+			//
+			// The near-miss R12 does have is the one from *append*, when `permitted`
+			// was still unset — the pending signal, written before any of this, and
+			// correctly still there. What must not exist is a near-miss written by the
+			// ruling, which would say the rule never applied.
+			const { couple, eventId } = await ruledWithDemeritsWaived();
+			const nearMisses = await rowsOfKind(couple, eventId, "near_miss");
+			expect(nearMisses.every((row) => row.cause.by === "rule")).toBe(true);
+			expect(
+				nearMisses.some(
+					(row) => row.cause.by === "rule" && row.cause.rule === "R12",
+				),
+			).toBe(true);
+
+			const waived = await rowsOfKind(couple, eventId, "waived");
+			expect(waived).toHaveLength(1);
+			expect(waived[0].detail.kind).not.toBe("near_miss");
+			// And the rule's other effects landed, which is what "it fired" means.
+			expect((await counters(couple)).orgasms_unpermitted).toBe(1);
+		});
+
+		it("stays suppressed on rebuild, with no preserved-state exception", async () => {
+			// The waiver is read at the same point in the sequence it was written, so
+			// replay withholds the same effect rather than firing and compensating it.
+			const { couple, eventId } = await ruledWithDemeritsWaived();
+			const live = await counters(couple);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+			expect((await counters(couple)).demerits).toBe(0);
+			expect(await rowsOfKind(couple, eventId, "waived")).toHaveLength(1);
+		});
+
+		it("refuses a stale sheet naming an effect the ruling would not fire", async () => {
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			await expect(
+				couple.do.amend(DOM, {
+					kind: "adjudication",
+					target_event_id: eventId,
+					patch: { permitted: false },
+					waive: [{ rule_id: "R11", effect_index: 0 }],
+				}),
+			).rejects.toThrow(/does not fire/);
+		});
+
+		it("refuses a waiver from the sub", async () => {
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			await expect(
+				couple.do.amend(SUB, {
+					kind: "waiver",
+					target_event_id: eventId,
+					waived: [{ rule_id: "R12", effect_index: DEMERITS }],
+				}),
+			).rejects.toThrow(/may not waive/);
+		});
+	});
+
+	describe("reversed — waived after it landed", () => {
+		/** A late ritual: R2 fires `demerits +1` at append, with no ruling in play. */
+		async function lateRitual(): Promise<{
+			couple: ActiveCouple;
+			eventId: string;
+		}> {
+			const couple = await activeCouple();
+			advance(HOUR);
+			const event = await couple.do.logEvent(SUB, {
+				type: "ritual_completed",
+				metadata: { late: true },
+				subject: couple.subId,
+				visibility: "shared",
+			});
+			expect((await counters(couple)).demerits).toBe(1);
+			return { couple, eventId: event.id };
+		}
+
+		it("reverses an unconditional effect that fired at append", async () => {
+			// There was never a confirm sheet here — R2 needs no ruling — which is the
+			// case the standalone entry point exists for.
+			const { couple, eventId } = await lateRitual();
+			advance(HOUR);
+			await couple.do.amend(DOM, {
+				kind: "waiver",
+				target_event_id: eventId,
+				waived: [{ rule_id: "R2", effect_index: 0 }],
+			});
+			expect((await counters(couple)).demerits).toBe(0);
+
+			const waived = await rowsOfKind(couple, eventId, "waived");
+			expect(waived).toHaveLength(1);
+			if (waived[0].detail.kind !== "waived") throw new Error("unreachable");
+			expect(waived[0].detail.mechanic).toBe("reversed");
+			expect(waived[0].detail.from).toBe(1);
+			expect(waived[0].detail.to).toBe(0);
+		});
+
+		it("replays at its own position, so a rebuild agrees", async () => {
+			const { couple, eventId } = await lateRitual();
+			advance(HOUR);
+			await couple.do.amend(DOM, {
+				kind: "waiver",
+				target_event_id: eventId,
+				waived: [{ rule_id: "R2", effect_index: 0 }],
+			});
+			const live = await counters(couple);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+			expect((await counters(couple)).demerits).toBe(0);
+		});
+
+		it("refuses to waive the same effect twice", async () => {
+			const { couple, eventId } = await lateRitual();
+			await couple.do.amend(DOM, {
+				kind: "waiver",
+				target_event_id: eventId,
+				waived: [{ rule_id: "R2", effect_index: 0 }],
+			});
+			await expect(
+				couple.do.amend(DOM, {
+					kind: "waiver",
+					target_event_id: eventId,
+					waived: [{ rule_id: "R2", effect_index: 0 }],
+				}),
+			).rejects.toThrow(/no standing effect/);
+		});
+
+		it("is exact across intervening increments and decrements, however many", async () => {
+			const { couple, eventId } = await lateRitual();
+			// A compensating delta commutes with other deltas, so the number of them
+			// is irrelevant — which is the property that lets the check be a scan for
+			// non-commuting rows rather than any arithmetic over the ones between.
+			for (const delta of [3, -1, 5, -2, 4]) {
+				advance(60_000);
+				await couple.do.adjustCounter(DOM, "demerits", delta);
+			}
+			expect((await counters(couple)).demerits).toBe(10);
+
+			advance(HOUR);
+			await couple.do.amend(DOM, {
+				kind: "waiver",
+				target_event_id: eventId,
+				waived: [{ rule_id: "R2", effect_index: 0 }],
+			});
+			expect((await counters(couple)).demerits).toBe(9);
+		});
+	});
+
+	describe("a correction always lands, and reverses what still commutes", () => {
+		/**
+		 * The exact case ADR 0016 was written around. R12 puts demerits at 2, the sub
+		 * acknowledges and the counter resets to 0, and only then does the dom decide
+		 * the ruling was wrong. `applyCounterOp` has no floor, so a naive reversal
+		 * prints `demerits: −2` on a screen the sub reads.
+		 */
+		async function acknowledgedThenCorrected(): Promise<{
+			couple: ActiveCouple;
+			eventId: string;
+		}> {
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			advance(HOUR);
+			const ruled = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+			});
+			expect((await counters(couple)).demerits).toBe(2);
+
+			advance(HOUR);
+			await couple.do.resetCounter(SUB, "demerits"); // the acknowledgment
+			expect((await counters(couple)).demerits).toBe(0);
+
+			advance(HOUR);
+			const ruling = ruled.amendments.find((a) => a.kind === "adjudication");
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: true },
+				supersedes: ruling?.id,
+			});
+			return { couple, eventId };
+		}
+
+		it("declines the reversal rather than subtracting from nothing", async () => {
+			const { couple, eventId } = await acknowledgedThenCorrected();
+			// Not −2. The punishment had already been discharged, and the reversal
+			// would have subtracted it from a counter that no longer held it.
+			expect((await counters(couple)).demerits).toBe(0);
+
+			const declined = await rowsOfKind(couple, eventId, "reversal_declined");
+			const onDemerits = declined.find(
+				(row) => row.projection === "counter:demerits",
+			);
+			if (onDemerits?.detail.kind !== "reversal_declined") {
+				throw new Error("no declined row for the demerits reversal");
+			}
+			expect(onDemerits.detail.reason).toMatch(/reset since/);
+		});
+
+		it("still lands the correction itself", async () => {
+			// Refusing corrections that cannot be fully reversed would mean the dom
+			// could not record that they got R12 wrong *at all*, which is the worst
+			// outcome available to a log whose purpose is being an auditable record.
+			const { couple, eventId } = await acknowledgedThenCorrected();
+			const events = await couple.do.listEvents(DOM);
+			const event = events.find((e) => e.id === eventId);
+			expect(event?.composite_metadata.permitted).toBe(true);
+			// And what the correction newly unlocked fires forward as it always did.
+			expect((await counters(couple)).orgasms_permitted).toBe(1);
+		});
+
+		it("reproduces the same declined reversal on rebuild", async () => {
+			const { couple } = await acknowledgedThenCorrected();
+			const live = await counters(couple);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+		});
+	});
+
+	describe("a correction reverses the counter and declines the rest", () => {
+		/**
+		 * A denial running when the orgasm happened, so the wrong ruling reached all
+		 * four of R12's effects, R14's timer close, *and* R26's escalation — three
+		 * rules, one wrong fact. Correcting it is where the asymmetry is at its
+		 * widest: three counter effects reverse, two anchors and a closed countdown
+		 * cannot.
+		 */
+		async function correctedDuringDenial(): Promise<{
+			couple: ActiveCouple;
+			eventId: string;
+		}> {
+			const couple = await activeCouple();
+			await couple.do.logEvent(DOM, {
+				type: "denial_started",
+				metadata: { duration_ms: 8 * HOUR },
+				subject: couple.subId,
+				visibility: "shared",
+			});
+			advance(HOUR);
+			const event = await couple.do.logEvent(SUB, {
+				type: "orgasm",
+				metadata: { outcome: "full" },
+				subject: couple.subId,
+				visibility: "shared",
+			});
+			advance(HOUR);
+			const ruled = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { permitted: false },
+			});
+			// R12's +2 and R26's escalation +2 — the denial was running when it
+			// happened, so both landed on the same wrong ruling.
+			expect((await counters(couple)).demerits).toBe(4);
+			expect(couple.timerRows()[0]?.status).toBe("failed");
+
+			advance(HOUR);
+			const ruling = ruled.amendments.find((a) => a.kind === "adjudication");
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { permitted: true },
+				supersedes: ruling?.id,
+			});
+			return { couple, eventId: event.id };
+		}
+
+		it("reverses both counter effects exactly", async () => {
+			const { couple } = await correctedDuringDenial();
+			expect((await counters(couple)).demerits).toBe(0);
+			expect((await counters(couple)).orgasms_unpermitted).toBe(0);
+		});
+
+		it("files a declined row for each anchor and for the countdown", async () => {
+			const { couple, eventId } = await correctedDuringDenial();
+			const declined = await rowsOfKind(couple, eventId, "reversal_declined");
+			const projections = declined.map((row) => row.projection).sort();
+			expect(projections).toEqual([
+				"anchor:since_last_infraction",
+				"anchor:since_last_orgasm",
+				"timer:denial_period",
+			]);
+			// Each says *why*, in the shape a near-miss established — the couple can
+			// see exactly what stayed and talk about it, which is the mechanism this
+			// app reaches for everywhere it cannot compute an answer.
+			for (const row of declined) {
+				if (row.detail.kind !== "reversal_declined") {
+					throw new Error("unreachable");
+				}
+				expect(row.detail.reason.length).toBeGreaterThan(0);
+			}
+		});
+
+		it("leaves the countdown failed — no retroactive timer surgery", async () => {
+			// The refusal `couple-do.ts` has made since Phase 4 stands. A closed
+			// countdown has no honest inverse, and reopening one would rewrite a span
+			// the couple actually lived.
+			const { couple } = await correctedDuringDenial();
+			expect(couple.timerRows()[0]?.status).toBe("failed");
+		});
+
+		it("agrees with a rebuild", async () => {
+			const { couple } = await correctedDuringDenial();
+			const live = await counters(couple);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+		});
+
+		it("reverses only the rules that stopped matching", async () => {
+			// The unconditional rules fired on the same event and are untouched by a
+			// correction to `permitted`; reversing them would undo effects the ruling
+			// never caused. R12 and R26 both hung on the wrong fact, so both go.
+			const { couple, eventId } = await correctedDuringDenial();
+			const waived = await rowsOfKind(couple, eventId, "waived");
+			const rules = new Set(
+				waived.map((row) =>
+					row.cause.by === "amendment" ? row.cause.rule : "",
+				),
+			);
+			expect([...rules].sort()).toEqual(["R12", "R26"]);
+			expect(waived.map((row) => row.projection).sort()).toEqual([
+				"counter:demerits",
+				"counter:demerits",
+				"counter:orgasms_unpermitted",
+			]);
+		});
+
+		it("does not reverse the same effect a second time", async () => {
+			// Correcting back and forth must not compound: the first correction spent
+			// those effects, and the second finds none of them still standing. The
+			// rules fire *afresh* instead, so the numbers move forward from where the
+			// reversal left them rather than reversing a reversal.
+			const { couple, eventId } = await correctedDuringDenial();
+			const before = await counters(couple);
+			const events = await couple.do.listEvents(DOM);
+			const event = events.find((e) => e.id === eventId);
+			const latest = event?.amendments
+				.filter((a) => a.kind === "adjudication")
+				.at(-1);
+			advance(HOUR);
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+				supersedes: latest?.id,
+			});
+			const after = await counters(couple);
+			// R12 alone this time: R14's close stamped the denial's end at the
+			// orgasm's own `occurred_at`, so the ambient-state predicate no longer
+			// reports a denial running *at* that instant and R26 does not re-fire.
+			// That is ADR 0011's clock, unchanged by any of this — what matters here
+			// is that nothing reverses twice and the numbers only move forward.
+			expect(after.demerits).toBe(before.demerits + 2);
+			expect(after.orgasms_unpermitted).toBe(before.orgasms_unpermitted + 1);
+		});
+	});
+
+	describe("what a rebuild does with a waiver over a re-fired effect", () => {
+		it("agrees with live after a correction, a reversal, and a re-fire", async () => {
+			// The pairing that makes `standingEffects` per-row rather than per
+			// `(rule, index)`: A fires, is reversed by a correction to B, and fires
+			// again when the dom corrects back to A. Live and rebuild have to make the
+			// same pairing or the second effect is treated as already handled.
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			advance(HOUR);
+			const first = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+			});
+			advance(HOUR);
+			const firstRuling = first.amendments.find(
+				(a) => a.kind === "adjudication",
+			);
+			const second = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: true },
+				supersedes: firstRuling?.id,
+			});
+			advance(HOUR);
+			const secondRuling = second.amendments
+				.filter((a) => a.kind === "adjudication")
+				.at(-1);
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+				supersedes: secondRuling?.id,
+			});
+
+			const live = await counters(couple);
+			expect(live.demerits).toBe(2);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+		});
+	});
+
+	describe("a correction touches only the key it corrected", () => {
+		/**
+		 * The case a single-key ruling cannot reach. `compositeMetadata` drops a
+		 * superseded patch **wholesale**, so a ruling that decided two awaited keys
+		 * and is corrected on one — the other re-asserted — leaves the second key's
+		 * rule matching before *and* after. `unfired` therefore never names it and
+		 * `reevaluate` never re-fires it (forward-only), so reversing it off the
+		 * superseded ruling's trace rows would strip an effect that nothing would
+		 * ever put back.
+		 */
+		async function ruledOnTwoKeysThenCorrectedOnOne(): Promise<{
+			couple: ActiveCouple;
+			eventId: string;
+		}> {
+			const couple = await activeCouple();
+			await couple.do.createEventType(DOM, {
+				id: "scene_reviewed",
+				label: "Scene reviewed",
+				valence: "neutral",
+				log_permission: ["dom", "sub", "switch"],
+				subject_required: true,
+				metadata: {
+					obedience: {
+						kind: "enum",
+						options: ["good", "poor"],
+						label: "Obedience",
+						required: false,
+						set_permission: [],
+						adjudicated_by: ["dom"],
+					},
+					service: {
+						kind: "enum",
+						options: ["good", "poor"],
+						label: "Service",
+						required: false,
+						set_permission: [],
+						adjudicated_by: ["dom"],
+					},
+				},
+				awaiting: ["obedience", "service"],
+			});
+			await couple.do.createRule(DOM, {
+				id: "custom-poor-obedience",
+				name: "Poor obedience",
+				condition: {
+					type: "scene_reviewed",
+					metadata: { obedience: "poor" },
+				},
+				effects: [{ verb: "increment_counter", counter: "demerits", by: 3 }],
+			});
+			await couple.do.createRule(DOM, {
+				id: "custom-poor-service",
+				name: "Poor service",
+				condition: { type: "scene_reviewed", metadata: { service: "poor" } },
+				effects: [
+					{ verb: "increment_counter", counter: "infractions_lifetime", by: 1 },
+				],
+			});
+
+			advance(HOUR);
+			const event = await couple.do.logEvent(SUB, {
+				type: "scene_reviewed",
+				metadata: {},
+				subject: couple.subId,
+				visibility: "shared",
+			});
+			advance(HOUR);
+			// One ruling, both keys — so both rules fire from the same amendment.
+			const ruled = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { obedience: "poor", service: "poor" },
+			});
+			expect((await counters(couple)).demerits).toBe(3);
+			expect((await counters(couple)).infractions_lifetime).toBe(1);
+
+			advance(HOUR);
+			// The dom got *obedience* wrong and says so, re-asserting service.
+			const ruling = ruled.amendments.find((a) => a.kind === "adjudication");
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { obedience: "good", service: "poor" },
+				supersedes: ruling?.id,
+			});
+			return { couple, eventId: event.id };
+		}
+
+		it("reverses the corrected key's effect", async () => {
+			const { couple } = await ruledOnTwoKeysThenCorrectedOnOne();
+			expect((await counters(couple)).demerits).toBe(0);
+		});
+
+		it("leaves the re-asserted key's effect standing", async () => {
+			// The fact it hangs on is still true, and nothing would re-apply it: the
+			// rule fired before and fires after, so it is in neither `unfired` nor
+			// `reevaluate`'s forward set.
+			const { couple } = await ruledOnTwoKeysThenCorrectedOnOne();
+			expect((await counters(couple)).infractions_lifetime).toBe(1);
+		});
+
+		it("files no waiver row against the rule that still matches", async () => {
+			const { couple, eventId } = await ruledOnTwoKeysThenCorrectedOnOne();
+			const overruled = (await couple.do.getEventTrace(DOM, eventId)).filter(
+				(row) =>
+					row.detail.kind === "waived" ||
+					row.detail.kind === "reversal_declined",
+			);
+			const rules = overruled.map((row) =>
+				row.cause.by === "amendment" ? row.cause.rule : "",
+			);
+			expect(rules).not.toContain("custom-poor-service");
+			expect(rules).toContain("custom-poor-obedience");
+		});
+
+		it("agrees with a rebuild", async () => {
+			const { couple } = await ruledOnTwoKeysThenCorrectedOnOne();
+			const live = await counters(couple);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+		});
+	});
+
+	describe("the anchor effects nothing can undo", () => {
+		it("leaves the anchor where the wrong ruling put it", async () => {
+			// Stated as its own test because it is the part of #184's asymmetry that
+			// this ADR explicitly does *not* dissolve: nothing records what an anchor
+			// reset displaced, so there is no inverse to offer.
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			advance(HOUR);
+			const ruled = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+			});
+			const anchorAfterRuling = (await couple.do.listAnchors(DOM)).find(
+				(a) => a.anchor === "since_last_infraction",
+			)?.since;
+			expect(anchorAfterRuling).not.toBeNull();
+
+			advance(HOUR);
+			const ruling = ruled.amendments.find((a) => a.kind === "adjudication");
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: true },
+				supersedes: ruling?.id,
+			});
+			const after = (await couple.do.listAnchors(DOM)).find(
+				(a) => a.anchor === "since_last_infraction",
+			)?.since;
+			expect(after).toBe(anchorAfterRuling);
+		});
+
+		it("names the individual effects a waiver may target", async () => {
+			// The tally and the anchor are different positions on the same rule, and a
+			// waiver names one without touching the other.
+			const { couple, eventId } = await orgasmAwaitingRuling();
+			advance(HOUR);
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: eventId,
+				patch: { permitted: false },
+				waive: [
+					{ rule_id: "R12", effect_index: UNPERMITTED_TALLY },
+					{ rule_id: "R12", effect_index: ORGASM_ANCHOR },
+				],
+			});
+			expect((await counters(couple)).orgasms_unpermitted).toBe(0);
+			expect((await counters(couple)).demerits).toBe(2);
+			const anchor = (await couple.do.listAnchors(DOM)).find(
+				(a) => a.anchor === "since_last_orgasm",
+			);
+			// A suppressed anchor reset simply never happens — suppression needs no
+			// inverse, which is why it reaches effects reversal never can.
+			expect(anchor?.since).toBeNull();
+		});
+	});
+});

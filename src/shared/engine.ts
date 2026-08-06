@@ -318,10 +318,17 @@ export function evaluateRules(
  * event's composite state, the engine re-runs over the *target* event and fires
  * the rules that match now but did *not* match before — never re-firing what
  * already fired at append time (or under an earlier ruling), so an adjudication
- * only ever *adds* effects. It never creates events; a correction that removes a
- * match does not un-fire prior effects (no retroactive surgery — the trace is an
- * honest record of what happened). The returned ops resolve against `after`, so
- * anchor resets carry the target's `occurred_at`, not the ruling time.
+ * only ever *adds* effects. It never creates events. The returned ops resolve
+ * against `after`, so anchor resets carry the target's `occurred_at`, not the
+ * ruling time.
+ *
+ * **This stays forward-only, and reversal is computed beside it** (ADR 0016).
+ * A correction that removes a match leaves this returning nothing for that rule;
+ * {@link unfired} names it instead, and the caller reverses what the *trace*
+ * records actually fired. Making re-evaluation bidirectional was the obvious
+ * alternative and was declined: the effects it would hand back are re-derived
+ * from a rule definition that may have been edited since (ADR 0002), which is not
+ * the same set as the one that landed. #184 pinned the limit this replaces.
  */
 export function reevaluate(
 	rules: Rule[],
@@ -334,6 +341,32 @@ export function reevaluate(
 	return evaluateRules(rules, after).fired.filter(
 		(f) => !firedBefore.has(f.rule_id),
 	);
+}
+
+/**
+ * The reversal counterpart to {@link reevaluate} (ADR 0016): the rules that
+ * fired in `before` and no longer fire in `after` — a correction's "these
+ * effects are now attached to a fact that is no longer true".
+ *
+ * Returns **rule ids only, never effects**, and that is the whole point of it
+ * being a separate function rather than a flag on `reevaluate`. Whether a rule
+ * still matches is a question about the *condition*, which is safe to ask of
+ * today's resolved rule set; what it did when it fired is a question about the
+ * *effects*, which is not — the definition may have been edited since, so the
+ * caller reads that from the trace. Keeping the two apart in the signature is
+ * what stops a future caller from re-deriving effects here by accident.
+ */
+export function unfired(
+	rules: Rule[],
+	before: RuleEventContext,
+	after: RuleEventContext,
+): string[] {
+	const firedAfter = new Set(
+		evaluateRules(rules, after).fired.map((f) => f.rule_id),
+	);
+	return evaluateRules(rules, before)
+		.fired.map((f) => f.rule_id)
+		.filter((id) => !firedAfter.has(id));
 }
 
 /**

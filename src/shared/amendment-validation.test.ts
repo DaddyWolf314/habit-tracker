@@ -319,3 +319,103 @@ describe("response — the dom's gift (ADR 0001, broadened by ADR 0007)", () => 
 		);
 	});
 });
+
+describe("waiver — gated on authoring rules, not on adjudicating (ADR 0016)", () => {
+	const waive: AmendmentInput = {
+		kind: "waiver",
+		target_event_id: "e1",
+		waived: [{ rule_id: "R12", effect_index: 2 }],
+	};
+
+	it("accepts a waiver from a dom and from a switch", () => {
+		expect(validateAmendment(waive, ctx())).toEqual({ ok: true });
+		expect(validateAmendment(waive, ctx({ actorRole: "switch" }))).toEqual({
+			ok: true,
+		});
+	});
+
+	it("refuses a waiver from the sub, and from an unconfirmed role", () => {
+		for (const role of ["sub", null] as const) {
+			const result = validateAmendment(waive, ctx({ actorRole: role }));
+			expect(result.ok).toBe(false);
+			if (result.ok) throw new Error("unreachable");
+			expect(result.forbidden).toBe(true);
+		}
+	});
+
+	it("does not require the event to be pending", () => {
+		// The effects most in need of waiving are R2's, which fire at append on a
+		// type with no awaited key at all — so an event that was never pending is the
+		// normal case here, not the exception.
+		expect(validateAmendment(waive, ctx({ eventType: journalType }))).toEqual({
+			ok: true,
+		});
+	});
+
+	it("refuses a waiver on a retracted event, like every other amendment", () => {
+		const retracted: Amendment = {
+			kind: "retracted",
+			id: "r1",
+			target_event_id: "e1",
+			actor: "sub-1",
+			created_at: 50,
+		};
+		const result = validateAmendment(waive, ctx({ amendments: [retracted] }));
+		expect(result.ok).toBe(false);
+	});
+
+	it("refuses the same effect named twice", () => {
+		const result = validateAmendment(
+			{
+				...waive,
+				waived: [
+					{ rule_id: "R12", effect_index: 2 },
+					{ rule_id: "R12", effect_index: 2 },
+				],
+			},
+			ctx(),
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("R12#2");
+	});
+
+	it("gates a ruling's `waive` list on the same roles", () => {
+		// A role may be `adjudicated_by` for a key on a custom type without being
+		// allowed to overrule what the couple's rules do with it, so the sheet's
+		// checkboxes carry their own gate rather than riding on the ruling's.
+		const withWaive = adjudicate({
+			waive: [{ rule_id: "R12", effect_index: 2 }],
+		});
+		expect(validateAmendment(withWaive, ctx())).toEqual({ ok: true });
+		const asSub = validateAmendment(
+			withWaive,
+			ctx({
+				actorRole: "sub",
+				eventType: {
+					awaiting: ["permitted"],
+					metadata: {
+						permitted: {
+							kind: "boolean",
+							label: "Permitted",
+							required: false,
+							set_permission: [],
+							adjudicated_by: ["sub"],
+						},
+					},
+				},
+			}),
+		);
+		expect(asSub.ok).toBe(false);
+		if (asSub.ok) throw new Error("unreachable");
+		expect(asSub.error).toContain("waive");
+	});
+
+	it("an empty `waive` is an ordinary ruling, not a waiver of nothing", () => {
+		// Refusing it would gate every adjudicator on the rule-authoring roles for
+		// sending a field they meant as absent.
+		expect(validateAmendment(adjudicate({ waive: [] }), ctx())).toEqual({
+			ok: true,
+		});
+	});
+});

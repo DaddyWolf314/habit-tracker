@@ -4,6 +4,7 @@ import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, queueFor } from "#/shared/adjudication.ts";
+import { type WaivedEffect, waivedEffectKey } from "#/shared/amendments.ts";
 import { type AnchorView, elapsedDaysText } from "#/shared/anchors.ts";
 import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
 import {
@@ -131,6 +132,11 @@ function QueueItem({
 	const noteId = useId();
 	const [note, setNote] = useState("");
 	const [stage, setStage] = useState<"edit" | "confirm">("edit");
+	// The effects the dom has unchecked on the sheet, by `rule#index` (ADR 0016).
+	// Kept across a trip back to "edit" on purpose — an intent to let something go
+	// survives re-picking a value — and made safe by `commit` sending only keys
+	// still present in the current preview.
+	const [waived, setWaived] = useState<ReadonlySet<string>>(new Set());
 	const [busy, setBusy] = useState(false);
 	const [dismissing, setDismissing] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -154,10 +160,15 @@ function QueueItem({
 	/**
 	 * The forward-running effects this ruling would fire (handoff §8, step 4):
 	 * re-run the pure engine over the target with the ruling merged in and diff
-	 * against what already fired — exactly what the DO applies on commit. Visibility
-	 * only; no effect-waiving (a scoring-layer concern).
+	 * against what already fired — exactly what the DO applies on commit.
+	 *
+	 * Each line is a checkbox (ADR 0016). Unchecking one waives it, and waiving on
+	 * this sheet **suppresses**: the effect is never applied, so the counter's
+	 * history carries no peak that never existed. Each carries the `(rule_id,
+	 * effect_index)` pair the server needs to suppress exactly the same effect —
+	 * the phrase is for the dom, the pair is for the ledger.
 	 */
-	function previewEffects(): string[] {
+	function previewEffects(): WaivableEffect[] {
 		// Same resolution seam the DO uses (ADR 0003), so the preview and the
 		// commit agree on which subject-qualified rules and awaiting entries apply.
 		const subjectRole = subjectRoleOf(event.subject, members);
@@ -178,7 +189,11 @@ function QueueItem({
 			metadata: { ...event.composite_metadata, ...patch },
 		};
 		return reevaluate(rulesInForce, before, after).flatMap((fired) =>
-			fired.ops.map(summarizeEffectOp),
+			fired.ops.map((op, index) => ({
+				rule_id: fired.rule_id,
+				effect_index: index,
+				phrase: summarizeEffectOp(op),
+			})),
 		);
 	}
 
@@ -191,6 +206,12 @@ function QueueItem({
 				target_event_id: event.id,
 				patch,
 				note: note.trim() || undefined,
+				// Only what is actually on this sheet: a stale key left in the set by a
+				// re-edit would name an effect the ruling no longer fires, which the
+				// server refuses outright rather than silently ignoring. Omitted
+				// entirely when nothing is waived, so an ordinary ruling never carries
+				// an empty waiver through the authoring gate.
+				waive: waivedNow.length > 0 ? waivedNow : undefined,
 			});
 			// Post-ruling: the card animates out, then the log refetch drops it.
 			setDismissing(true);
@@ -208,6 +229,9 @@ function QueueItem({
 	// awaited key, none of which is a ULID.
 	const context = readableMetadata(type, event.composite_metadata);
 	const effects = stage === "confirm" ? previewEffects() : [];
+	const waivedNow = effects
+		.filter((effect) => waived.has(waivedEffectKey(effect)))
+		.map(({ rule_id, effect_index }) => ({ rule_id, effect_index }));
 
 	// Adjudication evidence (#78, ADR 0003): the anchors this event type's rules
 	// can reset are the anchors the ruling is judged against — for an orgasm,
@@ -302,18 +326,38 @@ function QueueItem({
 			) : (
 				<div className="mt-3 space-y-3 rounded-md border bg-muted/40 p-3">
 					<p className="text-xs font-medium text-muted-foreground">
-						This ruling will fire:
+						This ruling will fire — uncheck anything you are letting go:
 					</p>
 					{effects.length > 0 ? (
 						<ul className="space-y-1 text-sm">
-							{effects.map((effect, i) => (
-								// biome-ignore lint/suspicious/noArrayIndexKey: a static, order-stable list rebuilt each render; two rules can phrase identically, so content is not a unique key
-								<li key={`${effect}-${i}`}>• {effect}</li>
+							{effects.map((effect) => (
+								<EffectCheckbox
+									key={waivedEffectKey(effect)}
+									effect={effect}
+									fires={!waived.has(waivedEffectKey(effect))}
+									onToggle={() =>
+										setWaived((prev) => {
+											const next = new Set(prev);
+											const key = waivedEffectKey(effect);
+											if (!next.delete(key)) next.add(key);
+											return next;
+										})
+									}
+								/>
 							))}
 						</ul>
 					) : (
 						<p className="text-sm text-muted-foreground">
 							No mechanical effects — this only records the ruling.
+						</p>
+					)}
+					{waived.size > 0 && (
+						// Said plainly, because the mechanic is visible in the numbers: a
+						// waived effect never applies, so the counter never holds the value
+						// that was let go, and nothing compensates for it afterwards.
+						<p className="text-xs text-muted-foreground">
+							Unchecked effects never apply. The log records what each rule
+							proposed and that you waived it.
 						</p>
 					)}
 					{note.trim() && (
@@ -336,6 +380,53 @@ function QueueItem({
 					</div>
 				</div>
 			)}
+		</li>
+	);
+}
+
+/**
+ * One line of the confirm sheet: the effect a rule would fire, phrased for the
+ * dom and named for the ledger. The phrase comes from `summarizeEffectOp`, the
+ * same function the chain view renders a *fired* effect with, so what the dom
+ * unchecks here and what the log says they waived are the same words.
+ */
+interface WaivableEffect extends WaivedEffect {
+	phrase: string;
+}
+
+/**
+ * One effect on the confirm sheet, as a checkbox. Checked means it fires;
+ * unchecking waives it (ADR 0016).
+ *
+ * The whole row is the label, so the tap target is the line rather than the
+ * 16px box — this is a phone-first app and the box alone sits well under the
+ * 44px floor (#147). `min-h-11` states that floor on the row for the same reason
+ * `Button`'s default carries it.
+ */
+function EffectCheckbox({
+	effect,
+	fires,
+	onToggle,
+}: {
+	effect: WaivableEffect;
+	fires: boolean;
+	onToggle: () => void;
+}) {
+	return (
+		<li>
+			<label className="flex min-h-11 cursor-pointer items-center gap-2">
+				<input
+					type="checkbox"
+					className="size-4 shrink-0"
+					checked={fires}
+					onChange={onToggle}
+				/>
+				<span
+					className={fires ? undefined : "text-muted-foreground line-through"}
+				>
+					{effect.phrase}
+				</span>
+			</label>
 		</li>
 	);
 }
