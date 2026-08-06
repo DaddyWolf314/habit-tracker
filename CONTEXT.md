@@ -11,18 +11,33 @@ in and should not.
   mutated or deleted. Rules never create events. _Avoid_: "log entry" when you
   mean the typed record.
 - **Amendment** — a post-hoc record against an event: an `adjudication` (ruling),
-  a `note_appended`, or a `retracted`. Composite state is the original metadata
-  overlaid by amendments in timestamp order — derived, never stored.
+  a `note_appended`, a `retracted`, a **Response** (#183), or a **Waiver**
+  (ADR 0016). Composite state is the original metadata overlaid by amendments in
+  timestamp order — derived, never stored. Only the first touches composite state;
+  the rest are records against the event that leave its metadata alone.
 - **Rule** — `when type = X [AND metadata constraints] [AND ambient state] →
   effects`. Routes values; it never computes them. The condition language admits
-  what the event carries, who it is about, and what was *running* when it
-  happened — never a count, an elapsed time, or a query over the log (ADR 0011).
-  A stable rule id carries one or more effective-dated **rule versions**;
-  authoring is dom/switch-only.
+  what the event carries, who it is about, what was *running* when it happened,
+  and — since ADR 0015 — what a **counter** stood at. Never an elapsed time and
+  never a query over the log (ADR 0011). A stable rule id carries one or more
+  effective-dated **rule versions**; authoring is dom/switch-only.
   _Avoid_: conflating with the **Agreement** an `infraction` cites — machine
   automation, not a term the couple agreed (ADR 0006).
 - **Effect** — one op a fired rule routes: counter increment/decrement/reset,
-  anchor reset, timer open/close, notify.
+  anchor reset, timer open/close, notify. A counter op's magnitude is a literal
+  `by`, or a **routed magnitude** off the event. An effect may be **waived** —
+  suppressed before it lands, or reversed after (ADR 0016) — which is a fact about
+  the ruling, not about whether the rule matched. _Avoid_: reading a waived effect
+  as a **near-miss**; the rule fired and was overruled.
+- **Routed magnitude** — `by_from`, naming the metadata key whose number becomes a
+  counter op's amount ("+= the severity the dom ruled"). Routing, not computation,
+  and the same shape `duration_from` already uses. Legal only on a `number` field
+  declared `integer: true`, refused at creation otherwise, because a fractional
+  amount would drive the counter cache non-integer. An absent value at runtime
+  **skips** the effect with a trace note rather than falling back to `by` (which
+  would print `+1` for a rule its author believed was proportional) or rounding.
+  _Avoid_: "weight" — `by` is already the weight; this is where the weight is read
+  from.
 - **Ambient-state predicate** — the condition clause matching on what was
   *running* when an event happened: `timer_active`, a map of timer definition to
   expected activity (`{ denial_period: true }`, `{ session_stopwatch: false }`).
@@ -49,8 +64,23 @@ in and should not.
   than computing them. Legal only on a `number` field, refused at creation
   otherwise. It replaces the value on the `metadata` map rather than living in a
   parallel map, so one key can never carry two contradictory constraints.
-  _Avoid_: "threshold" — a counter threshold is the refused form, and belongs to
-  the deferred scoring layer (#47); "expression".
+  _Avoid_: "threshold" for this clause — a threshold is a **Rung**, and a rule
+  reads a counter through the **counter-value predicate**; "expression".
+- **Counter-value predicate** — the condition clause matching on what a counter
+  stood at (`counter_value: { demerits: { op: "gte", value: 10 } }`), admitted by
+  ADR 0015 after ADR 0011 refused it pending #47. The second state query the
+  language admits, and it borrows the **Comparison clause** wholesale, so the
+  grammar gains a map rather than expressions. Resolved by the *caller* and passed
+  in the rule context exactly as an **ambient-state predicate** is. Reads the value
+  the engine saw **when it acted** — log-time on append, ruling-time on
+  re-evaluation — because counter trace rows are log-time stamped and an
+  `occurred_at` reading would let a backfill change what an already-processed event
+  saw, breaking live-equals-rebuild (ADR 0012). Reads the score **before this
+  event's own effects**, one pass, as `timer_active` reads a denial period the same
+  event is about to close: so the infraction that crosses a rung does not escalate
+  itself, the next one does. _Avoid_: "threshold predicate" (a rung is the
+  threshold, this is the read); expecting it to fire on its own when a counter
+  moves — only an event evaluates rules.
 - **Rule version** — an effective-dated revision of a rule's **name**, condition,
   and effects. Rules are append-only-versioned: editing adds a version (with an
   `effective_from`), never rewriting the prior, so replay picks the version in force
@@ -63,12 +93,18 @@ in and should not.
 - **Effective-dating** — a versioned definition governs only what happened while it
   was in force. Changes are **forward-only**: the past keeps the consequences it
   received, and a rebuild re-derives under the version current *then* — reproducing
-  history, not rewriting it. Three things carry versions, and each resolves against
-  a different clock: a **rule** at an event's log-time (ADR 0002), an **Agreement**
-  at an event's `occurred_at` (ADR 0006), and a **counter** at the rollover boundary
-  being folded (ADR 0013), since a counter's policy is read by a system job rather
-  than by any event. _Avoid_: "retroactive" changes; treating the clock as an
-  implementation detail — it is the semantics.
+  history, not rewriting it. Four things carry versions, and the clock each resolves
+  against is *the moment its reader reads it*, never a property of the definition:
+  a **rule** at an event's log-time (ADR 0002), an **Agreement** at an event's
+  `occurred_at` (ADR 0006), a **counter** at the rollover boundary being folded
+  (ADR 0013), and a **Reward item** at the redeeming event's `occurred_at`, since a
+  citing ref resolves there (ADR 0017). One definition can have two readers on two
+  clocks: a counter's reset cadence is read by a system job at the boundary, while
+  its **Rungs** are read by an event moving the counter, and so resolve at that
+  move's log-time — a `reset: never` counter has no boundary to resolve at at all
+  (ADR 0015). _Avoid_: "retroactive" changes; treating the clock as an
+  implementation detail — it is the semantics; counting clocks per *definition*
+  rather than per reader.
 - **Adopted rule** — a default-pack rule (`R#`) a couple has edited. Adoption freezes
   it against upstream: a pack version bump no longer overwrites its definition (only
   surfaces an upstream-changed notice), while un-adopted pack rules still track the
@@ -182,9 +218,22 @@ in and should not.
   an **Act** without any surface naming them, and a couple's own type scoped to the
   session appears for free. _Avoid_: "session log"; "contents" for the timer row
   itself (the row is the span, the contents are the events inside it).
-- **Target counter** — a counter carrying a daily/weekly target. A **streak** is a
-  property of one: a consecutive-target-met count the DO alarm evaluates at
-  rollover — never a rule. _Avoid_: modeling a streak as a rule.
+- **Target counter** — a counter carrying a daily/weekly target, met either by
+  **reaching** it (a floor — "do at least N") or by **staying under** it (a **cap**).
+  A **streak** is a property of one: a consecutive-target-met count the DO alarm
+  evaluates at rollover — never a rule. _Avoid_: modeling a streak as a rule;
+  reading a target as always a floor, which is what left the app with no way to
+  count a clean day.
+- **Cap target** — the staying-under form, which makes a target of `0` meaningful
+  and legal where `daily_target` was once `positive()`. Exists so escalation has a
+  mercy counterpart: a **clean streak** is the ordinary counter a
+  **counter-value predicate** reads to say "first infraction in thirty days", which
+  is why ADR 0015 could refuse an anchor clause. _Avoid_: "limit" (an Agreement
+  kind); "budget".
+- **Clean streak** — the streak of a **cap target** ("31 consecutive days with no
+  infraction"). Not a fourth thing: a streak counter whose underlying target
+  happens to be a cap. _Avoid_: treating it as an anchor — it is a count of
+  periods, not an elapsed time, and that difference is the whole reason it exists.
 
 ## Relationship & roles (handoff §2)
 
@@ -271,7 +320,8 @@ in and should not.
   this event name the row*.
 - **Citing ref** — the third flavor: a ref naming a **definition** rather than an
   id minted by an event (`infraction`'s `rule_ref`, `ritual_completed`'s
-  `ritual_id` — both naming an **Agreement**). Nothing mints it at log time, and
+  `ritual_id` — both naming an **Agreement**; a redemption's `reward_ref`, naming a
+  **Reward item**). Nothing mints it at log time, and
   it resolves to the version in force at the event's **`occurred_at`** — what the
   person was bound by when they acted. This is *not* the rule-version clock, which
   is log-time (ADR 0002): the system carries two resolution clocks on purpose,
@@ -325,7 +375,9 @@ in and should not.
   logged event, a rule condition and an export carry, so renaming one would
   orphan every event holding it. Renaming a word changes only the label.
 - **Valence** — `positive | negative | neutral` on a type or counter; drives
-  display and the deferred scoring layer. Overridable per rule effect.
+  display, and says which direction a **Score** counts. _Avoid_: "overridable per
+  rule effect" — `effectSchema` carries no valence and nothing would consume one
+  now that a score is an ordinary counter (ADR 0015).
 - **Composite state** — an event's current metadata: original overlaid by
   amendments in timestamp order, latest non-superseded winning per key. Derived,
   never stored (`composite_metadata` in code). _Avoid_: "merged" / "effective"
@@ -344,6 +396,30 @@ in and should not.
   role's ruling. A view, **not a holding pen** — pending events are already in the
   log and have already fired their unconditional rules. _Avoid_: "inbox",
   "approval queue".
+- **Waiver** — the amendment by which the dom overrules a rule's *output* while
+  leaving the fact it matched on standing (ADR 0016). Mercy, not correction: the
+  rule fired correctly and the dom is letting it go. Two mechanics chosen by
+  timing — waived on the confirm sheet the effect is **suppressed**, never applied,
+  and one trace row says both that R12 proposed +2 demerits and that the dom waived
+  it; waived after it has landed, it is **reversed**. Suppression is preferred over
+  fire-then-compensate so a counter's history carries no peak that never existed.
+  Gated on the roles that may author rules (dom/switch, ADR 0002) — whoever may
+  write a rule may overrule it — rather than on the type's `adjudicated_by`, which
+  would leave an unconditional effect like R2's ungated. _Avoid_: "override" (a
+  ruling is not being changed); waiving as a way to *correct* a wrong ruling — that
+  is a **Reversal** driven by an adjudication.
+- **Reversal** — undoing an effect that already landed, because a ruling was
+  corrected or an effect was waived late. An effect is reversible **exactly when
+  its inverse still commutes with everything since**: an increment or decrement
+  with no reset, rollover, or acknowledgment on that counter in between. Checked
+  against the trace, which already holds every counter move with `from`/`to`.
+  Everything else — a counter reset, an anchor reset, a timer open or close, a
+  notify — is never reversible and files a **reversal_declined** row saying so, in
+  the shape a **Near-miss** established. A correction *always* lands regardless:
+  blocking the record is worse than an asymmetric repair, and the asymmetry is
+  stated in the ledger rather than left silent (#184). _Avoid_: "undo"; "rollback";
+  reading `reevaluate` as bidirectional — it stays forward-only and reversal is
+  computed beside it from what the trace records actually fired.
 - **Quality** — how well a task was done (`exceeded | met | partial`), the pack's
   canonical **awaiting** key on `task_completed`. Setting it *resolves* that key,
   so a sub who states their own quality is **not** asking for a ruling — the
@@ -357,13 +433,71 @@ in and should not.
 - **Notification** — the single content-free unread *count* a member polls, shown
   as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): events
   awaiting *this* member's ruling, what their partner has said back about their own
-  entries (a ruling or a **Response**, #183), a targeted recovery notice, and the
-  partner's rule and Agreement changes — composed in one place
+  entries (a ruling or a **Response**, #183), a targeted recovery notice, an upward
+  **Crossing** of a rung or a price, and the partner's rule, Agreement, and
+  **Reward item** changes — composed in one place
   (`shared/notifications.ts`). A number only, never any relationship content.
   Everything it counts is **addressed to the viewer**: a bare logged event notifies
   nobody, and one entry counts once however many times it was amended, because a
   content-free number cannot say which of six things it means. _Avoid_: "inbox" (a
   count, not a container — and the banned adjudication-queue synonym).
+
+## Scoring, ladders & rewards (#47, ADR 0015–0017)
+
+The layer that reads the log and gives it consequences. It mints **no new
+projection flavor**: a score is a counter, and everything here is composition over
+primitives that already existed.
+
+- **Score** — a counter used to keep a running judgement rather than a bare tally.
+  Not a distinct thing in the model: `by` is its weight, **Valence** its direction,
+  and multi-dimensional scoring is simply several counters (`obedience`,
+  `submission`, `service`), one rule's effects list moving whichever the event
+  bears on. _Avoid_: "points" for a punitive counter; a composite "the score" —
+  there are as many as the couple made, and collapsing them is a display choice,
+  never a stored one.
+- **Currency** — a **Score** that a **Reward item** is priced in and a
+  **Redemption** spends. The same counter read two ways; nothing marks a counter as
+  one. _Avoid_: "balance", "wallet".
+- **Rung** — a threshold on a counter, carried on the counter definition as
+  `{ at, agreement_ref }`: the *number* where the machine can read it, the
+  *consequence* as an **Agreement** where an agreed term belongs (ADR 0006), so a
+  couple cannot change what a demerit costs without it showing as a change to a
+  term. The pack ships none — shipping a consequence would be the app asserting one
+  nobody consented to. _Avoid_: "threshold" as the model word; a rung that carries
+  its own prose.
+- **Crossing** — passing a rung (or a **Price**) upward. A **recorded moment, not a
+  debt**: it writes a trace row, raises the content-free **Notification** count for
+  both members, and shows a banner for as long as the counter sits at or above the
+  rung — clearing when the counter drops by reset, acknowledgment, or decrement.
+  Nothing to dismiss and nobody owes anything, on the reasoning that gave an **Act**
+  an empty `awaiting` and a **Response** its gift-not-a-debt rule. Rungs and
+  distance render identically for **both** partners: §8's "no anxiety mechanics"
+  governs pressure the app invents, and concealing an agreed term's state from the
+  person it binds would make the consent record asymmetric. _Avoid_: "alert";
+  treating a crossing as closeable; downward crossings (only upward is a moment).
+- **Reward item** — a versioned definition holding a **Currency**, a **Price**, and
+  its terms; named by a redemption's citing `reward_ref` and so resolving at that
+  event's `occurred_at` (ADR 0017). Consent-corpus-grade: repricing or retiring
+  appends a version, raises the partner's count, and lands in **Consent history**,
+  because saving up is a trust property and a silent reprice makes the store
+  theatre. Carries a **subject** and a `counterpart` author scope (ADR 0010) — about
+  the sub, authored by the dom. _Avoid_: "reward" alone for the definition (a
+  reward is the thing received); modeling one as a rung, which fires on the way past
+  and so makes saving up impossible.
+- **Price** — what an item costs, stamped **onto the redemption event** by the
+  server from the version in force, never supplied by a client (ADR 0005's minting
+  discipline). A rule cannot read a price off a definition — that is computing — so
+  the decrement routes the stamped value as a **routed magnitude**. Raise the price
+  next month and last month's redemption still says what it actually cost.
+  _Avoid_: "cost" as a competing word; reading the price off the item at replay.
+- **Redemption** — the event that spends a **Currency** on a **Reward item**. Per
+  item, it either **awaits a grant** (the default) or is self-serve: a granted
+  redemption is adjudicated by the dom and the points leave the counter only when
+  the ruling lands, which is the `unset → set` transition #184 identified as the
+  only always-safe one, so a spend never needs reversing and a refusal costs
+  nothing. _Avoid_: "purchase"; "claim"; assuming every reward needs asking — a
+  reward that needs the dom present and one that does not are different things, and
+  the item says which.
 
 ## Journaling
 
@@ -479,8 +613,9 @@ consent-record view and the debugging view are the same screen. Lives in the dee
   reading `caused_by_rule` as a string sentinel — the cause is column-derived.
 - **Detail** — *what* changed, as a typed `TraceDetail` discriminated union (one
   `kind` per change: counter, anchor, timer_open/close/skipped, notify, near_miss,
-  auto_close, expire, streak_rollover, scheduled_reset, timer_command). Stored as
-  a JSON string in the `trace.detail` column; typed at the read model.
+  auto_close, expire, streak_rollover, scheduled_reset, timer_command, crossing,
+  waived, reversal_declined). Stored as a JSON string in the `trace.detail` column;
+  typed at the read model.
 - **Near-miss** — a rule that matched on type but did not fire because a condition
   key was unset or wrong. Recorded so pending-adjudication state is legible
   ("R12 didn't fire: permitted not set"). Surfaced only when waiting on a key the
@@ -488,7 +623,10 @@ consent-record view and the debugging view are the same screen. Lives in the dee
   ground — the mode was wrong — which no ruling can ever resolve, so it never
   enters `awaiting` and is surfaced only when it was the *sole* miss ("R26 didn't
   fire: no denial period was active"). Otherwise every act outside a mode would
-  file a row nobody asked for.
+  file a row nobody asked for. A **counter-value predicate** misses on the same
+  footing and follows the same rule. A **Waiver** is never a near-miss: the rule
+  matched and was overruled, and blurring the two would leave the ledger unable to
+  tell "this never applied to you" from "this applied and I let it go".
 
 The module owns the taxonomy end to end: pure **builders** the write side calls
 (one `writeTrace` sink in `CoupleDO` does the single INSERT), the `encodeDetail`
