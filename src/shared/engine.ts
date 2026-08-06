@@ -117,7 +117,7 @@ export interface RuleEventContext {
 	 */
 	active_timers: ReadonlySet<string>;
 	/**
-	 * What each counter held **when the engine acted**, for the score predicate
+	 * What each counter held **when the engine acted**, for the counter-value predicate
 	 * (ADR 0015). Resolved by the caller — the DO from its counter cache, the
 	 * client's confirm sheet from the counters it is shipped — so the engine reads
 	 * no storage and the preview and the DO agree by construction.
@@ -165,7 +165,7 @@ export interface RuleEventContext {
  *    qualifier (ADR 0003): structural — the subject is fixed at logging, so the
  *    rule can never fire on this event, and no adjudication is awaited.
  *    `state_mismatch` marks one on the ambient-state predicate (ADR 0011) or the
- *    score predicate (ADR 0015): no ruling on any key resolves either, so
+ *    counter-value predicate (ADR 0015): no ruling on any key resolves either, so
  *    neither is ever `awaiting`. One flag for both, because it names *why* the
  *    near-miss is unresolvable rather than which clause raised it — a rule that
  *    misses on both files one row saying both things.
@@ -205,39 +205,59 @@ export function matchRule(rule: Rule, ctx: RuleEventContext): MatchResult {
 			subject_mismatch: true,
 		};
 	}
-	// Metadata first, state second — the order the near-miss depends on. A state
-	// miss is only worth a trace row when it was the *sole* reason (ADR 0011,
-	// carried forward by ADR 0015), so a rule that also missed on metadata reports
-	// the metadata: that is the part a reader can act on. The converse would file
-	// "no denial period was active" against every routine event of the type.
+	// Metadata first, the caller-resolved predicates second — the order the
+	// near-miss depends on. A miss on either of those is only worth a trace row
+	// when it was the *sole* reason (ADR 0011, carried forward by ADR 0015), so a
+	// rule that also missed on metadata reports the metadata: that is the part a
+	// reader can act on. The converse would file "no denial period was active"
+	// against every routine event of the type.
 	const metadata = classifyMetadata(rule.id, rule.condition, ctx.metadata);
 	if (metadata.status !== "fired") return metadata;
-	return classifyState(rule.id, rule.condition, ctx);
+	// Both predicates in one row rather than one chained after the other: they
+	// raise the same fact ("the rule would have fired, but the world wasn't in the
+	// shape it asked for"), and a rule missing on both should say both rather than
+	// report the timer and go quiet about the counter.
+	const unmet = [
+		...unmetAmbientState(rule.condition, ctx),
+		...unmetCounterValues(rule.condition, ctx),
+	];
+	if (unmet.length === 0) return { status: "fired" };
+	// Never `awaiting`: no ruling on any metadata key will make a denial period
+	// have been running or make the counter have stood at 10, so promising the
+	// adjudication queue a resolution would be a lie.
+	return {
+		status: "near_miss",
+		reason: `${rule.id} didn't fire: ${unmet.join(", ")}`,
+		awaiting: [],
+		state_mismatch: true,
+	};
 }
 
 /**
- * Tests the two predicates over state the caller resolved — `timer_active`
- * (ADR 0011) and `counter_value` (ADR 0015) — against the open timer definitions
- * and the counter values it passed in.
- *
- * One function rather than two chained, because the near-miss they raise is the
- * same fact ("this rule would have fired, but the world wasn't in the shape it
- * asked for") and a rule missing on both should say so in one row rather than
- * report the timer and go quiet about the score. A miss on either is never
- * `awaiting`: no ruling on any metadata key will make a denial period have been
- * running or make the score have been 10, so promising the adjudication queue a
- * resolution would be a lie.
+ * The ambient-state predicate's unmet clauses (ADR 0011) — `timer_active`, read
+ * against the timer definitions the caller resolved as open.
  */
-function classifyState(
-	ruleId: string,
+function unmetAmbientState(
 	condition: RuleCondition,
 	ctx: RuleEventContext,
-): MatchResult {
+): string[] {
 	const unmet: string[] = [];
 	for (const [timer, wanted] of ambientClauses(condition)) {
 		if (ctx.active_timers.has(timer) === wanted) continue;
 		unmet.push(wanted ? `${timer} not active` : `${timer} active`);
 	}
+	return unmet;
+}
+
+/**
+ * The counter-value predicate's unmet clauses (ADR 0015) — read against the
+ * counter values the caller resolved.
+ */
+function unmetCounterValues(
+	condition: RuleCondition,
+	ctx: RuleEventContext,
+): string[] {
+	const unmet: string[] = [];
 	for (const [counter, clause] of counterClauses(condition)) {
 		const value = ctx.counter_values.get(counter);
 		// Unknown, not zero. A counter the caller didn't resolve — deleted since the
@@ -252,13 +272,7 @@ function classifyState(
 		if (satisfies(value, clause)) continue;
 		unmet.push(`${counter} is ${value}, needs ${describeComparison(clause)}`);
 	}
-	if (unmet.length === 0) return { status: "fired" };
-	return {
-		status: "near_miss",
-		reason: `${ruleId} didn't fire: ${unmet.join(", ")}`,
-		awaiting: [],
-		state_mismatch: true,
-	};
+	return unmet;
 }
 
 /** Compares a condition's metadata constraints against composite state. */

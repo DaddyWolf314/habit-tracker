@@ -612,10 +612,14 @@ consent-record view and the debugging view are the same screen. Lives in the dee
   `dom_command` (a dom-issued countdown assign/pause/resume/extend). _Avoid_:
   reading `caused_by_rule` as a string sentinel — the cause is column-derived.
 - **Detail** — *what* changed, as a typed `TraceDetail` discriminated union (one
-  `kind` per change: counter, anchor, timer_open/close/skipped, notify, near_miss,
-  auto_close, expire, streak_rollover, scheduled_reset, timer_command, crossing,
-  waived, reversal_declined). Stored as a JSON string in the `trace.detail` column;
-  typed at the read model.
+  `kind` per change: counter, counter_skipped, anchor, timer_open/close/skipped,
+  notify, near_miss, auto_close, expire, streak_rollover, scheduled_reset,
+  timer_command, crossing, waived, reversal_declined). Stored as a JSON string in
+  the `trace.detail` column; typed at the read model. `counter_skipped` is a
+  counter effect that routed no magnitude (ADR 0015) — its **routed magnitude**
+  key was absent or not whole. Neither a counter row with a zero delta (which
+  would claim the counter was written) nor a **near-miss** (which would claim the
+  rule never applied): the rule fired and one of its effects had nothing to move.
 - **Near-miss** — a rule that matched on type but did not fire because a condition
   key was unset or wrong. Recorded so pending-adjudication state is legible
   ("R12 didn't fire: permitted not set"). Surfaced only when waiting on a key the

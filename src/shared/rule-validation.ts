@@ -67,7 +67,7 @@ export function validateRule(
 		}
 	}
 
-	// The score predicate (ADR 0015) names counter *definitions*, checked against
+	// The counter-value predicate (ADR 0015) names counter *definitions*, checked against
 	// the same set an effect's counter target is — and refused for the same
 	// reason. An unknown counter never resolves to a value, so the clause would
 	// read as permanently unmet and hold the rule shut for ever, invisibly. The
@@ -117,20 +117,19 @@ function checkEffectTarget(
 	switch (effect.verb) {
 		case "increment_counter":
 		case "decrement_counter":
-			if (!ctx.counters.has(effect.counter)) {
-				return `effect targets unknown counter '${effect.counter}'`;
-			}
-			// A routed magnitude must name a field declared whole (ADR 0015). Beside
-			// the other routed keys because it is one: at runtime an absent key routes
-			// `undefined`, and a fractional one would drive the counter cache
-			// non-integer and break reads and export somewhere nobody is looking.
-			return checkRoutedKey("by_from", effect.by_from, type, ["number"], {
-				integer: true,
-			});
+			return (
+				checkCounterTarget(effect.counter, ctx) ??
+				// A routed magnitude must name a field declared whole (ADR 0015).
+				// Beside the other routed keys because it is one: at runtime an absent
+				// key routes `undefined`, and a fractional one would drive the counter
+				// cache non-integer and break reads and export somewhere nobody is
+				// looking.
+				checkRoutedKey("by_from", effect.by_from, type, ["number"], {
+					integer: true,
+				})
+			);
 		case "reset_counter":
-			return ctx.counters.has(effect.counter)
-				? null
-				: `effect targets unknown counter '${effect.counter}'`;
+			return checkCounterTarget(effect.counter, ctx);
 		case "reset_anchor":
 			return ctx.anchors.has(effect.anchor)
 				? null
@@ -168,6 +167,20 @@ function checkEffectTarget(
 		case "notify":
 			return null; // target is constrained by the schema enum.
 	}
+}
+
+/**
+ * Ensures an effect's counter target is one the couple actually has. Shared by
+ * the three counter verbs so the error reads the same whichever one names a
+ * counter that isn't there.
+ */
+function checkCounterTarget(
+	counter: string,
+	ctx: RuleValidationContext,
+): string | null {
+	return ctx.counters.has(counter)
+		? null
+		: `effect targets unknown counter '${counter}'`;
 }
 
 /**

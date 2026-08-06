@@ -47,6 +47,7 @@ import type {
 } from "#/shared/counters.ts";
 import {
 	countersEffectiveAt,
+	counterValuesOf,
 	sameCounterPolicy,
 	versionFromCounterDefinition,
 } from "#/shared/counters.ts";
@@ -2854,8 +2855,11 @@ export class CoupleDO extends DurableObject<Env> {
 			}
 		}
 		// The id is fixed by the path and never taken from the body; everything else
-		// is policy and travels whole (see {@link createCounter}).
-		const definition: CounterDefinition = { id: counterId, ...input };
+		// is policy and travels whole (see {@link createCounter}). The id goes
+		// *last* so the code says what the sentence above says: spreading `input`
+		// over it would leave the guarantee resting on the schema happening to omit
+		// `id` and zod happening to strip unknowns.
+		const definition: CounterDefinition = { ...input, id: counterId };
 		// Forward-only: the edit appends a version rather than rewriting the policy,
 		// so periods already folded keep the target they were folded against and a
 		// rebuild reproduces them instead of re-scoring under the new one (ADR 0013).
@@ -5227,7 +5231,7 @@ export class CoupleDO extends DurableObject<Env> {
 	 * replay walking the same sequence reproduces.
 	 */
 	private counterValues(): ReadonlyMap<string, number> {
-		return new Map(this.counterRows().map((row) => [row.id, row.value]));
+		return counterValuesOf(this.counterRows());
 	}
 
 	/**

@@ -220,7 +220,7 @@ describe("ambient-state and comparison clauses (ADR 0011)", () => {
 });
 
 /**
- * The score predicate in the couple's voice (ADR 0015). The confirm sheet and
+ * The counter-value predicate in the couple's voice (ADR 0015). The confirm sheet and
  * the chain view share this phrasing, so the words here are the words a sub
  * reads when a rule fires on the strength of their score.
  */

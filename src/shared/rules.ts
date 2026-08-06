@@ -60,8 +60,11 @@ export const ruleConditionSchema = z.object({
 	/** Constraints on composite metadata. Empty ⇒ matches on type alone. */
 	metadata: z.record(z.string(), conditionClauseSchema).default({}),
 	/**
-	 * Ambient-state predicate (ADR 0011) — the one state query the language
-	 * admits, and the extension #48 reserved. Maps a **timer definition** to
+	 * Ambient-state predicate (ADR 0011) — the first of the two state queries the
+	 * language admits, and the extension #48 reserved. (The second is
+	 * {@link ruleConditionSchema.counter_value}, admitted by ADR 0015; ADR 0011's
+	 * other refusals — elapsed time, log lookback, a timer's remaining time — all
+	 * stand.) Maps a **timer definition** to
 	 * whether an instance of it must be open: `{ denial_period: true }` matches
 	 * while a denial is running, `{ session_stopwatch: false }` only outside a
 	 * session. Empty ⇒ matches regardless of ambient state.
@@ -83,7 +86,7 @@ export const ruleConditionSchema = z.object({
 	 */
 	timer_active: z.record(z.string(), z.boolean()).optional(),
 	/**
-	 * The score predicate (ADR 0015) — `{ demerits: { op: "gte", value: 10 } }`.
+	 * The counter-value predicate (ADR 0015) — `{ demerits: { op: "gte", value: 10 } }`.
 	 * Maps a **counter definition** to a {@link comparisonClauseSchema} over its
 	 * value, so the language gains a map rather than an expression grammar: the
 	 * same clause ADR 0011 admitted for metadata, pointed at a projection.
@@ -130,7 +133,7 @@ export function ambientClauses(condition: RuleCondition): [string, boolean][] {
 }
 
 /**
- * A condition's score clauses, as entries (ADR 0015) — the `counter_value`
+ * A condition's counter-value clauses, as entries (ADR 0015) — the
  * counterpart to {@link ambientClauses}, and here for the same reason: the
  * engine, the validator, and the describer must not drift on what an absent map
  * means.

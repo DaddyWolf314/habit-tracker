@@ -209,6 +209,27 @@ export function countersEffectiveAt(
 	return resolved;
 }
 
+/**
+ * The counter values a rule's `counter_value` clause reads (ADR 0015), keyed by
+ * id — the resolution seam for the counter-value predicate, and the counterpart
+ * to `activeTimerDefinitionsAt` for the ambient-state one.
+ *
+ * Shared for the reason the ADR gives: the dom's confirm-sheet preview and the DO
+ * must agree "by construction". They read from different shapes — the client from
+ * a `Counter`, the DO from its `counters` row — so the parameter is the pair both
+ * carry rather than either whole type, and neither surface gets to build the map
+ * its own way.
+ *
+ * The *clock* is still the caller's: this folds whatever values it is handed, and
+ * it is the caller's job to hand over the ones in force when the engine acts (see
+ * {@link RuleEventContext.counter_values}).
+ */
+export function counterValuesOf(
+	counters: readonly { id: string; value: number }[],
+): ReadonlyMap<string, number> {
+	return new Map(counters.map((counter) => [counter.id, counter.value]));
+}
+
 /** Payload for a direct +N / −N adjustment (the "+1 tap" sugar). */
 export const adjustCounterInputSchema = z.object({
 	delta: z.number().int(),

@@ -6,7 +6,7 @@ import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, queueFor } from "#/shared/adjudication.ts";
 import { type WaivedEffect, waivedEffectKey } from "#/shared/amendments.ts";
 import { type AnchorView, elapsedDaysText } from "#/shared/anchors.ts";
-import type { Counter } from "#/shared/counters.ts";
+import { type Counter, counterValuesOf } from "#/shared/counters.ts";
 import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
 import {
 	awaitingKeysFor,
@@ -82,10 +82,7 @@ export function QueuePanel({
 	// same live counters — a `counter_value` clause is evaluated at *ruling* time,
 	// not at the target event's moment, so unlike the spans above there is nothing
 	// per-event to ask.
-	const counterValues = useMemo(
-		() => new Map(counters.map((c) => [c.id, c.value] as const)),
-		[counters],
-	);
+	const counterValues = useMemo(() => counterValuesOf(counters), [counters]);
 
 	if (queue.length === 0) return null;
 

@@ -633,12 +633,12 @@ describe("comparison clauses (ADR 0011)", () => {
 });
 
 /**
- * The score predicate (ADR 0015). The clause mirrors `timer_active` down to the
+ * The counter-value predicate (ADR 0015). The clause mirrors `timer_active` down to the
  * resolution seam, so these mirror the ambient-state cases above — with one
  * addition the timer has no counterpart for: a counter the caller did not
  * resolve is *unknown*, and unknown is not zero.
  */
-describe("the score predicate (ADR 0015)", () => {
+describe("the counter-value predicate (ADR 0015)", () => {
 	const escalate = rule({
 		id: "R30",
 		condition: {

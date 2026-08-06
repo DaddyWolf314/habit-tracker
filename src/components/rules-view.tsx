@@ -1012,7 +1012,7 @@ function RuleEditor({
 				</fieldset>
 			)}
 
-			{/* The score predicate (ADR 0015), beside the timers because it is the
+			{/* The counter-value predicate (ADR 0015), beside the timers because it is the
 			    same kind of clause — a fact about the moment, not about the event —
 			    and renders into the same trailing "while …" sentence. Offered only
 			    once counters exist, so the group cannot be opened onto an empty

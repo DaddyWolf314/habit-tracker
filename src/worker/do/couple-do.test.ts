@@ -2000,7 +2000,7 @@ describe("waiving an effect (ADR 0016)", () => {
 });
 
 /**
- * The score predicate and the routed magnitude at the DO boundary (ADR 0015).
+ * The counter-value predicate and the routed magnitude at the DO boundary (ADR 0015).
  *
  * The engine tests pin the fold; these pin the two things only the DO can be
  * wrong about — *which* value it hands the engine, and whether a rebuild hands

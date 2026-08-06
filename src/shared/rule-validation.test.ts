@@ -398,7 +398,7 @@ describe("ambient-state and comparison clauses (ADR 0011)", () => {
 	});
 });
 
-/** The score predicate and the routed magnitude (ADR 0015). */
+/** The counter-value predicate and the routed magnitude (ADR 0015). */
 describe("counter_value and by_from", () => {
 	function failure(r: Rule): string {
 		const result = validateRule(r, ctx);

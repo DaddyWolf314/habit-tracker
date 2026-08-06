@@ -88,7 +88,7 @@ function ambientText(condition: RuleCondition): string {
 				? `a ${humanize(timer)} is running`
 				: `no ${humanize(timer)} is running`,
 		),
-		// The score predicate joins the same trailing clause (ADR 0015) rather than
+		// The counter-value predicate joins the same trailing clause (ADR 0015) rather than
 		// getting one of its own: it is a fact about the moment, exactly as a running
 		// timer is, and a sentence that said "while a denial period is running, while
 		// demerits are 10 or more" would invent a distinction the language does not
