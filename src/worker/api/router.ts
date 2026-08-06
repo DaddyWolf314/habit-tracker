@@ -317,6 +317,14 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					.then((counters) => json({ counters })),
 			);
 		}
+		// Clears the crossing count, not the banner (ADR 0015) — the banner is
+		// derived from where the counter sits, and a crossing is not an item anyone
+		// closes. Explicit POST, like every other acknowledgment here.
+		if (path === "/api/counters/crossings/seen" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.ackCrossings(auth.identityHash).then(() => json({ ok: true })),
+			);
+		}
 		if (path === "/api/counters/trace" && method === "GET") {
 			const counterId = url.searchParams.get("counter_id") ?? "";
 			return await withAuth(request, env, ({ auth, stub }) =>

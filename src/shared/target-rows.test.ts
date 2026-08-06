@@ -17,6 +17,7 @@ function counter(partial: Partial<Counter> & Pick<Counter, "id">): Counter {
 		valence: "neutral",
 		target_direction: "floor",
 		reset: "never",
+		rungs: [],
 		modify_permission: ["dom", "sub", "switch"],
 		value: 0,
 		updated_at: null,

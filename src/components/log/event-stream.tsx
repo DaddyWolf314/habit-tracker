@@ -317,7 +317,10 @@ function EventRow({
 								<li>No effects — this event touched no projections.</li>
 							)}
 							{trace?.map((row) => {
-								const line = describeTraceRow(row);
+								// The corpus rides along so a crossing names the term it cites
+								// rather than its id (ADR 0015) — the same corpus the event's own
+								// citing refs render through, two lines up.
+								const line = describeTraceRow(row, { agreements, now });
 								const isNearMiss = line.tone === "near_miss";
 								// A declined reversal reads muted like a near-miss — both record
 								// something that did not happen — but keeps the effect bullet,

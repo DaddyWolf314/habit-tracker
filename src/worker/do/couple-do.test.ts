@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rungsReached } from "#/shared/counters.ts";
 import {
 	type ActiveCouple,
 	activeCouple,
@@ -962,6 +963,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 			target_direction: "floor",
 			daily_target: 5,
 			reset: "daily",
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 
@@ -985,6 +987,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 			target_direction: "floor",
 			daily_target: 5,
 			reset: "daily",
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 
@@ -1009,6 +1012,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 			target_direction: "floor",
 			daily_target: 1,
 			reset: "daily",
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 		const streak = await couple.do.createCounter(DOM, {
@@ -1017,6 +1021,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 			target_direction: "floor",
 			reset: "never",
 			streak: { counter: "late_arrival", period: "daily" },
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 
@@ -2026,6 +2031,7 @@ describe("counter_value at the DO boundary (ADR 0015)", () => {
 			valence: "negative",
 			target_direction: "floor",
 			reset: "never",
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 		await couple.do.createRule(DOM, {
@@ -2136,6 +2142,7 @@ describe("counter_value at the DO boundary (ADR 0015)", () => {
 				valence: "negative",
 				target_direction: "floor",
 				reset: "never",
+				rungs: [],
 				modify_permission: ["dom", "sub", "switch"],
 			});
 			const tally = {
@@ -2326,6 +2333,7 @@ describe("a cap target folds a clean streak", () => {
 			daily_target: 0,
 			target_direction: "cap",
 			reset: "daily",
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 		await couple.do.createCounter(DOM, {
@@ -2334,6 +2342,7 @@ describe("a cap target folds a clean streak", () => {
 			target_direction: "floor",
 			reset: "never",
 			streak: { counter: "infractions_today", period: "daily" },
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
 		await couple.do.createRule(DOM, {
@@ -2389,5 +2398,348 @@ describe("a cap target folds a clean streak", () => {
 		// boundary (ADR 0013), so a replay scores each past day the way the couple
 		// actually lived it.
 		expect(await counters(couple)).toEqual(live);
+	});
+});
+
+/**
+ * Rungs, and the crossings they announce (#193, ADR 0015).
+ *
+ * The property under test is that a crossing is a **recorded moment** resolved on
+ * two clocks that already existed: the ladder off the counter version in force at
+ * the move's log-time, the cited term off the causing event's `occurred_at`. Get
+ * either wrong and the failure is silent and retroactive — a ladder edited today
+ * rewriting what last week announced — which is the exact failure ADR 0013 gave
+ * counters a version history to prevent.
+ */
+describe("rung crossings", () => {
+	/** A term to cite, authored by the dom about the sub (`counterpart` scope). */
+	async function term(couple: ActiveCouple, name: string): Promise<string> {
+		const agreement = await couple.do.createAgreement(DOM, {
+			kind: "protocol",
+			name,
+			text: `What ${name} costs.`,
+		});
+		return agreement.id;
+	}
+
+	/** Puts a ladder on an existing pack counter, leaving its policy otherwise as-is. */
+	async function setRungs(
+		couple: ActiveCouple,
+		counterId: string,
+		rungs: { at: number; agreement_ref: string }[],
+	): Promise<void> {
+		const existing = (await couple.do.listCounters(DOM)).find(
+			(counter) => counter.id === counterId,
+		);
+		if (!existing) throw new Error(`no counter ${counterId}`);
+		const {
+			id: _id,
+			value: _value,
+			updated_at: _updatedAt,
+			...policy
+		} = existing;
+		await couple.do.updateCounter(DOM, counterId, { ...policy, rungs });
+	}
+
+	/** Every crossing row in the ledger, oldest first. */
+	function crossings(couple: ActiveCouple) {
+		return (
+			couple.db
+				.prepare(`SELECT at, projection, detail FROM trace ORDER BY id ASC`)
+				.all() as { at: number; projection: string; detail: string }[]
+		)
+			.map((row) => ({
+				at: row.at,
+				projection: row.projection,
+				detail: JSON.parse(row.detail) as Record<string, unknown>,
+			}))
+			.filter((row) => row.detail.kind === "crossing");
+	}
+
+	/** `demerits` with a rung at 10, and the term that rung cites. */
+	async function ladder(): Promise<{
+		couple: ActiveCouple;
+		agreementId: string;
+	}> {
+		const couple = await activeCouple();
+		const agreementId = await term(couple, "Ten demerits");
+		await setRungs(couple, "demerits", [
+			{ at: 10, agreement_ref: agreementId },
+		]);
+		return { couple, agreementId };
+	}
+
+	it("files a row on the way up, naming the rung and the term it cites", async () => {
+		const { couple, agreementId } = await ladder();
+		advance(HOUR);
+		await couple.do.adjustCounter(DOM, "demerits", 9);
+		expect(crossings(couple)).toHaveLength(0);
+
+		await couple.do.adjustCounter(DOM, "demerits", 1);
+		const filed = crossings(couple);
+		expect(filed).toHaveLength(1);
+		expect(filed[0].projection).toBe("counter:demerits");
+		expect(filed[0].detail).toMatchObject({
+			kind: "crossing",
+			rung: 10,
+			agreement_ref: agreementId,
+			from: 9,
+			to: 10,
+		});
+	});
+
+	it("files two rows for 10, a reset, and 10 again", async () => {
+		// The issue's headline case. Landing exactly on the rung crosses it, and
+		// arriving there a second time is a second moment — the row is history, not
+		// a flag that has already been raised.
+		const { couple } = await ladder();
+		await couple.do.adjustCounter(DOM, "demerits", 10);
+		advance(HOUR);
+		await couple.do.resetCounter(DOM, "demerits");
+		advance(HOUR);
+		await couple.do.adjustCounter(DOM, "demerits", 10);
+
+		const filed = crossings(couple);
+		expect(filed).toHaveLength(2);
+		expect(filed.map((row) => row.detail.to)).toEqual([10, 10]);
+	});
+
+	it("announces nothing going down, or standing still above the rung", async () => {
+		const { couple } = await ladder();
+		await couple.do.adjustCounter(DOM, "demerits", 12);
+		expect(crossings(couple)).toHaveLength(1);
+
+		// Down through the rung: not a moment. The banner clears because the value
+		// says so; the row above stays because it happened.
+		await couple.do.adjustCounter(DOM, "demerits", -5);
+		// And back up from 7 to 9 — still short of it.
+		await couple.do.adjustCounter(DOM, "demerits", 2);
+		expect(crossings(couple)).toHaveLength(1);
+	});
+
+	it("files one row per rung a single move passes", async () => {
+		const couple = await activeCouple();
+		const three = await term(couple, "Three");
+		const five = await term(couple, "Five");
+		await setRungs(couple, "demerits", [
+			{ at: 3, agreement_ref: three },
+			{ at: 5, agreement_ref: five },
+		]);
+		await couple.do.adjustCounter(DOM, "demerits", 6);
+
+		// Each names a different term the couple agreed, so neither can stand in
+		// for the other.
+		expect(crossings(couple).map((row) => row.detail.rung)).toEqual([3, 5]);
+	});
+
+	it("announces a crossing a rule's effect caused", async () => {
+		// The other write path: R2 fires `demerits +1` on a late ritual at append.
+		const { couple } = await ladder();
+		await couple.do.adjustCounter(DOM, "demerits", 9);
+		advance(HOUR);
+		const event = await couple.do.logEvent(SUB, {
+			type: "ritual_completed",
+			metadata: { late: true },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+
+		const filed = crossings(couple);
+		expect(filed).toHaveLength(1);
+		// The term resolves at the *event's* `occurred_at`, not the row's log-time:
+		// two clocks, and the row carries the one the corpus is read on (ADR 0006).
+		expect(filed[0].detail.occurred_at).toBe(event.occurred_at);
+	});
+
+	it("does not retroactively announce a crossing that predates the rung", async () => {
+		// A ladder written today says nothing about last week. The version in force
+		// at each move's log-time is the whole mechanism, and a rebuild is where a
+		// mistake here would surface — it is the only thing that re-derives the
+		// ledger from scratch.
+		const couple = await activeCouple();
+		await couple.do.adjustCounter(DOM, "demerits", 10);
+		expect(crossings(couple)).toHaveLength(0);
+
+		advance(7 * DAY);
+		const agreementId = await term(couple, "Ten demerits");
+		await setRungs(couple, "demerits", [
+			{ at: 10, agreement_ref: agreementId },
+		]);
+		await couple.do.rebuildCounters(DOM);
+
+		expect(crossings(couple)).toHaveLength(0);
+	});
+
+	it("resolves a rung on a reset: never counter, which has no boundary", async () => {
+		// The case that made ADR 0015 amend ADR 0013's scope. `infractions_lifetime`
+		// never rolls over, so the boundary clock has no moment to offer it at all —
+		// only the move's own log-time can resolve the ladder.
+		const couple = await activeCouple();
+		const agreementId = await term(couple, "Fifth infraction");
+		await setRungs(couple, "infractions_lifetime", [
+			{ at: 5, agreement_ref: agreementId },
+		]);
+		for (let n = 0; n < 5; n += 1) {
+			advance(HOUR);
+			await couple.do.logEvent(SUB, {
+				type: "infraction",
+				metadata: { severity: "minor", self_reported: true },
+				subject: couple.subId,
+				visibility: "shared",
+			});
+		}
+
+		const filed = crossings(couple).filter(
+			(row) => row.projection === "counter:infractions_lifetime",
+		);
+		expect(filed).toHaveLength(1);
+		expect(filed[0].detail).toMatchObject({ rung: 5, to: 5 });
+	});
+
+	it("keeps the row when a reversal drops the counter back below", async () => {
+		// ADR 0016 meets ADR 0015: the recorded crossing stays, because it happened;
+		// the standing state is false, because the counter is no longer there.
+		const { couple } = await ladder();
+		await couple.do.adjustCounter(DOM, "demerits", 9);
+		advance(HOUR);
+		const event = await couple.do.logEvent(SUB, {
+			type: "ritual_completed",
+			metadata: { late: true },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		expect((await counters(couple)).demerits).toBe(10);
+		expect(crossings(couple)).toHaveLength(1);
+
+		advance(HOUR);
+		await couple.do.amend(DOM, {
+			kind: "waiver",
+			target_event_id: event.id,
+			waived: [{ rule_id: "R2", effect_index: 0 }],
+		});
+
+		expect((await counters(couple)).demerits).toBe(9);
+		// Nothing re-fires on a reversal, in either direction: the compensating move
+		// applies an op and evaluates nothing.
+		expect(crossings(couple)).toHaveLength(1);
+		const demerits = (await couple.do.listCounters(DOM)).find(
+			(counter) => counter.id === "demerits",
+		);
+		if (!demerits) throw new Error("no demerits counter");
+		expect(rungsReached(demerits.rungs, demerits.value)).toEqual([]);
+	});
+
+	it("rebuilds the crossing rows exactly", async () => {
+		const { couple } = await ladder();
+		await couple.do.adjustCounter(DOM, "demerits", 4);
+		advance(HOUR);
+		await couple.do.logEvent(SUB, {
+			type: "ritual_completed",
+			metadata: { late: true },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		advance(HOUR);
+		await couple.do.adjustCounter(DOM, "demerits", 6);
+		advance(HOUR);
+		await couple.do.resetCounter(DOM, "demerits");
+		advance(HOUR);
+		await couple.do.adjustCounter(DOM, "demerits", 11);
+		const live = crossings(couple);
+		expect(live).toHaveLength(2);
+
+		await couple.do.rebuildCounters(DOM);
+
+		// Same rows, same stamps, same rungs — the replay resolves the ladder off
+		// the log-time it is already walking, so it cannot drift.
+		expect(crossings(couple)).toEqual(live);
+	});
+
+	it("counts a crossing for both members until each looks", async () => {
+		const { couple } = await ladder();
+		await couple.do.adjustCounter(DOM, "demerits", 10);
+
+		// Both, unfiltered by actor — the dom moved the counter and is still told,
+		// because a ladder binds the pair (ADR 0015).
+		const before = await couple.do.notificationCount(DOM);
+		const subBefore = await couple.do.notificationCount(SUB);
+		expect(before.unread).toBeGreaterThan(0);
+		expect(subBefore.unread).toBeGreaterThan(0);
+
+		advance(HOUR);
+		await couple.do.ackCrossings(DOM);
+		const after = await couple.do.notificationCount(DOM);
+		expect(after.unread).toBe(before.unread - 1);
+		// One member looking does not clear the other's.
+		expect((await couple.do.notificationCount(SUB)).unread).toBe(
+			subBefore.unread,
+		);
+	});
+
+	it("announces a streak crossing the rollover fold caused", async () => {
+		// The third write path, and the one the boundary clock actually serves: a
+		// streak climbs at a rollover, so the fold is where it crosses. The ladder is
+		// read off the policy already resolved for that boundary, which is the same
+		// moment the move is stamped with.
+		const couple = await activeCouple();
+		const agreementId = await term(couple, "Three days running");
+		await setRungs(couple, "ritual_streak_days", [
+			{ at: 3, agreement_ref: agreementId },
+		]);
+
+		for (let day = 0; day < 3; day += 1) {
+			await couple.do.logEvent(SUB, {
+				type: "ritual_completed",
+				metadata: {},
+				subject: couple.subId,
+				visibility: "shared",
+			});
+			await advanceFiringAlarms(couple, DAY);
+		}
+		expect((await counters(couple)).ritual_streak_days).toBe(3);
+
+		const filed = crossings(couple).filter(
+			(row) => row.projection === "counter:ritual_streak_days",
+		);
+		expect(filed).toHaveLength(1);
+		// A system job has no causing event, so the moment the term is read against
+		// is the boundary itself — the same stamp the fold carries.
+		expect(filed[0].detail).toMatchObject({ rung: 3, from: 2, to: 3 });
+		expect(filed[0].detail.occurred_at).toBe(filed[0].at);
+
+		// And a period reset, which only ever moves a counter down, announces nothing.
+		expect(
+			crossings(couple).filter(
+				(row) => row.projection === "counter:rituals_completed_today",
+			),
+		).toEqual([]);
+	});
+
+	it("announces nothing when a reset climbs back to zero from below", () => {
+		// A counter has no floor (`applyCounterEvent` is `value + delta`), so a reset
+		// from −3 is an *upward* move — and a reset is a clearing, never a crossing.
+		// The scheduled reset at a rollover is silent by construction; the direct one
+		// has to say so, or the same act announces or doesn't depending on which
+		// clock cleared the counter.
+		return (async () => {
+			const couple = await activeCouple();
+			const agreementId = await term(couple, "Back to zero");
+			await setRungs(couple, "demerits", [
+				{ at: 0, agreement_ref: agreementId },
+			]);
+			await couple.do.adjustCounter(DOM, "demerits", -3);
+			advance(HOUR);
+			await couple.do.resetCounter(DOM, "demerits");
+
+			expect((await counters(couple)).demerits).toBe(0);
+			expect(crossings(couple)).toEqual([]);
+		})();
+	});
+
+	it("refuses a rung citing an agreement the couple doesn't hold", async () => {
+		const couple = await activeCouple();
+		await expect(
+			setRungs(couple, "demerits", [{ at: 10, agreement_ref: "ag_nope" }]),
+		).rejects.toThrow(/doesn't hold/);
 	});
 });

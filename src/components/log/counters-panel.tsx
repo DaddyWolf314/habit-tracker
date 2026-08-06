@@ -17,13 +17,19 @@ import {
 	resetCounter,
 	updateCounter,
 } from "#/lib/api.ts";
+import {
+	agreementEffectiveAt,
+	agreementsInForce,
+	type VersionedAgreement,
+} from "#/shared/agreements.ts";
 import type {
 	Counter,
 	CounterReset,
+	CounterRung,
 	CreateCounterBody,
 	TargetDirection,
 } from "#/shared/counters.ts";
-import type { Valence } from "#/shared/roles.ts";
+import type { Role, Valence } from "#/shared/roles.ts";
 import type { CounterTrace } from "#/shared/trace.ts";
 import { describeTraceRow, formatTime } from "./formatting.ts";
 
@@ -60,6 +66,25 @@ const DIRECTION_OPTIONS: { value: TargetDirection; label: string }[] = [
 
 type CounterKind = "tally" | "streak";
 
+/** One rung mid-edit: the threshold as typed, so a cleared field stays cleared. */
+type RungDraft = { at: string; agreement_ref: string };
+
+/**
+ * The drafts as a ladder, or null if any row is half-filled. Both halves are
+ * required because a rung is both (ADR 0015): the number is what the machine
+ * reads, and the Agreement is what the couple agreed it costs.
+ */
+function parseRungs(drafts: RungDraft[]): CounterRung[] | null {
+	const rungs: CounterRung[] = [];
+	for (const draft of drafts) {
+		const at = Number(draft.at);
+		if (draft.at.trim() === "" || !Number.isInteger(at)) return null;
+		if (!draft.agreement_ref) return null;
+		rungs.push({ at, agreement_ref: draft.agreement_ref });
+	}
+	return rungs;
+}
+
 /**
  * Parses a target field: a non-negative integer, or undefined when blank/invalid.
  *
@@ -83,7 +108,10 @@ function describeCounter(
 	if (counter.streak) {
 		const target =
 			nameById.get(counter.streak.counter) ?? counter.streak.counter;
-		return `${counter.streak.period} streak of ${target}`;
+		return withRungs(
+			[`${counter.streak.period} streak of ${target}`],
+			counter,
+		).join(" · ");
 	}
 	const parts = [
 		counter.reset === "never" ? "lifetime" : `resets ${counter.reset}`,
@@ -96,7 +124,21 @@ function describeCounter(
 		parts.push(`daily target ${aim} ${counter.daily_target}`);
 	if (counter.weekly_target != null)
 		parts.push(`weekly target ${aim} ${counter.weekly_target}`);
-	return parts.join(" · ");
+	return withRungs(parts, counter).join(" · ");
+}
+
+/**
+ * Appends the ladder to a counter's summary line (ADR 0015) — the numbers only.
+ * What each rung *means* is a term in the corpus, and a summary row is not where
+ * a couple reads their terms; the banner on Today is.
+ */
+function withRungs(parts: string[], counter: Counter): string[] {
+	if (counter.rungs.length === 0) return parts;
+	const ats = [...counter.rungs]
+		.sort((a, b) => a.at - b.at)
+		.map((rung) => rung.at)
+		.join(", ");
+	return [...parts, `rungs at ${ats}`];
 }
 
 /**
@@ -108,9 +150,14 @@ function describeCounter(
  */
 export function CountersPanel({
 	counters,
+	agreements,
+	selfRole,
 	onChange,
 }: {
 	counters: Counter[];
+	/** The corpus a rung cites for what crossing it means (ADR 0015, ADR 0006). */
+	agreements: VersionedAgreement[];
+	selfRole: Role | null;
 	onChange: () => void;
 }) {
 	const [busy, setBusy] = useState<string | null>(null);
@@ -144,6 +191,13 @@ export function CountersPanel({
 	const [direction, setDirection] = useState<TargetDirection>("floor");
 	const [streakCounter, setStreakCounter] = useState("");
 	const [streakPeriod, setStreakPeriod] = useState<"daily" | "weekly">("daily");
+	// The ladder under edit, as **drafts** — the threshold is held as the raw
+	// string so clearing the field reads as empty rather than snapping to 0, and
+	// it is parsed once on submit (`parseRungs`). Seeded from the counter on edit
+	// and submitted whole even when the editor below is hidden, so a sub saving a
+	// name change cannot silently strip rungs they are not offered the controls
+	// for — the same carry-through `modify_permission` gets.
+	const [rungs, setRungs] = useState<RungDraft[]>([]);
 
 	async function run(id: string, fn: () => Promise<unknown>) {
 		setBusy(id);
@@ -168,6 +222,7 @@ export function CountersPanel({
 		setDirection("floor");
 		setStreakCounter("");
 		setStreakPeriod("daily");
+		setRungs([]);
 		setCreating(false);
 		setEditing(null);
 	}
@@ -198,6 +253,14 @@ export function CountersPanel({
 			setStreakCounter("");
 			setStreakPeriod("daily");
 		}
+		// Outside the kind branch: a streak climbs, so a ladder on one ("thirty
+		// clean days") is as ordinary as a ladder on a tally.
+		setRungs(
+			counter.rungs.map((rung) => ({
+				at: String(rung.at),
+				agreement_ref: rung.agreement_ref,
+			})),
+		);
 		setConfirming(null);
 		setError(null);
 		setCreating(true);
@@ -205,7 +268,19 @@ export function CountersPanel({
 
 	async function handleSubmit() {
 		if (!name.trim()) return;
-		const body: CreateCounterBody = { name: name.trim(), valence };
+		const ladder = parseRungs(rungs);
+		if (ladder === null) {
+			// A rung is a whole number *and* a term. Half of one announces a crossing
+			// with no consequence attached, which the server refuses too — saying it
+			// here saves the round trip and keeps the half-filled row on screen.
+			setError("Every rung needs a whole number and an agreement.");
+			return;
+		}
+		const body: CreateCounterBody = {
+			name: name.trim(),
+			valence,
+			rungs: ladder,
+		};
 		if (kind === "streak") {
 			if (!streakCounter) {
 				setError("Pick a counter for the streak to track.");
@@ -251,6 +326,8 @@ export function CountersPanel({
 
 	const nameById = new Map(counters.map((c) => [c.id, c.name]));
 
+	const canAuthorRungs = selfRole === "dom" || selfRole === "switch";
+
 	const valenceTint: Record<string, string> = {
 		positive: "text-emerald-600",
 		negative: "text-rose-600",
@@ -280,6 +357,14 @@ export function CountersPanel({
 				</Button>
 			</div>
 
+			{/* Every picker in this form sits at the `h-11` tap-target floor (#147),
+			    the same height as the `Input`s beside them — which is what CLAUDE.md
+			    means by a field and the control next to it lining up "by
+			    construction". They were `size="sm"` until #193: not because any row
+			    here cannot spare the height, which is the only reason to go under the
+			    floor, but because the first one was written that way and each new one
+			    copied it. The row buttons below keep `sm`, deliberately — a dense
+			    list row of secondary actions is exactly what that size is for. */}
 			{creating && (
 				<div className="mt-3 space-y-2">
 					<Input
@@ -296,7 +381,6 @@ export function CountersPanel({
 								onValueChange={(v) => setKind(v as CounterKind)}
 							>
 								<SelectTrigger
-									size="sm"
 									id={`${ids}-kind`}
 									aria-labelledby={`${ids}-kind-label ${ids}-kind`}
 									className="w-44"
@@ -316,7 +400,6 @@ export function CountersPanel({
 								onValueChange={(v) => setValence(v as Valence)}
 							>
 								<SelectTrigger
-									size="sm"
 									id={`${ids}-valence`}
 									aria-labelledby={`${ids}-valence-label ${ids}-valence`}
 									className="w-44"
@@ -343,7 +426,6 @@ export function CountersPanel({
 									onValueChange={(v) => setReset(v as CounterReset)}
 								>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-reset`}
 										aria-labelledby={`${ids}-reset-label ${ids}-reset`}
 										className="w-44"
@@ -393,7 +475,6 @@ export function CountersPanel({
 									onValueChange={(v) => setDirection(v as TargetDirection)}
 								>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-direction`}
 										aria-labelledby={`${ids}-direction-label ${ids}-direction`}
 										className="w-44"
@@ -416,7 +497,6 @@ export function CountersPanel({
 								<span id={`${ids}-tracks-label`}>Tracks</span>
 								<Select value={streakCounter} onValueChange={setStreakCounter}>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-tracks`}
 										aria-labelledby={`${ids}-tracks-label ${ids}-tracks`}
 										className="w-56"
@@ -448,7 +528,6 @@ export function CountersPanel({
 									}}
 								>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-period`}
 										aria-labelledby={`${ids}-period-label ${ids}-period`}
 										className="w-32"
@@ -475,6 +554,21 @@ export function CountersPanel({
 							by staying under it, which is how a streak counts clean{" "}
 							{streakPeriod === "daily" ? "days" : "weeks"}.
 						</p>
+					)}
+
+					{/* Authoring is dom/switch, like rule authoring and for the same
+					    reason: a rung says what a counter costs. Reading is not gated —
+					    the banner on Today shows both partners the same ladder (ADR
+					    0015) — and a hidden editor still submits the rungs it was
+					    seeded with, so nothing is stripped by the partner who cannot
+					    edit it. */}
+					{canAuthorRungs && (
+						<RungEditor
+							rungs={rungs}
+							agreements={agreements}
+							idPrefix={ids}
+							onChange={setRungs}
+						/>
 					)}
 
 					<Button
@@ -607,6 +701,7 @@ export function CountersPanel({
 			{openTrace && (
 				<CounterTraceSheet
 					trace={openTrace}
+					agreements={agreements}
 					onClose={() => setOpenTrace(null)}
 				/>
 			)}
@@ -614,14 +709,130 @@ export function CountersPanel({
 	);
 }
 
+/**
+ * The ladder editor (ADR 0015): each row a threshold and the term the couple
+ * agreed it costs.
+ *
+ * The consequence is picked, never typed. It lives in the consent corpus so that
+ * changing what a demerit costs shows up as a change to a *term* — versioned,
+ * counted in the partner's badge, and written into consent history — which a
+ * prose field on the counter would quietly route around (ADR 0006).
+ *
+ * Only terms **in force** are offered, for the reason `ref-candidates.ts` gives:
+ * a retired term still resolves for every past crossing that cited it, and still
+ * renders on a standing rung, but it is not something to newly bind yourself to.
+ */
+function RungEditor({
+	rungs,
+	agreements,
+	idPrefix,
+	onChange,
+}: {
+	rungs: RungDraft[];
+	agreements: VersionedAgreement[];
+	idPrefix: string;
+	onChange: (rungs: RungDraft[]) => void;
+}) {
+	const now = Date.now();
+	const options = agreementsInForce(agreements, now).map((agreement) => ({
+		id: agreement.id,
+		name: agreementEffectiveAt(agreement, now)?.name ?? agreement.id,
+	}));
+
+	function update(index: number, patch: Partial<RungDraft>) {
+		onChange(rungs.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+	}
+
+	return (
+		<div className="space-y-2 rounded-md border border-dashed p-3">
+			<div className="flex items-center justify-between gap-2">
+				<span className="text-xs font-medium">Rungs</span>
+				<Button
+					variant="ghost"
+					size="xs"
+					disabled={options.length === 0}
+					onClick={() => onChange([...rungs, { at: "", agreement_ref: "" }])}
+				>
+					Add rung
+				</Button>
+			</div>
+			<p className="text-xs text-muted-foreground">
+				Crossing one is announced to you both and shows on Today while the
+				counter stays at or above it. Nothing fires — what happens next is
+				whatever you agreed, and any rule you wrote to read the number.
+			</p>
+			{options.length === 0 && (
+				<p className="text-xs text-muted-foreground">
+					Write an agreement first — a rung says which one it costs.
+				</p>
+			)}
+			{rungs.map((rung, index) => (
+				<div
+					// Position is the identity here: a rung has no id, and two rows may
+					// legitimately be blank at once while the couple fills them in.
+					// biome-ignore lint/suspicious/noArrayIndexKey: a draft row has no other identity
+					key={index}
+					className="flex flex-wrap items-end gap-2"
+				>
+					<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+						<label htmlFor={`${idPrefix}-rung-${index}`}>At</label>
+						<Input
+							id={`${idPrefix}-rung-${index}`}
+							type="number"
+							placeholder="10"
+							className="w-24"
+							value={rung.at}
+							onChange={(e) => update(index, { at: e.target.value })}
+						/>
+					</div>
+					<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+						<span id={`${idPrefix}-rung-${index}-term-label`}>Means</span>
+						<Select
+							value={rung.agreement_ref}
+							onValueChange={(v) => update(index, { agreement_ref: v })}
+						>
+							<SelectTrigger
+								id={`${idPrefix}-rung-${index}-term`}
+								aria-labelledby={`${idPrefix}-rung-${index}-term-label ${idPrefix}-rung-${index}-term`}
+								className="w-56"
+							>
+								<SelectValue placeholder="Choose an agreement…" />
+							</SelectTrigger>
+							<SelectContent>
+								{options.map((option) => (
+									<SelectItem key={option.id} value={option.id}>
+										{option.name}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</div>
+					<Button
+						variant="ghost"
+						size="sm"
+						className="text-destructive"
+						onClick={() => onChange(rungs.filter((_, i) => i !== index))}
+					>
+						Remove
+					</Button>
+				</div>
+			))}
+		</div>
+	);
+}
+
 /** The causal chain behind one counter — the consent-record + debug view. */
 function CounterTraceSheet({
 	trace,
+	agreements,
 	onClose,
 }: {
 	trace: CounterTrace;
+	/** So a crossing on this chain names the term it cites (ADR 0015). */
+	agreements: VersionedAgreement[];
 	onClose: () => void;
 }) {
+	const now = Date.now();
 	return (
 		<div className="mt-4 rounded-md border border-primary/40 bg-primary/5 p-4">
 			<div className="flex items-center justify-between">
@@ -647,7 +858,10 @@ function CounterTraceSheet({
 								? "reset → 0"
 								: `${delta >= 0 ? "+" : ""}${delta} (${d.from} → ${d.to})`;
 					} else {
-						label = describeTraceRow(row).summary;
+						const line = describeTraceRow(row, { agreements, now });
+						// The note carries a crossing's term; a chain line is one row, so it
+						// rides beside the summary rather than wrapping underneath it.
+						label = line.note ? `${line.summary} — ${line.note}` : line.summary;
 					}
 					return (
 						<li key={row.id} className="flex justify-between gap-2">

@@ -17,8 +17,10 @@ vi.mock("#/lib/api.ts", () => ({
 	updateCounter: vi.fn(() => Promise.resolve({})),
 }));
 
-import { deleteCounter, resetCounter } from "#/lib/api.ts";
+import { deleteCounter, resetCounter, updateCounter } from "#/lib/api.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { Counter } from "#/shared/counters.ts";
+import type { Role } from "#/shared/roles.ts";
 import { CountersPanel } from "./counters-panel.tsx";
 
 /**
@@ -35,6 +37,7 @@ function counter(over: Partial<Counter> = {}): Counter {
 		valence: "neutral",
 		target_direction: "floor",
 		reset: "never",
+		rungs: [],
 		modify_permission: ["dom", "sub", "switch"],
 		value: 42,
 		updated_at: null,
@@ -42,8 +45,21 @@ function counter(over: Partial<Counter> = {}): Counter {
 	};
 }
 
-function renderPanel(counters: Counter[]) {
-	return render(<CountersPanel counters={counters} onChange={() => {}} />);
+function renderPanel(
+	counters: Counter[],
+	{
+		agreements = [],
+		selfRole = "dom" as Role | null,
+	}: { agreements?: VersionedAgreement[]; selfRole?: Role | null } = {},
+) {
+	return render(
+		<CountersPanel
+			counters={counters}
+			agreements={agreements}
+			selfRole={selfRole}
+			onChange={() => {}}
+		/>,
+	);
 }
 
 const click = (name: string | RegExp) =>
@@ -179,6 +195,79 @@ describe("the counter creator's controls are named", () => {
 		).not.toBeNull();
 		expect(
 			screen.getByRole("spinbutton", { name: "Weekly target" }),
+		).not.toBeNull();
+	});
+});
+
+/**
+ * Rung authoring in the counter form (#193, ADR 0015).
+ *
+ * The gate is on writing, never on reading: the banner on Today shows both
+ * partners the same ladder, because a ladder is a term the couple consented to.
+ * What the gate must not do is *lose* anything — the partner who cannot edit the
+ * rungs still edits the name beside them.
+ */
+describe("counter rungs", () => {
+	afterEach(() => {
+		cleanup();
+		vi.mocked(updateCounter).mockClear();
+	});
+
+	const TERM: VersionedAgreement = {
+		id: "ag_ten",
+		kind: "protocol",
+		versions: [
+			{ effective_from: 0, name: "Ten demerits", text: "…", retired: false },
+		],
+	};
+
+	const withRung = counter({
+		id: "demerits",
+		name: "Demerits",
+		rungs: [{ at: 10, agreement_ref: "ag_ten" }],
+	});
+
+	it("offers the ladder editor to the dom", () => {
+		renderPanel([withRung], { agreements: [TERM], selfRole: "dom" });
+		click("Edit");
+		expect(screen.getByRole("button", { name: "Add rung" })).not.toBeNull();
+	});
+
+	it("withholds it from the sub, whom the ladder binds but who does not write it", () => {
+		renderPanel([withRung], { agreements: [TERM], selfRole: "sub" });
+		click("Edit");
+		expect(screen.queryByRole("button", { name: "Add rung" })).toBeNull();
+	});
+
+	it("carries the rungs through an edit by the partner who cannot see them", async () => {
+		// The failure this exists to prevent: a sub renaming a counter silently
+		// stripping the ladder, because the form submits what it holds and the
+		// hidden editor never seeded it.
+		renderPanel([withRung], { agreements: [TERM], selfRole: "sub" });
+		click("Edit");
+		click("Save changes");
+		await act(async () => {});
+		expect(vi.mocked(updateCounter)).toHaveBeenCalledWith(
+			"demerits",
+			expect.objectContaining({
+				rungs: [{ at: 10, agreement_ref: "ag_ten" }],
+			}),
+		);
+	});
+
+	it("shows the ladder in the counter's summary line", () => {
+		renderPanel([withRung], { agreements: [TERM], selfRole: "sub" });
+		expect(screen.getByText(/rungs at 10/)).not.toBeNull();
+	});
+
+	it("refuses to save a rung with no term, rather than announcing nothing", () => {
+		renderPanel([withRung], { agreements: [TERM], selfRole: "dom" });
+		click("Edit");
+		click("Add rung");
+		click("Save changes");
+		expect(vi.mocked(updateCounter)).not.toHaveBeenCalled();
+		expect(
+			screen.getByText(/needs a whole number and an agreement/),
 		).not.toBeNull();
 	});
 });

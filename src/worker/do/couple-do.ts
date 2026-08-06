@@ -40,6 +40,7 @@ import {
 import type {
 	Counter,
 	CounterDefinition,
+	CounterRung,
 	CounterVersion,
 	CreateCounterInput,
 	UpdateCounterInput,
@@ -48,6 +49,7 @@ import type {
 import {
 	countersEffectiveAt,
 	counterValuesOf,
+	rungsCrossed,
 	sameCounterPolicy,
 	versionFromCounterDefinition,
 } from "#/shared/counters.ts";
@@ -197,10 +199,12 @@ import {
 	amendmentCause,
 	type CounterTrace,
 	causeColumns,
+	decodeDetail,
 	decodeTraceRow,
 	directCause,
 	encodeDetail,
 	ruleCause,
+	systemJobCause,
 	type TraceCause,
 	type TraceEntry,
 	type TraceRow,
@@ -209,6 +213,7 @@ import {
 	traceAutoClose,
 	traceCounter,
 	traceCounterSkipped,
+	traceCrossing,
 	traceExpire,
 	traceNearMiss,
 	traceNotify,
@@ -1099,6 +1104,7 @@ export class CoupleDO extends DurableObject<Env> {
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
 				rule_changes: this.ruleChangesUnseen(me.id),
 				agreement_changes: this.agreementChangesUnseen(me.id),
+				crossings: this.crossingsUnseen(me.id),
 			}),
 		};
 	}
@@ -2605,6 +2611,19 @@ export class CoupleDO extends DurableObject<Env> {
 			at,
 			plan.compensating.counter,
 		);
+		// No crossing is announced here, in either direction (ADR 0015).
+		//
+		// Downward is not a moment at all: the banner clears because the derived
+		// state is false, while the recorded crossing stays, because it happened.
+		//
+		// Upward is possible — reversing a *decrement* raises the counter, and with
+		// other commuting moves in between it can carry it past a rung it had never
+		// reached — and it is still silent, because "nothing re-fires" is the whole
+		// discipline of a reversal: it applies a compensating op and evaluates
+		// nothing. A correction to the record is not a thing that happened to the
+		// couple. Nobody is left uninformed by that, either: the banner is derived
+		// from where the counter now sits, so it appears. Only the *moment* is
+		// withheld, and there was no moment.
 		this.writeTrace(
 			traceWaived(cause, at, {
 				mechanic: "reversed",
@@ -2807,6 +2826,7 @@ export class CoupleDO extends DurableObject<Env> {
 				`streak target counter "${input.streak.counter}" does not exist`,
 			);
 		}
+		this.assertRungsCiteRealAgreements(input.rungs);
 		const id = this.uniqueCounterId(input.id ?? slugify(input.name));
 		// Spread rather than field-by-field: the input has already been parsed
 		// through the definition schema (minus its id), so listing the fields here
@@ -2854,6 +2874,7 @@ export class CoupleDO extends DurableObject<Env> {
 				);
 			}
 		}
+		this.assertRungsCiteRealAgreements(input.rungs);
 		// The id is fixed by the path and never taken from the body; everything else
 		// is policy and travels whole (see {@link createCounter}). The id goes
 		// *last* so the code says what the sentence above says: spreading `input`
@@ -2903,6 +2924,35 @@ export class CoupleDO extends DurableObject<Env> {
 			counterId,
 		);
 		return { id: counterId };
+	}
+
+	/**
+	 * Refuses a ladder whose rung names an Agreement the couple doesn't hold
+	 * (ADR 0015) — the same check a citing ref gets, at the same place: authoring
+	 * time, where this repo has consistently put routing failures. A rung pointing
+	 * at nothing would announce a crossing with no consequence attached, and there
+	 * is no later moment at which that becomes visible.
+	 *
+	 * Existence only. A *retired* term still resolves, and refusing one here would
+	 * mean a couple retiring a term silently invalidated a counter they weren't
+	 * editing; the picker offers only terms in force, which is where that belongs.
+	 *
+	 * Ungated by role, like every other counter write (ADR 0013 — "any member of a
+	 * live couple may shape a shared counter"). What a rung *costs* is the
+	 * Agreement's, and who may author one of those is already scoped by kind and
+	 * subject (ADR 0006, ADR 0010), so the consent gate sits on the half that
+	 * carries the meaning rather than on the number beside it.
+	 */
+	private assertRungsCiteRealAgreements(rungs: CounterRung[]): void {
+		if (rungs.length === 0) return;
+		const held = new Set(this.agreements().map((agreement) => agreement.id));
+		for (const rung of rungs) {
+			if (held.has(rung.agreement_ref)) continue;
+			throw coupleError(
+				"BAD_REQUEST",
+				`the rung at ${rung.at} cites an agreement this couple doesn't hold`,
+			);
+		}
 	}
 
 	/**
@@ -3182,7 +3232,12 @@ export class CoupleDO extends DurableObject<Env> {
 			)
 			.toArray()
 			.map(decodeTraceRow);
-		const explanation = explainProjection(projection, rows);
+		// The corpus, so a crossing on this chain names the term rather than its ref
+		// (ADR 0015). The support surface is the last place an opaque id belongs.
+		const explanation = explainProjection(projection, rows, {
+			agreements: this.agreements(),
+			now: Date.now(),
+		});
 
 		const at = Date.now();
 		const inserted = this.sql
@@ -3273,6 +3328,81 @@ export class CoupleDO extends DurableObject<Env> {
 		this.writeTrace(
 			traceCounter(directCause(event.id), event.logged_at, counterId, change),
 		);
+		// A `+1` tap crosses a rung exactly as a rule effect does. The ladder is a
+		// property of the counter, not of what moved it, and a dom tapping to ten
+		// demerits has passed the same line R2 would have taken it past. A reset is
+		// excluded on the grounds `announceCrossings` gives — it is a clearing.
+		if (change.op !== "reset") {
+			this.announceCrossings(
+				directCause(event.id),
+				event.logged_at,
+				counterId,
+				{ from, to, occurred_at: event.occurred_at },
+			);
+		}
+	}
+
+	/**
+	 * Files a `crossing` row for every rung this counter move passed going up
+	 * (ADR 0015) — the announcement half of the ladder, beside the move that
+	 * caused it and carrying that move's cause.
+	 *
+	 * **The rungs are the ones in force at the move's log-time**, which is ADR
+	 * 0015 amending ADR 0013's scope. That ADR gave counter definitions a third
+	 * clock — the rollover boundary — on the premise that "a counter's policy is
+	 * not read by an event at all. It is read by a *system job*." Rungs break the
+	 * premise: they are read when the counter **moves**, which is event-driven,
+	 * and the boundary clock could not serve them anyway, since a `reset: never`
+	 * counter like `demerits` has no rollover boundary to resolve at. So the same
+	 * principle — the version in force when the reader read it — is applied to a
+	 * second reader, and `at` is that reader's moment: log-time on append,
+	 * ruling-time on re-evaluation, the boundary on a fold.
+	 *
+	 * That is also what makes this replay: `at` is a stamp the rebuild is already
+	 * walking, so a replayed move resolves the same ladder the live one did.
+	 *
+	 * The crossing fires **no effects**. Escalation is ordinary rules reading
+	 * `counter_value` (#192); this is only the announcement, so nothing here can
+	 * cascade and no rule is evaluated.
+	 *
+	 * **A reset never reaches here**, and its callers say so rather than this
+	 * filtering it out, because a reset is not a small upward move to be excluded
+	 * — it is a clearing, and asking whether it crossed anything is the wrong
+	 * question. It has to be stated: a counter has no floor (`applyCounterEvent`
+	 * is `value + delta`), so a reset from −3 to 0 *is* an upward move and would
+	 * otherwise announce a rung at or below zero. The rollover's scheduled reset
+	 * is silent by construction; the two event-driven ones are silent by this.
+	 */
+	private announceCrossings(
+		cause: TraceCause,
+		at: number,
+		counterId: string,
+		move: { from: number; to: number; occurred_at: number },
+		/** The ladder already resolved for this moment, where a caller has one. */
+		rungs?: CounterRung[],
+	): void {
+		const ladder = rungs ?? this.rungsAt(counterId, at);
+		if (ladder.length === 0) return;
+		for (const rung of rungsCrossed(ladder, move.from, move.to)) {
+			this.writeTrace(
+				traceCrossing(cause, at, counterId, {
+					rung: rung.at,
+					agreement_ref: rung.agreement_ref,
+					occurred_at: move.occurred_at,
+					from: move.from,
+					to: move.to,
+				}),
+			);
+		}
+	}
+
+	/** One counter's ladder as it stood at `atMs` (see {@link announceCrossings}). */
+	private rungsAt(counterId: string, atMs: number): CounterRung[] {
+		const version = versionInForceAt(this.counterVersionRows(counterId), atMs);
+		// A counter whose first version begins after `atMs` did not exist yet, and
+		// one that did exist announces the ladder it had then — which is why a rung
+		// added today announces nothing about a move logged last week.
+		return version?.rungs ?? [];
 	}
 
 	/**
@@ -3359,6 +3489,17 @@ export class CoupleDO extends DurableObject<Env> {
 						to,
 					}),
 				);
+				// The ladder is read at `at` — the same moment this effect acted, which
+				// on a ruling is the ruling's own timestamp. The *term* it cites is read
+				// at the event's `occurred_at`, because that is when the person was
+				// bound (ADR 0006). Two halves, two clocks, both already established.
+				if (op.op !== "reset") {
+					this.announceCrossings(cause, at, op.counter, {
+						from,
+						to,
+						occurred_at: event.occurred_at,
+					});
+				}
 				return;
 			}
 			case "anchor": {
@@ -5048,6 +5189,52 @@ export class CoupleDO extends DurableObject<Env> {
 		this.setSetting(`updates_seen_at_${me.id}`, String(Date.now()));
 	}
 
+	/**
+	 * Rung crossings this member hasn't looked at (#193, ADR 0015).
+	 *
+	 * No `actor != ?` filter, unlike its two neighbours, and that is the whole
+	 * difference: a rule or corpus change is news to the partner who didn't make
+	 * it, while a crossing is news to **both** — nobody "made" it, and a ladder is
+	 * a term binding the pair. It is also the one signal not addressed to someone:
+	 * a bare logged event notifies nobody, so without this a crossing would reach
+	 * the dom only when the causing event happened to be pending a ruling.
+	 *
+	 * Read out of the trace rather than a table of its own, because the trace *is*
+	 * the record of the crossing — a second store would be a copy that a rebuild
+	 * could put out of step with the ledger it rebuilt. The `LIKE` is a prefilter
+	 * over the encoded blob so the scan stays cheap; the codec makes the decision,
+	 * so a row that merely mentions the word cannot be counted.
+	 */
+	private crossingsUnseen(memberId: string): number {
+		const seen = Number(
+			this.getSetting(`crossings_seen_at_${memberId}`) ?? "0",
+		);
+		let count = 0;
+		for (const row of this.sql
+			.exec<{ detail: string | null }>(
+				`SELECT detail FROM trace WHERE at > ? AND detail LIKE '%"crossing"%'`,
+				seen,
+			)
+			.toArray()) {
+			if (decodeDetail(row.detail).kind === "crossing") count++;
+		}
+		return count;
+	}
+
+	/**
+	 * Marks the crossings the caller has seen (#193). Explicit, so a GET never
+	 * mutates — sent by Today, where the banner is.
+	 *
+	 * It clears the *count*, never the banner: the banner is derived from where
+	 * the counter sits, so it stays until the counter drops. A crossing is a
+	 * recorded moment, not a debt (ADR 0015), and this is the only thing about one
+	 * a person can dismiss.
+	 */
+	async ackCrossings(identityHash: string): Promise<void> {
+		const me = this.requireMember(identityHash);
+		this.setSetting(`crossings_seen_at_${me.id}`, String(Date.now()));
+	}
+
 	private ruleChangesUnseen(memberId: string): number {
 		const seen = Number(this.getSetting(`rules_seen_at_${memberId}`) ?? "0");
 		const row = this.sql
@@ -5460,7 +5647,24 @@ export class CoupleDO extends DurableObject<Env> {
 					to,
 				}),
 			);
+			// A streak climbs, so it crosses rungs — a thirtieth clean day is exactly
+			// the kind of line a couple puts a term against. `def` is already the
+			// policy resolved for this moment (the mirror live, the version in force
+			// on a replay), and the boundary *is* this move's log-time, so the ladder
+			// needs no second lookup and lands on the clock ADR 0015 asks for.
+			// `occurred_at` is the boundary too: a fold has no causing event, and the
+			// moment it happened is the moment it is read against.
+			this.announceCrossings(
+				systemJobCause(),
+				at,
+				def.id,
+				{ from, to, occurred_at: at },
+				def.rungs,
+			);
 		}
+		// A period reset only ever moves a counter down, so nothing here crosses a
+		// rung: a crossing is upward only, and the banner clearing is what the drop
+		// means (ADR 0015).
 		for (const def of defs) {
 			if (def.reset !== period) continue;
 			const value = valueById.get(def.id) ?? 0;

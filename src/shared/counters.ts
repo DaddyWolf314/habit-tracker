@@ -46,6 +46,34 @@ export type CounterReset = z.infer<typeof counterResetSchema>;
 export const targetDirectionSchema = z.enum(["floor", "cap"]);
 export type TargetDirection = z.infer<typeof targetDirectionSchema>;
 
+/**
+ * One rung of a consequence ladder (ADR 0015) — a threshold, and what the couple
+ * agreed crossing it means.
+ *
+ * The two halves are split because they resolve differently. The **number** has
+ * to be machine-readable, so it lives here and versions with the counter (ADR
+ * 0013). The **consequence** is a term the couple agreed, and ADR 0006 exists so
+ * that agreed terms live in the consent corpus rather than in engine config: a
+ * couple must not be able to change what a demerit costs without it showing as a
+ * change to a term. So the rung *cites* an Agreement and carries no prose of its
+ * own, and the wording resolves at the citing moment's `occurred_at` like every
+ * other citation. Renegotiating a consequence never rewrites what a past crossing
+ * announced.
+ *
+ * `at` is not policed beyond being a whole number, which is meaningless rather
+ * than dangerous — the same nothing a floor of 0 is. Note that a counter has no
+ * floor either, so a rung at or below zero is not simply dead: a decrement can
+ * take a counter negative and a later increment can carry it back up across one.
+ * A *reset* is the case that would surprise, and it is excluded where crossings
+ * are detected rather than here — clearing a counter is not passing a line.
+ */
+export const counterRungSchema = z.object({
+	at: z.number().int(),
+	/** The Agreement whose term says what crossing this rung costs. */
+	agreement_ref: z.string().min(1),
+});
+export type CounterRung = z.infer<typeof counterRungSchema>;
+
 /** The stored definition of a counter (its identity and policy, not its value). */
 export const counterDefinitionSchema = z.object({
 	id: z.string(),
@@ -80,6 +108,21 @@ export const counterDefinitionSchema = z.object({
 			period: z.enum(["daily", "weekly"]).default("daily"),
 		})
 		.optional(),
+	/**
+	 * The consequence ladder (ADR 0015): the thresholds this counter announces
+	 * when it crosses them going up. Versioned with the rest of the definition
+	 * (ADR 0013), and read at the **log-time of the counter move** that crossed
+	 * one — which is a second reader of the same definition, not a fourth clock.
+	 * ADR 0013 justified the boundary clock on the premise that "a counter's policy
+	 * is not read by an event at all"; rungs break it, and the boundary could not
+	 * serve them anyway, since a `reset: never` counter has no rollover boundary.
+	 *
+	 * Empty by default, and the pack ships none: what a demerit costs is a term the
+	 * couple agreed, so a shipped rung would be the app asserting a consequence
+	 * nobody consented to — the objection ADR 0006 raised against default
+	 * Agreements.
+	 */
+	rungs: z.array(counterRungSchema).default([]),
 	/** Roles permitted to adjust or reset the counter directly (handoff §4.4). */
 	modify_permission: permissionListSchema.default(["dom", "sub", "switch"]),
 });
@@ -228,6 +271,51 @@ export function counterValuesOf(
 	counters: readonly { id: string; value: number }[],
 ): ReadonlyMap<string, number> {
 	return new Map(counters.map((counter) => [counter.id, counter.value]));
+}
+
+// ── Rungs: crossings and distance (ADR 0015) ─────────────────────────────────
+
+/**
+ * The rungs a move from `from` to `to` crossed, lowest first.
+ *
+ * **Upward only.** A crossing is the moment a line was passed, and passing it
+ * going down is not a moment — it is the counter being where it now is, which
+ * the banner already says. Downward would also announce the same rung twice for
+ * one round trip, so a reset to zero would file a "crossed 10" on the way back
+ * up *and* on the way down.
+ *
+ * Open on the low side and closed on the high: landing exactly on 10 crosses the
+ * rung at 10, and a later move that starts at 10 does not cross it again. That is
+ * what makes "crossed 10, reset to 0, crossed 10 again" two rows and not three.
+ *
+ * A single move may cross several rungs — `+5` over rungs at 3 and 5 — and each
+ * gets its own row, because each names a different term the couple agreed.
+ */
+export function rungsCrossed(
+	rungs: readonly CounterRung[],
+	from: number,
+	to: number,
+): CounterRung[] {
+	if (to <= from) return [];
+	return rungs
+		.filter((rung) => rung.at > from && rung.at <= to)
+		.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * The rungs a counter currently sits at or above, **highest first** — the state
+ * the banner renders (ADR 0015).
+ *
+ * Derived from the value rather than from the crossing rows, which is what makes
+ * the banner clear by itself when the counter drops by reset, acknowledgment,
+ * decrement, or a reversal (ADR 0016). The recorded crossing stays, because it
+ * happened; the banner goes, because the derived state is false.
+ */
+export function rungsReached(
+	rungs: readonly CounterRung[],
+	value: number,
+): CounterRung[] {
+	return rungs.filter((rung) => value >= rung.at).sort((a, b) => b.at - a.at);
 }
 
 /** Payload for a direct +N / −N adjustment (the "+1 tap" sugar). */

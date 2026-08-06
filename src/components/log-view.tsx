@@ -27,6 +27,7 @@ import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
+import type { Role } from "#/shared/roles.ts";
 import { currentRule, type VersionedRule } from "#/shared/rules.ts";
 import type { TimerView } from "#/shared/timers.ts";
 
@@ -206,7 +207,12 @@ export function LogView() {
 
 			{/* Counters collapse behind a summary row so the surface reads as a log,
 			    not a dashboard — the stream below gets the page (#91). */}
-			<CountersSummary counters={counters} onChange={refreshLog} />
+			<CountersSummary
+				counters={counters}
+				agreements={agreements}
+				selfRole={selfRole}
+				onChange={refreshLog}
+			/>
 
 			<EventStream
 				events={events}
@@ -256,9 +262,14 @@ export function LogView() {
  */
 function CountersSummary({
 	counters,
+	agreements,
+	selfRole,
 	onChange,
 }: {
 	counters: Counter[];
+	/** Passed through for the rung editor's term picker (#193, ADR 0015). */
+	agreements: VersionedAgreement[];
+	selfRole: Role | null;
 	onChange: () => void;
 }) {
 	const [open, setOpen] = useState(false);
@@ -283,7 +294,12 @@ function CountersSummary({
 					</Button>
 				</div>
 				<div id={panelId}>
-					<CountersPanel counters={counters} onChange={onChange} />
+					<CountersPanel
+						counters={counters}
+						agreements={agreements}
+						selfRole={selfRole}
+						onChange={onChange}
+					/>
 				</div>
 			</div>
 		);

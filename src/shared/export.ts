@@ -52,6 +52,11 @@ export function counterToExportRow(counter: Counter): ExportRow {
 		// "stayed at zero" into "reached zero" — met on every row, for ever.
 		target_direction: counter.target_direction,
 		reset: counter.reset,
+		// The consequence ladder (ADR 0015). Serialized even when empty, which is
+		// the honest export of a counter that announces nothing — and where it is
+		// not empty, the rung numbers are half of what a crossing meant; the other
+		// half is the Agreement it cites, which the corpus carries.
+		rungs: JSON.stringify(counter.rungs),
 		streak: counter.streak ? JSON.stringify(counter.streak) : null,
 		modify_permission: JSON.stringify(counter.modify_permission),
 		value: counter.value,

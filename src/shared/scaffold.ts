@@ -64,6 +64,10 @@ export function scaffoldPlan({
 			// couple defines deliberately, not to one a citation scaffolds for them.
 			target_direction: "floor",
 			reset: "daily",
+			// No ladder, for the reason the pack ships none (ADR 0015): a consequence
+			// is a term the couple agrees, and scaffolding one off a citation would
+			// have the app assert a consequence nobody consented to.
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		},
 		streak: {
@@ -75,6 +79,7 @@ export function scaffoldPlan({
 			// A streak is a property of its target counter (CONTEXT §Target counter),
 			// expressed here as the fold the DO's rollover alarm reads — never a rule.
 			streak: { counter: counterId, period: "daily" },
+			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		},
 		rule: {

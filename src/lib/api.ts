@@ -563,6 +563,20 @@ export function listCounters(): Promise<{ counters: Counter[] }> {
 	return apiFetch<{ counters: Counter[] }>("/api/counters");
 }
 
+/**
+ * Marks the caller's rung crossings seen, clearing them from the badge (#193).
+ *
+ * Only the *count*: the banner is derived from where the counter sits, so it
+ * stays until the counter drops. A crossing is a recorded moment, not an item to
+ * close (ADR 0015), and the badge is the one part of it a person can dismiss.
+ */
+export function ackCrossings(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/counters/crossings/seen", {
+		method: "POST",
+		body: {},
+	});
+}
+
 /** The elapsed-since anchors as live views ("days since …", handoff §4.5). */
 export function listAnchors(): Promise<{ anchors: AnchorView[] }> {
 	return apiFetch<{ anchors: AnchorView[] }>("/api/anchors");
