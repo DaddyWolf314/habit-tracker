@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { describeTraceRow, type TraceRow, type TraceTone } from "./trace.ts";
+import {
+	describeTraceRow,
+	type TraceContext,
+	type TraceRow,
+	type TraceTone,
+} from "./trace.ts";
 
 /**
  * Support introspection (handoff §3.5) — the audited answer to "why did this
@@ -60,13 +65,19 @@ export interface IntrospectionResult {
  * did this just change" — and the whole chain is carried for the drill-in. An
  * empty history degrades to a plain note rather than throwing: the audit surface
  * must never crash on a projection that has no recorded changes.
+ *
+ * `context` carries the corpus a crossing's citing ref resolves through (ADR
+ * 0015). It matters most here of anywhere: this is the audited causal record, and
+ * a chain that reads `ag_01JB6X…` instead of the term the couple agreed answers
+ * "why did this change" with the one part a person cannot read.
  */
 export function explainProjection(
 	projection: string,
 	rows: TraceRow[],
+	context: TraceContext = {},
 ): ProjectionExplanation {
 	const chain: ExplanationLine[] = rows.map((row) => {
-		const line = describeTraceRow(row);
+		const line = describeTraceRow(row, context);
 		return {
 			id: row.id,
 			at: row.at,

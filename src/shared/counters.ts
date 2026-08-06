@@ -60,9 +60,12 @@ export type TargetDirection = z.infer<typeof targetDirectionSchema>;
  * other citation. Renegotiating a consequence never rewrites what a past crossing
  * announced.
  *
- * `at` is not policed beyond being a whole number. A rung at or below where a
- * counter starts simply never gets crossed, which is meaningless rather than
- * dangerous — the same nothing a floor of 0 is.
+ * `at` is not policed beyond being a whole number, which is meaningless rather
+ * than dangerous — the same nothing a floor of 0 is. Note that a counter has no
+ * floor either, so a rung at or below zero is not simply dead: a decrement can
+ * take a counter negative and a later increment can carry it back up across one.
+ * A *reset* is the case that would surprise, and it is excluded where crossings
+ * are detected rather than here — clearing a counter is not passing a line.
  */
 export const counterRungSchema = z.object({
 	at: z.number().int(),

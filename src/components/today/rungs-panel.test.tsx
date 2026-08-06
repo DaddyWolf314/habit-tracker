@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
@@ -106,5 +106,19 @@ describe("RungsPanel", () => {
 		// banner showed would then never clear at all.
 		render(<RungsPanel counters={[counter(0)]} agreements={[TERM]} />);
 		return waitFor(() => expect(ackCrossings).toHaveBeenCalled());
+	});
+
+	it("waits for the counters before clearing the count", async () => {
+		// Today paints this before the fetch resolves. Acking then would dismiss the
+		// crossing a beat before the banner it would have shown — cleared by landing
+		// on the screen rather than by being told.
+		const { rerender } = render(
+			<RungsPanel counters={[]} agreements={[TERM]} />,
+		);
+		await act(async () => {});
+		expect(ackCrossings).not.toHaveBeenCalled();
+
+		rerender(<RungsPanel counters={[counter(12)]} agreements={[TERM]} />);
+		await waitFor(() => expect(ackCrossings).toHaveBeenCalled());
 	});
 });

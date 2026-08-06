@@ -2715,6 +2715,27 @@ describe("rung crossings", () => {
 		).toEqual([]);
 	});
 
+	it("announces nothing when a reset climbs back to zero from below", () => {
+		// A counter has no floor (`applyCounterEvent` is `value + delta`), so a reset
+		// from −3 is an *upward* move — and a reset is a clearing, never a crossing.
+		// The scheduled reset at a rollover is silent by construction; the direct one
+		// has to say so, or the same act announces or doesn't depending on which
+		// clock cleared the counter.
+		return (async () => {
+			const couple = await activeCouple();
+			const agreementId = await term(couple, "Back to zero");
+			await setRungs(couple, "demerits", [
+				{ at: 0, agreement_ref: agreementId },
+			]);
+			await couple.do.adjustCounter(DOM, "demerits", -3);
+			advance(HOUR);
+			await couple.do.resetCounter(DOM, "demerits");
+
+			expect((await counters(couple)).demerits).toBe(0);
+			expect(crossings(couple)).toEqual([]);
+		})();
+	});
+
 	it("refuses a rung citing an agreement the couple doesn't hold", async () => {
 		const couple = await activeCouple();
 		await expect(

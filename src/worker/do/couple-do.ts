@@ -3232,7 +3232,12 @@ export class CoupleDO extends DurableObject<Env> {
 			)
 			.toArray()
 			.map(decodeTraceRow);
-		const explanation = explainProjection(projection, rows);
+		// The corpus, so a crossing on this chain names the term rather than its ref
+		// (ADR 0015). The support surface is the last place an opaque id belongs.
+		const explanation = explainProjection(projection, rows, {
+			agreements: this.agreements(),
+			now: Date.now(),
+		});
 
 		const at = Date.now();
 		const inserted = this.sql
@@ -3325,12 +3330,16 @@ export class CoupleDO extends DurableObject<Env> {
 		);
 		// A `+1` tap crosses a rung exactly as a rule effect does. The ladder is a
 		// property of the counter, not of what moved it, and a dom tapping to ten
-		// demerits has passed the same line R2 would have taken it past.
-		this.announceCrossings(directCause(event.id), event.logged_at, counterId, {
-			from,
-			to,
-			occurred_at: event.occurred_at,
-		});
+		// demerits has passed the same line R2 would have taken it past. A reset is
+		// excluded on the grounds `announceCrossings` gives — it is a clearing.
+		if (change.op !== "reset") {
+			this.announceCrossings(
+				directCause(event.id),
+				event.logged_at,
+				counterId,
+				{ from, to, occurred_at: event.occurred_at },
+			);
+		}
 	}
 
 	/**
@@ -3355,6 +3364,14 @@ export class CoupleDO extends DurableObject<Env> {
 	 * The crossing fires **no effects**. Escalation is ordinary rules reading
 	 * `counter_value` (#192); this is only the announcement, so nothing here can
 	 * cascade and no rule is evaluated.
+	 *
+	 * **A reset never reaches here**, and its callers say so rather than this
+	 * filtering it out, because a reset is not a small upward move to be excluded
+	 * — it is a clearing, and asking whether it crossed anything is the wrong
+	 * question. It has to be stated: a counter has no floor (`applyCounterEvent`
+	 * is `value + delta`), so a reset from −3 to 0 *is* an upward move and would
+	 * otherwise announce a rung at or below zero. The rollover's scheduled reset
+	 * is silent by construction; the two event-driven ones are silent by this.
 	 */
 	private announceCrossings(
 		cause: TraceCause,
@@ -3476,11 +3493,13 @@ export class CoupleDO extends DurableObject<Env> {
 				// on a ruling is the ruling's own timestamp. The *term* it cites is read
 				// at the event's `occurred_at`, because that is when the person was
 				// bound (ADR 0006). Two halves, two clocks, both already established.
-				this.announceCrossings(cause, at, op.counter, {
-					from,
-					to,
-					occurred_at: event.occurred_at,
-				});
+				if (op.op !== "reset") {
+					this.announceCrossings(cause, at, op.counter, {
+						from,
+						to,
+						occurred_at: event.occurred_at,
+					});
+				}
 				return;
 			}
 			case "anchor": {

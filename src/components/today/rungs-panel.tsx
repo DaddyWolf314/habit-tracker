@@ -38,17 +38,25 @@ export function RungsPanel({
 	/** The corpus, for the term each rung cites (ADR 0006). */
 	agreements: VersionedAgreement[];
 }) {
-	// Acknowledged on arrival, and deliberately not gated on a banner being here
-	// to see. A crossing raises the count for both members (ADR 0015), and a
-	// counter can fall back below its rung before either of them looks — a badge
-	// that only cleared while a banner showed would then never clear at all. The
-	// moment is still on the counter's chain, which is where a crossing is kept.
+	// Two gates, pulling opposite ways, and both are needed.
+	//
+	// *Not* gated on a banner being here to see: a counter can fall back below its
+	// rung before either member looks, and a badge that only cleared while a banner
+	// showed would then never clear at all. The moment is still on the counter's
+	// chain, which is where a crossing is kept.
+	//
+	// But gated on the counters having **arrived**. Today renders this on first
+	// paint with an empty list, so an ungated ack would clear the count a beat
+	// before the banner it would have shown — dismissing a crossing by landing on
+	// the screen rather than by being told.
+	const loaded = counters.length > 0;
 	useEffect(() => {
+		if (!loaded) return;
 		ackCrossings().catch(() => {
 			// A failed ack leaves the count up for the next load: showing it again is
 			// the right failure; clearing one that never reached the server is not.
 		});
-	}, []);
+	}, [loaded]);
 
 	const now = Date.now();
 	const standing = counters.flatMap((counter) =>
