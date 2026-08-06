@@ -6,7 +6,6 @@ import { Input } from "#/components/ui/input.tsx";
 import {
 	ackRewardChanges,
 	createRewardItem,
-	deleteRewardItem,
 	getRoles,
 	listCounters,
 	listRewardItems,
@@ -22,13 +21,14 @@ import {
 	latestRewardItemVersion,
 	type RewardItemVersion,
 	rewardItemEffectiveAt,
+	rewardItemsInForce,
 	type VersionedRewardItem,
 } from "#/shared/rewards.ts";
 import type { Role } from "#/shared/roles.ts";
 
 /**
  * The reward store (#194, ADR 0017) — the catalogue, what each item costs, and
- * what the balance covers right now.
+ * what the currency covers right now.
  *
  * **One screen for both partners, not two.** The sub sees what they are saving
  * toward and the dom sees the same list with the authoring controls attached,
@@ -95,7 +95,7 @@ export function RewardsView() {
 		});
 	}, [loaded]);
 
-	// The balance moves under the viewer — a rule fires, the partner logs
+	// A currency's value moves under the viewer — a rule fires, the partner logs
 	// something — and a store showing a stale one would say "affordable" about
 	// something that no longer is. Same cadence as every other live surface.
 	useLiveRefresh(refresh, {
@@ -104,14 +104,12 @@ export function RewardsView() {
 	});
 
 	const now = Date.now();
-	const balances = new Map(counters.map((c) => [c.id, c.value]));
+	const values = new Map(counters.map((c) => [c.id, c.value]));
 	// Retired items are dropped from the store rather than struck through: they
 	// are offered for no new redemption, and every past one still resolves through
-	// the version table, which is where that history lives.
-	const onOffer = items.filter((item) => {
-		const version = rewardItemEffectiveAt(item, now);
-		return version !== null && !version.retired;
-	});
+	// the version table, which is where that history lives. The shared filter, not
+	// a local re-derivation — the picker draws from the same one.
+	const onOffer = rewardItemsInForce(items, now);
 
 	return (
 		<div className="mx-auto max-w-2xl space-y-4 p-4">
@@ -139,7 +137,7 @@ export function RewardsView() {
 								rewardItemEffectiveAt(item, now) ??
 								latestRewardItemVersion(item)
 							}
-							balance={balances}
+							values={values}
 							counters={counters}
 							mayAuthor={
 								selfId !== null && authorsRewardItem(item, selfId, selfRole)
@@ -173,20 +171,20 @@ export function RewardsView() {
 function RewardCard({
 	item,
 	version,
-	balance,
+	values,
 	counters,
 	mayAuthor,
 	onChanged,
 }: {
 	item: VersionedRewardItem;
 	version: RewardItemVersion;
-	balance: ReadonlyMap<string, number>;
+	values: ReadonlyMap<string, number>;
 	counters: Counter[];
 	mayAuthor: boolean;
 	onChanged: () => void;
 }) {
 	const [editing, setEditing] = useState(false);
-	const value = balance.get(version.currency) ?? 0;
+	const value = values.get(version.currency) ?? 0;
 	const covered = affordable(version.price, value);
 	const currencyName =
 		counters.find((c) => c.id === version.currency)?.name ?? version.currency;
@@ -227,22 +225,15 @@ function RewardCard({
 					>
 						{editing ? "Cancel" : "Edit"}
 					</Button>
-					{/* Retiring is the real "remove": it keeps every version readable and
-					    every past redemption resolvable. A hard delete is offered too,
-					    and the server accepts it only for an item nothing has redeemed. */}
+					{/* Retiring is the store's only removal — it keeps every version
+					    readable and every past redemption resolvable, which is why there
+					    is no Delete beside it (ADR 0017). */}
 					<Button
 						size="sm"
 						variant="outline"
 						onClick={() => retireRewardItem(item.id).then(onChanged)}
 					>
 						Retire
-					</Button>
-					<Button
-						size="sm"
-						variant="ghost"
-						onClick={() => deleteRewardItem(item.id).then(onChanged)}
-					>
-						Delete
 					</Button>
 				</div>
 			)}

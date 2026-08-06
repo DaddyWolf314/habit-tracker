@@ -327,6 +327,19 @@ in and should not.
 - **Originating ref** — the ref on the event that *mints* the id: the server
   assigns it at log time and a client may never supply one (`minted: true`,
   ADR 0005). `task_assigned`, `session_started`, `journal_prompt`.
+- **Stamped value** — a metadata value the server writes at log time from a
+  definition it resolved, rather than minting: a **Redemption**'s **Price**,
+  **Currency** and (when self-serve) its grant, read off the **Reward item**
+  version in force (`server_set: true`, ADR 0017). Carries ADR 0005's discipline
+  whole — a client supplying one is *refused*, never overwritten — but it is **not
+  a fourth ref flavor**, and not every stamped value is a ref: a price is a
+  number. The flag it declares governs the **write** side only. A minted ref is
+  machine identity and so is hidden from readers too; a stamped value is
+  *content* — the whole reason the price is on the event is so a reader finds what
+  a redemption cost — so it is hidden from the composer and exempt from its
+  required check, and shown everywhere it is read. _Avoid_: reusing `minted` for
+  one (it would hide the price from the log); treating a `required` stamped field
+  as something the author must supply — the composer offers no input for it.
 - **Echoing ref** — a ref repeating an id minted elsewhere, in order to pair with
   it. Two flavors, differing in what they may name rather than in what the schema
   declares: a **closing echo** discharges the row it names (`task_completed`,

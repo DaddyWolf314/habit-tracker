@@ -5,7 +5,7 @@ import {
 	type VersionedAgreement,
 } from "./agreements.ts";
 import type { MetadataField } from "./event-types.ts";
-import { isCitingRef, isOriginatingRef } from "./refs.ts";
+import { citingRefKind, isOriginatingRef } from "./refs.ts";
 import {
 	REWARD_REF_KIND,
 	rewardItemEffectiveAt,
@@ -221,9 +221,11 @@ export function refCandidates({
 }): RefCandidate[] {
 	// A citing ref draws from a definition set rather than from open timers, and
 	// on the opposite lifecycle: an Agreement or a reward item is a candidate while
-	// it is in force, where a timer stops being one the moment it resolves.
-	if (isCitingRef(field)) {
-		return field.kind === "ref" && field.ref_kind === REWARD_REF_KIND
+	// it is in force, where a timer stops being one the moment it resolves. Which
+	// set is the declared kind's to say, read through the one accessor.
+	const citing = citingRefKind(field);
+	if (citing !== undefined) {
+		return citing === REWARD_REF_KIND
 			? rewardCandidates(rewards, now)
 			: citingCandidates(field, agreements, now);
 	}
@@ -326,7 +328,7 @@ function citingCandidates(
  * (ADR 0015) and "40" says nothing about which pile it comes out of.
  *
  * Deliberately **not** filtered to what the viewer can afford. Whether the
- * balance covers it is a fact about the counter right now, while candidacy is a
+ * the value covers it is a fact about the counter right now, while candidacy is a
  * fact about the item — and hiding the expensive half of the store would remove
  * the thing a sub is saving toward from the only surface that names it.
  */

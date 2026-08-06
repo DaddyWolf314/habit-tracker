@@ -2762,8 +2762,8 @@ describe("rung crossings", () => {
  * costs is theirs to agree (ADR 0015's reason, applied to the store).
  */
 describe("the reward store (#194, ADR 0017)", () => {
-	/** A couple with a currency counter the sub has banked `balance` into. */
-	async function couplewithCurrency(balance: number): Promise<ActiveCouple> {
+	/** A couple with a currency counter the sub has banked `banked` into. */
+	async function coupleWithCurrency(banked: number): Promise<ActiveCouple> {
 		const couple = await activeCouple();
 		await couple.do.createCounter(DOM, {
 			id: "service_points",
@@ -2774,8 +2774,8 @@ describe("the reward store (#194, ADR 0017)", () => {
 			rungs: [],
 			modify_permission: ["dom", "sub", "switch"],
 		});
-		if (balance !== 0) {
-			await couple.do.adjustCounter(DOM, "service_points", balance);
+		if (banked !== 0) {
+			await couple.do.adjustCounter(DOM, "service_points", banked);
 		}
 		return couple;
 	}
@@ -2807,7 +2807,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// ── The price is stamped, and it is the one in force *then* ────────────────
 
 	it("charges the price in force at the redemption's occurred_at, and records it", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
 
 		// The reprice lands between the quote and the redemption.
@@ -2836,7 +2836,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 
 	// ADR 0005's minting discipline: refused outright, never silently overwritten.
 	it("refuses a client-supplied price", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
 		await expect(
 			couple.do.logEvent(SUB, {
@@ -2851,7 +2851,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// ── The grant model: the `unset → set` transition (#184) ───────────────────
 
 	it("moves no points until the ruling lands, then spends at the ruling", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: true });
 
 		const event = await redeem(couple, rewardId);
@@ -2869,7 +2869,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	});
 
 	it("costs nothing when the dom refuses", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: true });
 		const event = await redeem(couple, rewardId);
 
@@ -2884,7 +2884,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	});
 
 	it("decrements a self-serve redemption at append", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
 
 		const event = await redeem(couple, rewardId);
@@ -2897,7 +2897,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// Retraction is pending-only, which here is exactly the window in which
 	// nothing has been spent.
 	it("refuses to retract a redemption once it is granted", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: true });
 		const event = await redeem(couple, rewardId);
 
@@ -2917,7 +2917,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// ── Retiring, and what still resolves ─────────────────────────────────────
 
 	it("leaves past redemptions resolving and offers a retired item for no new one", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
 		const spent = await redeem(couple, rewardId);
 
@@ -2938,19 +2938,27 @@ describe("the reward store (#194, ADR 0017)", () => {
 		await expect(redeem(couple, rewardId)).rejects.toThrow(/retired/);
 	});
 
-	it("keeps a redeemed item deletable only by retiring", async () => {
-		const couple = await couplewithCurrency(200);
+	// Retiring is the store's only removal — a redemption keeps resolving what it
+	// bought, so an item never leaves the record.
+	it("still resolves a retired item's price for the redemption that paid it", async () => {
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
-		await redeem(couple, rewardId);
-		await expect(couple.do.deleteRewardItem(DOM, rewardId)).rejects.toThrow(
-			/can be retired, not deleted/,
-		);
+		const spent = await redeem(couple, rewardId);
+		await couple.do.retireRewardItem(DOM, rewardId);
+
+		const items = await couple.do.listRewardItems(SUB);
+		const retired = items.find((item) => item.id === rewardId);
+		expect(retired).toBeDefined();
+		expect(
+			rewardItemEffectiveAt(retired as VersionedRewardItem, spent.occurred_at)
+				?.price,
+		).toBe(50);
 	});
 
 	// ── The rebuild reads the log, not the definitions ────────────────────────
 
-	it("rebuilds balances from the stamped prices, not from current definitions", async () => {
-		const couple = await couplewithCurrency(200);
+	it("rebuilds values from the stamped prices, not from current definitions", async () => {
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
 		await redeem(couple, rewardId);
 		advance(HOUR);
@@ -2981,7 +2989,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// is the half a rebuild is most likely to drop, and dropping it would refund
 	// every granted redemption a couple ever made.
 	it("rebuilds a granted redemption's spend from the ruling", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: true });
 		const event = await redeem(couple, rewardId);
 		advance(HOUR);
@@ -3000,7 +3008,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// A refusal has nothing to reproduce, which is the same statement from the
 	// other side: the rule never matched, so the rebuild finds no effect to fire.
 	it("rebuilds a refused redemption as having cost nothing", async () => {
-		const couple = await couplewithCurrency(200);
+		const couple = await coupleWithCurrency(200);
 		const rewardId = await offer(couple, { price: 50, requires_grant: true });
 		const event = await redeem(couple, rewardId);
 		await couple.do.amend(DOM, {
@@ -3015,7 +3023,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// ── Affordability is a crossing ───────────────────────────────────────────
 
 	it("announces a price crossing when the currency reaches it", async () => {
-		const couple = await couplewithCurrency(0);
+		const couple = await coupleWithCurrency(0);
 		await offer(couple, { name: "Small", price: 20 });
 		await offer(couple, { name: "Big", price: 100 });
 
@@ -3037,7 +3045,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	});
 
 	it("counts a price crossing in the unread badge, for both members", async () => {
-		const couple = await couplewithCurrency(0);
+		const couple = await coupleWithCurrency(0);
 		await offer(couple, { price: 20 });
 		// Clear the store-change notice first, so what remains is the crossing.
 		await couple.do.ackRewardChanges(SUB);
@@ -3054,7 +3062,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// ── Repricing announces itself ────────────────────────────────────────────
 
 	it("raises the partner's count and lands a reprice in consent history", async () => {
-		const couple = await couplewithCurrency(0);
+		const couple = await coupleWithCurrency(0);
 		const rewardId = await offer(couple, { price: 50 });
 		await couple.do.ackRewardChanges(SUB);
 		expect((await couple.do.notificationCount(SUB)).unread).toBe(0);
@@ -3082,7 +3090,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	// ── The author gate at the DO boundary ────────────────────────────────────
 
 	it("refuses the sub repricing what they are saving toward", async () => {
-		const couple = await couplewithCurrency(0);
+		const couple = await coupleWithCurrency(0);
 		const rewardId = await offer(couple, { price: 50 });
 		await expect(
 			couple.do.reviseRewardItem(SUB, rewardId, {
@@ -3096,7 +3104,7 @@ describe("the reward store (#194, ADR 0017)", () => {
 	});
 
 	it("refuses pricing an item in a counter the couple doesn't hold", async () => {
-		const couple = await couplewithCurrency(0);
+		const couple = await coupleWithCurrency(0);
 		await expect(
 			couple.do.createRewardItem(DOM, {
 				name: "x",
@@ -3108,16 +3116,17 @@ describe("the reward store (#194, ADR 0017)", () => {
 		).rejects.toThrow(/no counter called/);
 	});
 
-	// A store that sells what you cannot buy would drive the currency negative —
-	// `applyCounterOp` has no floor — and the ladder would then announce crossings
-	// climbing back out of the hole.
-	it("refuses a redemption the balance doesn't cover", async () => {
-		const couple = await couplewithCurrency(10);
+	// Affordability is **not** enforced at append, and this pins that on purpose.
+	// An earlier revision refused an overspend and was wrong twice: it missed the
+	// default (grant-requiring) path entirely, since that spends at the ruling, and
+	// it compared a price read at `occurred_at` against the value now. It also
+	// refused a *request* ADR 0017 says should sit in the queue. A currency can go
+	// negative, unguarded exactly as an item priced in a weekly-resetting counter is.
+	it("lets a redemption overspend rather than refusing it", async () => {
+		const couple = await coupleWithCurrency(10);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
-		await expect(redeem(couple, rewardId)).rejects.toThrow(
-			/costs 50 and you have 10/,
-		);
-		expect((await counters(couple)).service_points).toBe(10);
+		await redeem(couple, rewardId);
+		expect((await counters(couple)).service_points).toBe(-40);
 	});
 
 	/** Every price-crossing row in the ledger, oldest first. */

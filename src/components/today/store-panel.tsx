@@ -1,9 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import type { Counter } from "#/shared/counters.ts";
 import {
-	affordable,
+	affordableItems,
 	rewardItemEffectiveAt,
-	rewardItemsInForce,
 	type VersionedRewardItem,
 } from "#/shared/rewards.ts";
 
@@ -16,7 +15,7 @@ import {
  * to a **price crossing** that {@link RungsPanel} stands in to a rung crossing:
  * the crossing is the recorded moment on the counter's chain, this is the derived
  * state, and it clears by itself when the currency drops — because it is computed
- * from the balance rather than from the rows.
+ * from the currency's value rather than from the rows.
  *
  * **Both partners, identically**, for the reason the ladder is: a price is a term
  * the couple agreed, and the person saving toward it is the last one to hide it
@@ -25,7 +24,7 @@ import {
  * news that a price moved.
  *
  * Silent when nothing is affordable, rather than showing a "0 within reach" row:
- * a couple with a store and no balance yet gets the panel out of the way, and the
+ * a couple with a store and nothing banked yet gets the panel out of the way, and the
  * distance to each price is on the store screen, where the item it belongs to is.
  */
 export function StorePanel({
@@ -33,20 +32,13 @@ export function StorePanel({
 	counters,
 }: {
 	items: VersionedRewardItem[];
-	/** The currencies, for the balance each price is measured against. */
+	/** The currencies, for the value each price is measured against. */
 	counters: Counter[];
 }) {
 	const now = Date.now();
-	const balances = new Map(
-		counters.map((counter) => [counter.id, counter.value]),
-	);
-	const within = rewardItemsInForce(items, now).filter((item) => {
-		const version = rewardItemEffectiveAt(item, now);
-		return (
-			version !== null &&
-			affordable(version.price, balances.get(version.currency) ?? 0)
-		);
-	});
+	// The shared fold, so this panel and the store screen can never disagree about
+	// what "within reach" means.
+	const within = affordableItems(items, counters, now);
 	if (within.length === 0) return null;
 
 	return (

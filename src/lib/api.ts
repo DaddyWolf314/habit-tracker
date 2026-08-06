@@ -594,7 +594,12 @@ export function reviseRewardItem(
 	);
 }
 
-/** Retires an item — the real "remove", effective-dated like every other change. */
+/**
+ * Retires an item — the store's only removal, effective-dated like every other
+ * change. `effectiveFrom` mirrors {@link retireAgreement}, whose UI caller
+ * likewise omits it: an announced retirement is the same affordance on both, and
+ * splitting them would be the drift the shared shape exists to prevent.
+ */
 export function retireRewardItem(
 	id: string,
 	effectiveFrom?: number,
@@ -605,12 +610,8 @@ export function retireRewardItem(
 	);
 }
 
-/** Hard delete, accepted only for an item nothing has ever redeemed. */
-export function deleteRewardItem(id: string): Promise<{ id: string }> {
-	return apiFetch<{ id: string }>(`/api/rewards/${encodeURIComponent(id)}`, {
-		method: "DELETE",
-	});
-}
+// There is deliberately no `deleteRewardItem`: retiring is the store's only
+// removal, because a redemption has to keep resolving what it bought (ADR 0017).
 
 export function updateAgreementKind(
 	id: string,

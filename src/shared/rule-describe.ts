@@ -132,20 +132,6 @@ export function describeCondition(
 }
 
 /**
- * A single effect as a phrase, e.g. "+2 demerits" or "notify partner" — the
- * shared {@link summarizeEffectOp} phrase, so it reads identically here and on
- * the confirm/trace surfaces. The effect is resolved against an empty event
- * context (description needs no event); a timer close's duration routing, which
- * only the rules screen states up front, is appended to the shared phrase.
- *
- * A **routed** value is the one thing this cannot borrow the shared phrase for
- * (ADR 0015, ADR 0017), and deliberately so: `resolveEffect` against an empty
- * context resolves a `by_from` or a `counter_from` to a *skip*, which is the
- * truth about that context and a lie about the rule. A description has no event,
- * so it names the key instead of the value — the same move the timer-close line
- * below makes when it states a routing the shared phrase has no room for.
- */
-/**
  * How a delta effect names the counter it moves: the counter itself, or — when
  * the target is routed (ADR 0017) — the key it is read from, phrased as a key
  * rather than dressed up as a counter name. "subtract Price from the counter
@@ -164,6 +150,20 @@ function routedCounterLabel(
 	return `the counter named by ${label}`;
 }
 
+/**
+ * A single effect as a phrase, e.g. "+2 demerits" or "notify partner" — the
+ * shared {@link summarizeEffectOp} phrase, so it reads identically here and on
+ * the confirm/trace surfaces. The effect is resolved against an empty event
+ * context (description needs no event); a timer close's duration routing, which
+ * only the rules screen states up front, is appended to the shared phrase.
+ *
+ * A **routed** value is the one thing this cannot borrow the shared phrase for
+ * (ADR 0015, ADR 0017), and deliberately so: `resolveEffect` against an empty
+ * context resolves a `by_from` or a `counter_from` to a *skip*, which is the
+ * truth about that context and a lie about the rule. A description has no event,
+ * so it names the key instead of the value — the same move the timer-close line
+ * below makes when it states a routing the shared phrase has no room for.
+ */
 export function describeEffect(effect: Effect, type?: EventType): string {
 	if (
 		(effect.verb === "increment_counter" ||

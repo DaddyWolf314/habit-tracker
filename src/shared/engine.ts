@@ -623,11 +623,16 @@ function resolveCounterDelta(
 	// value — a can't-happen guard, filed rather than trusted.
 	const counter = resolveCounterTarget(effect, ctx);
 	if (counter === undefined) {
+		// Unreachable through `validateRule`, which demands `counter_from` name a
+		// *required* ref field — so a blank here means the event carried nothing
+		// where the schema promised a value. The row names the **key** rather than a
+		// counter, because there is no counter to name: writing an empty projection
+		// id would put a blank where a person reads one.
 		return {
 			kind: "skipped",
-			counter: effect.counter ?? "",
+			counter: effect.counter_from ?? "?",
 			op,
-			key: effect.counter_from ?? "",
+			key: effect.counter_from ?? "?",
 		};
 	}
 	if (effect.by_from === undefined) {

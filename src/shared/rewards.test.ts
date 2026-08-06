@@ -22,7 +22,7 @@ import {
  * The reward store (#194, ADR 0017). The unit half — resolution, affordability,
  * stamping and the author gate. The wired half (a price change between quoting
  * and redeeming, a grant that moves points and a refusal that never does, a
- * rebuild reproducing balances from stamped prices) lives in `couple-do.test.ts`,
+ * rebuild reproducing values from stamped prices) lives in `couple-do.test.ts`,
  * because every one of those is a fact about the log rather than about a
  * function.
  */
@@ -154,7 +154,7 @@ describe("affordability is a crossing (ADR 0017)", () => {
 		).toEqual(["small", "big"]);
 	});
 
-	it("covers a price the balance sits exactly on", () => {
+	it("covers a price the value sits exactly on", () => {
 		expect(affordable(50, 50)).toBe(true);
 		expect(affordable(50, 49)).toBe(false);
 	});
@@ -335,12 +335,11 @@ describe("the write gate", () => {
 		expect(result.ok).toBe(false);
 	});
 
-	it("refuses deleting an item something has redeemed, and allows retiring it", () => {
-		const cited = { ...ctx, cited: new Set(["rw_1"]) };
-		expect(validateRewardWrite({ op: "delete", id: "rw_1" }, cited).ok).toBe(
-			false,
-		);
-		expect(validateRewardWrite({ op: "retire", id: "rw_1" }, cited)).toEqual({
+	// Retiring is the store's only removal (ADR 0017 — items are "added, retired,
+	// and repriced"), so it stays available however much history an item has: a
+	// redemption keeps resolving what it bought either way.
+	it("allows retiring an item something has redeemed", () => {
+		expect(validateRewardWrite({ op: "retire", id: "rw_1" }, ctx)).toEqual({
 			ok: true,
 		});
 	});

@@ -19,7 +19,7 @@ import type { WaivedEffect } from "#/shared/amendments.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import { isCitingRef, readableMetadata } from "#/shared/refs.ts";
+import { citingRefKind, readableMetadata } from "#/shared/refs.ts";
 import { standingEffects, waivedEffectOf } from "#/shared/reversal.ts";
 import {
 	describeRewardCitation,
@@ -707,13 +707,13 @@ function readMetaValue(
 	now: number,
 ): string {
 	const field = type?.metadata[key];
-	if (field && isCitingRef(field) && typeof value === "string") {
-		// Which definition set the ref names is already stated in the schema, so it
-		// picks the describer rather than a flag doing it — the same derivation
-		// `isCitingRef` itself makes. Both describers render the name **as it stood
-		// when the act happened**, with today's beside it when they differ.
+	// Which definition set the ref names is already stated in the schema, so it
+	// picks the describer rather than a flag doing it. Both render the name **as it
+	// stood when the act happened**, with today's beside it when they differ.
+	const citing = field ? citingRefKind(field) : undefined;
+	if (citing !== undefined && typeof value === "string") {
 		const cited =
-			field.kind === "ref" && field.ref_kind === REWARD_REF_KIND
+			citing === REWARD_REF_KIND
 				? describeRewardCitation(rewards, value, occurredAt, now)
 				: describeCitation(agreements, value, occurredAt, now);
 		return cited ?? formatMetaValue(value);

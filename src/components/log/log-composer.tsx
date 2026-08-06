@@ -18,7 +18,7 @@ import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import { type RefCandidate, refCandidates } from "#/shared/ref-candidates.ts";
-import { isOriginatingRef } from "#/shared/refs.ts";
+import { isServerAssigned } from "#/shared/refs.ts";
 import type { VersionedRewardItem } from "#/shared/rewards.ts";
 import {
 	type MetadataValue,
@@ -159,7 +159,9 @@ export function LogComposer({
 		// exposed level (#94). Non-journaling types have no choice to make.
 		if (t.journaling && !visibility) missing.push("Visibility");
 		for (const [key, field] of Object.entries(t.metadata)) {
-			if (isOriginatingRef(field)) continue;
+			// The server owns these (ADR 0005, ADR 0017): no input is offered, so
+			// demanding one would block the form on a value the author cannot supply.
+			if (isServerAssigned(field)) continue;
 			if (field.required && !awaitedKeys.has(key) && !(meta[key] ?? "")) {
 				missing.push(field.label);
 			}
@@ -245,7 +247,7 @@ export function LogComposer({
 					    input: the form neither renders it nor counts it against the
 					    required check, and the event card hides it on the way back out. */}
 					{Object.entries(type.metadata)
-						.filter(([, field]) => !isOriginatingRef(field))
+						.filter(([, field]) => !isServerAssigned(field))
 						.map(([key, field]) => (
 							// Keyed by type *and* key so switching types remounts the inputs:
 							// two types sharing a key (both sides of `session_id`) must not

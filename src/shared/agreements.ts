@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { versionInForceAt } from "./effective-dating.ts";
+import {
+	forwardOnlyRefusal,
+	latestVersionOf,
+	versionInForceAt,
+} from "./effective-dating.ts";
 import { permissionListSchema, type Role } from "./roles.ts";
 
 /**
@@ -240,11 +244,7 @@ export function agreementEffectiveAt(
 export function latestAgreementVersion(
 	agreement: VersionedAgreement,
 ): AgreementVersion {
-	let latest = agreement.versions[0];
-	for (const version of agreement.versions) {
-		if (version.effective_from >= latest.effective_from) latest = version;
-	}
-	return latest;
+	return latestVersionOf(agreement.versions);
 }
 
 /**
@@ -534,16 +534,8 @@ function checkEffectiveFrom(
 	existing: AgreementVersion[],
 	now: number,
 ): AgreementValidation {
-	if (proposed === undefined) return { ok: true };
-	if (proposed < now) {
-		return deny("an agreement can't be backdated — it takes force from now on");
-	}
-	for (const version of existing) {
-		if (proposed <= version.effective_from) {
-			return deny("a version already takes force at or after that moment");
-		}
-	}
-	return { ok: true };
+	const refusal = forwardOnlyRefusal(proposed, existing, now, "an agreement");
+	return refusal === null ? { ok: true } : deny(refusal);
 }
 
 export function validateAgreementWrite(

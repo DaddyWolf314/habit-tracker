@@ -151,7 +151,6 @@ import {
 	REDEMPTION_REWARD_KEY,
 	rewardChangeKind,
 	rewardItemEffectiveAt,
-	rewardItemsInForce,
 	rewardRefKeys,
 	stampRedemption,
 	validateRewardWrite,
@@ -2034,24 +2033,6 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Hard-deletes an item nothing has ever redeemed. The validator refuses any
-	 * that has been: what a redemption bought must not be able to leave the record,
-	 * so a redeemed item can only ever be retired.
-	 */
-	async deleteRewardItem(
-		identityHash: string,
-		id: string,
-	): Promise<{ id: string }> {
-		const me = this.requireLiveMember(identityHash);
-		this.assertRewardWrite({ op: "delete", id }, me);
-		const at = Date.now();
-		this.sql.exec(`DELETE FROM reward_item_versions WHERE reward_id = ?`, id);
-		this.sql.exec(`DELETE FROM reward_items WHERE id = ?`, id);
-		this.recordRewardChange("delete", me, id, at, null);
-		return { id };
-	}
-
-	/**
 	 * Marks the caller's store notices seen (#194) — the explicit acknowledgement
 	 * the store screen sends, kept out of the read so a GET never mutates.
 	 */
@@ -2482,20 +2463,24 @@ export class CoupleDO extends DurableObject<Env> {
 	 * redemption — and it is not the guard. {@link stampRedemption} is: it refuses
 	 * a client-supplied price outright rather than overwriting it, exactly as
 	 * minting refuses a client-supplied ref, so a wide `set_permission` on a
-	 * server-owned key cannot become a way to set it.
+	 * server-owned key cannot become a way to set it. The fields declare
+	 * `server_set` so no composer offers an input for one either.
 	 *
 	 * The `occurred_at` clock is the citing-ref clock (ADR 0006), not the log's:
 	 * backdating a redemption to last week quotes last week's price, because that
 	 * is what the item cost when the thing happened.
 	 *
-	 * The affordability refusal is the one rule here with no direct ADR line.
-	 * `applyCounterOp` has no floor, so without it a sub could redeem a 100-point
-	 * item holding 10 and drive the currency to −90 — a store that sells what you
-	 * cannot buy, and a balance the ladder would then announce crossings out of.
-	 * It is checked **only at append**: whether the dom grants a request later is
-	 * the dom's call, and re-checking at the ruling would put the spend back on a
-	 * path that can fail after the fact, which is precisely what riding the
-	 * `unset → set` transition exists to avoid.
+	 * **Affordability is deliberately not checked here.** An earlier revision
+	 * refused a redemption the currency did not cover, and it was wrong twice
+	 * over. It missed the *default* path — a grant-requiring item spends when the
+	 * ruling lands, so the value can fall in between, and two individually
+	 * affordable pending redemptions can both be granted — so it only ever
+	 * protected the self-serve case while reading as a general guard. And it mixed
+	 * clocks, quoting the price at `occurred_at` against the value *now*. It also
+	 * refused a *request* ADR 0017 says should "sit in the queue that already
+	 * exists". A currency can therefore go negative on an overspend, which is
+	 * unguarded exactly as a reward priced in a weekly-resetting counter is: what
+	 * the store costs and who may grant it are the couple's to set.
 	 */
 	private stampRedemptionMetadata(
 		type: EventType,
@@ -2523,13 +2508,6 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		if (version.retired) {
 			throw coupleError("BAD_REQUEST", "that reward has been retired");
-		}
-		const balance = this.counterById(version.currency)?.value ?? 0;
-		if (balance < version.price) {
-			throw coupleError(
-				"BAD_REQUEST",
-				`that costs ${version.price} and you have ${balance}`,
-			);
 		}
 		const stamped = stampRedemption(
 			metadata as Record<string, string | number | boolean>,
@@ -3701,13 +3679,11 @@ export class CoupleDO extends DurableObject<Env> {
 		counterId: string,
 		move: { from: number; to: number; occurred_at: number },
 	): void {
-		const priced: { id: string; price: number }[] = [];
-		for (const item of rewardItemsInForce(this.rewardItems(), at)) {
-			const version = rewardItemEffectiveAt(item, at);
-			if (!version || version.currency !== counterId) continue;
-			priced.push({ id: item.id, price: version.price });
-		}
-		for (const item of pricesCrossed(priced, move.from, move.to)) {
+		for (const item of pricesCrossed(
+			this.pricesAt(counterId, at),
+			move.from,
+			move.to,
+		)) {
 			this.writeTrace(
 				tracePriceCrossing(cause, at, counterId, {
 					price: item.price,
@@ -3718,6 +3694,44 @@ export class CoupleDO extends DurableObject<Env> {
 				}),
 			);
 		}
+	}
+
+	/**
+	 * The prices in force against one currency at `atMs` — the store's counterpart
+	 * to {@link rungsAt}, and read the same way: one query, the version in force,
+	 * nothing about items priced elsewhere.
+	 *
+	 * A single grouped query rather than `rewardItems()` and a filter, because this
+	 * runs on **every counter move**: loading the whole store and all its version
+	 * history to answer "what does this one counter make affordable" is 1 + N
+	 * queries per `+1` tap. `rungsAt` takes the same care for the same reason.
+	 *
+	 * The `MAX(effective_from)` group picks the version in force per item, and the
+	 * retired ones are dropped after: an item that is no longer on offer becoming
+	 * "affordable" would announce something nobody can buy.
+	 */
+	private pricesAt(
+		counterId: string,
+		atMs: number,
+	): { id: string; price: number }[] {
+		return this.sql
+			.exec<{ reward_id: string; price: number; retired: number }>(
+				`SELECT v.reward_id, v.price, v.retired
+					FROM reward_item_versions v
+					JOIN (
+						SELECT reward_id, MAX(effective_from) AS effective_from
+							FROM reward_item_versions WHERE effective_from <= ?
+							GROUP BY reward_id
+					) latest
+						ON latest.reward_id = v.reward_id
+						AND latest.effective_from = v.effective_from
+					WHERE v.currency = ?`,
+				atMs,
+				counterId,
+			)
+			.toArray()
+			.filter((row) => row.retired === 0)
+			.map((row) => ({ id: row.reward_id, price: row.price }));
 	}
 
 	/** One counter's ladder as it stood at `atMs` (see {@link announceCrossings}). */
@@ -5305,7 +5319,6 @@ export class CoupleDO extends DurableObject<Env> {
 			// check: the question is whether the price they are writing today lands in
 			// a pile that exists today.
 			currencies: new Set(this.counterRows().map((row) => row.id)),
-			cited: this.citedRewardIds(),
 		});
 		if (result.ok) return;
 		if (result.forbidden) throw coupleError("FORBIDDEN", result.error);
@@ -5398,15 +5411,6 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Every reward id an event has ever cited — the gate on hard delete, derived
-	 * from the schema through {@link rewardRefKeys} for the reason
-	 * {@link citedAgreementIds} is derived through `agreementRefKeys`.
-	 */
-	private citedRewardIds(): Set<string> {
-		return this.citedDefinitionIds(rewardRefKeys);
-	}
-
-	/**
 	 * Records a store change in the consent history *and* the audit log (ADR
 	 * 0017), the pairing {@link recordAgreementChange} established.
 	 *
@@ -5468,26 +5472,9 @@ export class CoupleDO extends DurableObject<Env> {
 	 * correct, not a stub: nothing can have cited a corpus that nothing points at.
 	 */
 	private citedAgreementIds(): Set<string> {
-		return this.citedDefinitionIds(agreementRefKeys);
-	}
-
-	/**
-	 * The ids any event has cited through the keys `keysOf` derives from a type —
-	 * the shared body behind {@link citedAgreementIds} and {@link citedRewardIds}.
-	 *
-	 * One scan of the log, parameterised by which fields count, rather than two
-	 * copies differing in a single predicate: the delete gate is the same question
-	 * for both definition kinds ("has anything ever named this"), and two copies is
-	 * how a third kind ends up with a gate that quietly lets a cited row be deleted.
-	 * Returns empty when nothing declares the ref kind — correct, not a stub:
-	 * nothing can have cited a definition set that nothing points at.
-	 */
-	private citedDefinitionIds(
-		keysOf: (type: EventType) => string[],
-	): Set<string> {
 		const keys = new Set<string>();
 		for (const type of this.eventTypes()) {
-			for (const key of keysOf(type)) keys.add(key);
+			for (const key of agreementRefKeys(type)) keys.add(key);
 		}
 		const cited = new Set<string>();
 		if (keys.size === 0) return cited;

@@ -594,13 +594,8 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					return json(item);
 				});
 			}
-			// Retiring is the real "remove". A DELETE is only ever accepted for an
-			// item nothing has redeemed.
-			if (method === "DELETE") {
-				return await withAuth(request, env, ({ auth, stub }) =>
-					stub.deleteRewardItem(auth.identityHash, id).then(() => json({ id })),
-				);
-			}
+			// Retiring is the store's only removal — there is no DELETE here, where
+			// the corpus has one: a redemption has to keep resolving what it bought.
 		}
 		const rewardRetireMatch = path.match(/^\/api\/rewards\/([^/]+)\/retire$/);
 		if (rewardRetireMatch && method === "POST") {

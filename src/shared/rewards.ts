@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { versionInForceAt } from "./effective-dating.ts";
+import {
+	forwardOnlyRefusal,
+	latestVersionOf,
+	versionInForceAt,
+} from "./effective-dating.ts";
 import type { Role } from "./roles.ts";
 
 /**
@@ -124,11 +128,7 @@ export function rewardItemEffectiveAt(
 export function latestRewardItemVersion(
 	item: VersionedRewardItem,
 ): RewardItemVersion {
-	let latest = item.versions[0];
-	for (const version of item.versions) {
-		if (version.effective_from >= latest.effective_from) latest = version;
-	}
-	return latest;
+	return latestVersionOf(item.versions);
 }
 
 /**
@@ -216,6 +216,31 @@ export function pricesCrossed(
 /** Whether a currency standing at `value` covers `price`. The store's one test. */
 export function affordable(price: number, value: number): boolean {
 	return value >= price;
+}
+
+/**
+ * The items on offer at `atMs` whose price the couple's currency values cover —
+ * "what is within reach", folded once so the store screen and Today's panel
+ * cannot disagree about what that means.
+ *
+ * Shared for the reason `counterValuesOf` is: two surfaces answering the same
+ * question their own way is how one ends up saying a thing is affordable while
+ * the other doesn't. `values` is the pair both already hold (`{id, value}` off a
+ * `Counter`), not either whole type.
+ */
+export function affordableItems(
+	items: VersionedRewardItem[],
+	values: readonly { id: string; value: number }[],
+	atMs: number,
+): VersionedRewardItem[] {
+	const byId = new Map(values.map((counter) => [counter.id, counter.value]));
+	return rewardItemsInForce(items, atMs).filter((item) => {
+		const version = rewardItemEffectiveAt(item, atMs);
+		return (
+			version !== null &&
+			affordable(version.price, byId.get(version.currency) ?? 0)
+		);
+	});
 }
 
 // ── The redemption event (ADR 0017) ──────────────────────────────────────────
@@ -363,8 +388,14 @@ export type RewardWrite =
 			price: number;
 			effective_from?: number;
 	  }
-	| { op: "retire"; id: string }
-	| { op: "delete"; id: string };
+	/**
+	 * The only removal the store has. There is deliberately **no hard delete**,
+	 * where the corpus has one: ADR 0017 lists what a store does as items being
+	 * "added, retired, and repriced", and a redemption has to keep resolving what
+	 * it bought. An item nothing has redeemed is no exception worth a second write
+	 * path — retiring already takes it off the shelf.
+	 */
+	| { op: "retire"; id: string };
 
 export interface RewardContext {
 	/** The actor's resolved role; null before mutual confirmation. */
@@ -382,8 +413,6 @@ export interface RewardContext {
 	items: VersionedRewardItem[];
 	/** The counter ids the couple holds — an item must be priced in a real one. */
 	currencies: ReadonlySet<string>;
-	/** Ids any redemption has ever cited — the gate on hard delete. */
-	cited: Set<string>;
 }
 
 export type RewardValidation =
@@ -396,28 +425,18 @@ const deny = (
 ): RewardValidation => ({ ok: false, error, ...flags });
 
 /**
- * Whether a proposed `effective_from` is legal for a new version, and why not —
- * `checkEffectiveFrom` from the corpus, applied to a price.
- *
- * Forward-only is what makes the store honest rather than theatre. A version
- * dated into the past would re-price a redemption already made, which is the one
- * thing the stamped price exists to prevent, reached from the other direction.
+ * Forward-only, through the shared rule (`effective-dating.ts`). What it buys
+ * here is what makes the store honest rather than theatre: a version dated into
+ * the past would re-price a redemption already made, which is the one thing the
+ * stamped price exists to prevent, reached from the other direction.
  */
 function checkEffectiveFrom(
 	proposed: number | undefined,
 	existing: RewardItemVersion[],
 	now: number,
 ): RewardValidation {
-	if (proposed === undefined) return { ok: true };
-	if (proposed < now) {
-		return deny("a reward can't be backdated — it takes force from now on");
-	}
-	for (const version of existing) {
-		if (proposed <= version.effective_from) {
-			return deny("a version already takes force at or after that moment");
-		}
-	}
-	return { ok: true };
+	const refusal = forwardOnlyRefusal(proposed, existing, now, "a reward");
+	return refusal === null ? { ok: true } : deny(refusal);
 }
 
 /**
@@ -468,18 +487,6 @@ export function validateRewardWrite(
 				: "this reward isn't yours to change",
 			{ forbidden: true },
 		);
-	}
-
-	if (write.op === "delete") {
-		// ADR 0002's "delete collapses to disable", applied to the store: a
-		// redemption must keep resolving what it bought, so only a never-redeemed
-		// item is truly deletable.
-		if (ctx.cited.has(write.id)) {
-			return deny(
-				"a reward something has redeemed can be retired, not deleted",
-			);
-		}
-		return { ok: true };
 	}
 
 	return (
