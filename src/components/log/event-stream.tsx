@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { ResponseComposer } from "#/components/response-composer.tsx";
 import { Button } from "#/components/ui/button.tsx";
@@ -14,11 +14,14 @@ import {
 	describeCitation,
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
+import { canWaiveEffects } from "#/shared/amendment-validation.ts";
+import type { WaivedEffect } from "#/shared/amendments.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import { isCitingRef, readableMetadata } from "#/shared/refs.ts";
-import type { MetadataValue } from "#/shared/roles.ts";
+import { standingEffects, waivedEffectOf } from "#/shared/reversal.ts";
+import type { MetadataValue, Role } from "#/shared/roles.ts";
 import type { TraceRow } from "#/shared/trace.ts";
 import {
 	describeTraceRow,
@@ -28,12 +31,13 @@ import {
 	memberLabel,
 } from "./formatting.ts";
 
-/** Glyphs for the amendment tones in the chain view (ruling/note/retraction/response). */
+/** Glyphs for the amendment tones in the chain view (ruling/note/retraction/response/waiver). */
 const TONE_MARK: Record<string, string> = {
 	ruling: "⚖",
 	note: "✎",
 	retraction: "✕",
 	response: "♥",
+	waiver: "⊘",
 };
 
 /**
@@ -51,6 +55,7 @@ export function EventStream({
 	members,
 	agreements = [],
 	selfId = null,
+	selfRole = null,
 	onAmended,
 }: {
 	events: EventView[];
@@ -65,6 +70,12 @@ export function EventStream({
 	 * said something back.
 	 */
 	selfId?: string | null;
+	/**
+	 * The viewer's role, for the one affordance that is about authority rather
+	 * than authorship: waiving a landed effect is gated on the roles that may
+	 * author rules (ADR 0016), and a row's own author has nothing to do with it.
+	 */
+	selfRole?: Role | null;
 	onAmended?: () => void;
 }) {
 	const typeMap = new Map(types.map((t) => [t.id, t]));
@@ -90,6 +101,7 @@ export function EventStream({
 						type={typeMap.get(event.type)}
 						members={members}
 						selfId={selfId}
+						selfRole={selfRole}
 						onAmended={onAmended}
 					/>
 				))}
@@ -105,6 +117,7 @@ function EventRow({
 	type,
 	members,
 	selfId,
+	selfRole,
 	onAmended,
 }: {
 	/** The corpus, so a citation reads as a name rather than an id (#121). */
@@ -115,9 +128,25 @@ function EventRow({
 	type: EventType | undefined;
 	members: RoleMember[];
 	selfId: string | null;
+	selfRole: Role | null;
 	onAmended?: () => void;
 }) {
 	const [trace, setTrace] = useState<TraceRow[] | null>(null);
+	// Which chain rows are an effect this viewer could still waive (ADR 0016): the
+	// shared `standingEffects` fold, so the affordance appears exactly where the
+	// server would accept the write. A viewer who may not author rules sees none —
+	// the same gate `amendment-validation` applies, asked once here.
+	const standing = useMemo(() => {
+		if (trace === null || !canWaiveEffects(selfRole)) {
+			return new Map<number, WaivedEffect>();
+		}
+		return new Map(
+			standingEffects(trace).flatMap((row) => {
+				const effect = waivedEffectOf(row);
+				return effect === null ? [] : [[row.id, effect] as const];
+			}),
+		);
+	}, [trace, selfRole]);
 	const [open, setOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	// Per-row: the stream renders one of these per event, so `aria-controls` has
@@ -290,6 +319,7 @@ function EventRow({
 							{trace?.map((row) => {
 								const line = describeTraceRow(row);
 								const isNearMiss = line.tone === "near_miss";
+								const waivable = standing.get(row.id);
 								return (
 									<li
 										key={row.id}
@@ -298,6 +328,24 @@ function EventRow({
 										{isNearMiss ? "○ " : "• "}
 										{line.summary}
 										{line.note ? ` — ${line.note}` : ""}
+										{/* The standalone waiver entry point (ADR 0016). It lives
+										    on the chain rather than the row's action bar because
+										    what is waived is one *effect*, and this is the only
+										    place the effects are individually visible. */}
+										{waivable && (
+											<WaiveAction
+												eventId={event.id}
+												effect={waivable}
+												onWaived={() => {
+													// Re-fetch on next open: the waiver wrote rows this
+													// list has not seen, and one of them is the reason
+													// this effect is no longer standing.
+													setTrace(null);
+													setOpen(false);
+													onAmended?.();
+												}}
+											/>
+										)}
 									</li>
 								);
 							})}
@@ -306,6 +354,81 @@ function EventRow({
 				</div>
 			)}
 		</li>
+	);
+}
+
+/**
+ * Waives one landed effect from the chain (ADR 0016) — the after-the-fact
+ * mechanic, for the unconditional rules that fire at append (`R2:
+ * ritual_completed AND late=true → demerits +1`) where there was never a confirm
+ * sheet to uncheck.
+ *
+ * A two-tap inline confirm, like retraction: the effect either reverses or files
+ * a row saying it could not, and neither is something to do by mis-tap. What the
+ * server decides is deliberately *not* predicted here — whether the inverse still
+ * commutes is a question about the trace, and answering it twice is how a screen
+ * starts promising an outcome the ledger then declines.
+ */
+function WaiveAction({
+	eventId,
+	effect,
+	onWaived,
+}: {
+	eventId: string;
+	effect: WaivedEffect;
+	onWaived: () => void;
+}) {
+	const [armed, setArmed] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+
+	async function waive() {
+		setBusy(true);
+		setError(null);
+		try {
+			await amendEvent({
+				kind: "waiver",
+				target_event_id: eventId,
+				waived: [effect],
+			});
+			onWaived();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : "Couldn't waive that.");
+			setBusy(false);
+			setArmed(false);
+		}
+	}
+
+	if (!armed) {
+		return (
+			<>
+				<Button
+					variant="ghost"
+					size="xs"
+					className="ml-2"
+					onClick={() => setArmed(true)}
+				>
+					Waive
+				</Button>
+				{error && <span className="ml-2 text-destructive">{error}</span>}
+			</>
+		);
+	}
+	return (
+		<span className="ml-2 inline-flex flex-wrap items-center gap-2">
+			<span className="text-muted-foreground">
+				Waive this effect? It reverses where it still can, and the log says so
+				either way.
+			</span>
+			<InlineConfirm
+				label="Yes, waive"
+				size="xs"
+				tone="neutral"
+				busy={busy}
+				onConfirm={waive}
+				onCancel={() => setArmed(false)}
+			/>
+		</span>
 	);
 }
 

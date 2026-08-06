@@ -20,8 +20,13 @@ import {
 	validateAgreementWrite,
 } from "#/shared/agreements.ts";
 import { validateAmendment } from "#/shared/amendment-validation.ts";
-import type { Amendment, AmendmentInput } from "#/shared/amendments.ts";
-import { amendmentInputSchema } from "#/shared/amendments.ts";
+import type {
+	Amendment,
+	AmendmentInput,
+	WaivedEffect,
+	Waiver,
+} from "#/shared/amendments.ts";
+import { amendmentInputSchema, waivedEffectKey } from "#/shared/amendments.ts";
 import {
 	type AnchorView,
 	anchorElapsedDays,
@@ -54,6 +59,7 @@ import {
 	reevaluate,
 	routeClosedTimerDuration,
 	rulesEffectiveAt,
+	unfired,
 } from "#/shared/engine.ts";
 import {
 	type AwaitingEntry,
@@ -121,6 +127,11 @@ import {
 	recoveryView,
 } from "#/shared/recovery.ts";
 import { mintOriginatingRefs } from "#/shared/refs.ts";
+import {
+	planReversal,
+	standingEffects,
+	waivedEffectOf,
+} from "#/shared/reversal.ts";
 import {
 	type MetadataValue,
 	type Role,
@@ -199,12 +210,14 @@ import {
 	traceExpire,
 	traceNearMiss,
 	traceNotify,
+	traceReversalDeclined,
 	traceScheduledReset,
 	traceStreakRollover,
 	traceTimerClose,
 	traceTimerCommand,
 	traceTimerOpen,
 	traceTimerSkipped,
+	traceWaived,
 } from "#/shared/trace.ts";
 import {
 	exportView,
@@ -288,6 +301,8 @@ interface AmendmentRow {
 	patch: string | null;
 	note: string | null;
 	supersedes: string | null;
+	waived: string | null;
+	suppresses: string | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -2307,6 +2322,19 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 
+		// Both waiver shapes name effects, and both are checked against the trace
+		// *before* anything is written — the log is append-only, so this is the last
+		// moment either can be refused. A stale confirm sheet naming an effect the
+		// ruling would no longer fire is the case worth refusing loudest: committing
+		// it would suppress nothing, and the dom would watch the effect they let go
+		// land anyway.
+		if (input.kind === "adjudication" && input.waive?.length) {
+			this.assertRulingWouldFire(event, type, priorAmendments, input);
+		}
+		if (input.kind === "waiver") {
+			this.assertEffectsLanded(event.id, input.waived);
+		}
+
 		const amendment = this.writeAmendment(me.id, input);
 		const amendments = [...priorAmendments, amendment];
 
@@ -2314,8 +2342,32 @@ export class CoupleDO extends DurableObject<Env> {
 		// §4.2, §7): re-evaluate the target with the merged metadata and fire the
 		// rules that match now but didn't before. Notes, retractions, and responses
 		// change no composite state, so only an adjudication re-evaluates.
-		if (amendment.kind === "adjudication") {
-			this.reevaluateOnAmendment(event, type, priorAmendments, amendment);
+		if (input.kind === "adjudication") {
+			// A confirm-sheet waiver is its own amendment naming the ruling it rode in
+			// with (ADR 0016), rather than a field on the ruling: waiving and ruling
+			// are different acts, and the log says so even when they arrive together.
+			// It carries no note — the ruling's note is the one the dom wrote.
+			const waiver = input.waive?.length
+				? (this.writeAmendment(
+						me.id,
+						{
+							kind: "waiver",
+							target_event_id: input.target_event_id,
+							waived: input.waive,
+						},
+						amendment.id,
+					) as Waiver)
+				: undefined;
+			if (waiver) amendments.push(waiver);
+			this.reevaluateOnAmendment(
+				event,
+				type,
+				priorAmendments,
+				amendment,
+				waiver,
+			);
+		} else if (amendment.kind === "waiver") {
+			this.reverseWaived(event, amendment);
 		}
 		// Funnel the returned view through the actor's visibility (ADR 0001): a dom
 		// responding to a *sealed* entry gets back the existence row plus their own
@@ -2343,39 +2395,325 @@ export class CoupleDO extends DurableObject<Env> {
 		type: EventType,
 		priorAmendments: Amendment[],
 		amendment: Amendment,
+		waiver?: Waiver,
 	): void {
 		const before = compositeMetadata(event, priorAmendments);
 		const after = compositeMetadata(event, [...priorAmendments, amendment]);
 		// Effective-dating keys off the target event's log-time, never the ruling
 		// time — a late ruling fires the rule version in force when the event was
 		// logged, so adjudicating the past can't smuggle in a newer rule (ADR 0002).
-		const fired = reevaluate(
-			this.rulesAt(event.logged_at),
-			this.ruleContext(event, before, type.awaiting),
-			this.ruleContext(event, after, type.awaiting),
-		);
+		const rules = this.rulesAt(event.logged_at);
+		const beforeCtx = this.ruleContext(event, before, type.awaiting);
+		const afterCtx = this.ruleContext(event, after, type.awaiting);
+		const fired = reevaluate(rules, beforeCtx, afterCtx);
+		const suppressed = new Set((waiver?.waived ?? []).map(waivedEffectKey));
 
 		this.timersDirty = false;
 		for (const rule of fired) {
-			for (const op of rule.ops) {
-				this.applyEffectOp(event, rule.rule_id, op, amendment);
-			}
+			rule.ops.forEach((op, index) => {
+				if (
+					waiver &&
+					suppressed.has(
+						waivedEffectKey({ rule_id: rule.rule_id, effect_index: index }),
+					)
+				) {
+					// Suppressed, not fired-then-compensated (ADR 0016). Nothing is
+					// applied and nothing moves, so the counter's history carries no peak
+					// that never existed — which is what keeps the materialized value
+					// *provably* a cache rather than a value the ledger has to explain
+					// twice per waiver. The one row records both halves: what the rule
+					// proposed, and that the dom waived it.
+					this.writeTrace(
+						traceWaived(
+							amendmentCause(event.id, rule.rule_id, waiver.id, index),
+							amendment.created_at,
+							{ mechanic: "suppressed", op },
+						),
+					);
+					return;
+				}
+				this.applyEffectOp(event, rule.rule_id, index, op, amendment);
+			});
+		}
+		// A correction leaves effects attached to a fact that is no longer true, and
+		// the ruling lands regardless (ADR 0016) — blocking the record is the worst
+		// outcome available to a log whose purpose is being an auditable relationship
+		// record. So each such effect is reversed where its inverse still commutes,
+		// and files a `reversal_declined` row where it does not.
+		if (amendment.kind === "adjudication") {
+			this.reverseCorrectedEffects(
+				event,
+				amendment,
+				rules,
+				beforeCtx,
+				afterCtx,
+			);
 		}
 		if (this.timersDirty) this.armAlarm();
 	}
 
-	/** Inserts an amendment, assigning the server-owned id/created_at/actor. */
-	private writeAmendment(actor: string, input: AmendmentInput): Amendment {
+	/**
+	 * The effects a correction leaves stranded, from **two** sources — and it takes
+	 * two because the two shapes of correction record their effects differently.
+	 *
+	 * A `supersedes` correction reads the trace: every standing effect the
+	 * superseded ruling caused. That is the source ADR 0016 names, and asking the
+	 * engine instead would get it wrong, because ambient state has moved on. R26
+	 * ("unpermitted orgasm during denial") is the case that proves it: it fired
+	 * because a denial was running, and R14 — firing on the same ruling — closed
+	 * that denial. Re-evaluating the old state *now* says R26 never matched, so a
+	 * "which rules stopped matching" question would silently strand its escalation
+	 * on a fact the ledger has since recorded as false.
+	 *
+	 * Overriding a key the author set at logging has no superseded ruling to read
+	 * — nothing fired *from an amendment*, the effects landed at append — so that
+	 * case asks {@link unfired} which rules stopped matching and reverses what the
+	 * trace says those rules did. This is the #184 case the queue only ever avoided
+	 * by listing pending events.
+	 *
+	 * The two overlap on an ordinary correction, which is why they are folded into
+	 * one row set: each effect is reversed once, or declined once, never twice.
+	 */
+	private reverseCorrectedEffects(
+		event: Event,
+		amendment: Extract<Amendment, { kind: "adjudication" }>,
+		rules: Rule[],
+		beforeCtx: RuleEventContext,
+		afterCtx: RuleEventContext,
+	): void {
+		const stranded = new Set(unfired(rules, beforeCtx, afterCtx));
+		const rows = this.standingEffectRows(event.id).filter((row) => {
+			if (row.cause.by !== "rule" && row.cause.by !== "amendment") return false;
+			if (
+				row.cause.by === "amendment" &&
+				row.cause.amendment === amendment.supersedes
+			) {
+				return true;
+			}
+			return stranded.has(row.cause.rule);
+		});
+		for (const row of rows) {
+			this.reverseEffectRow(row, amendment.created_at, amendment.id);
+		}
+	}
+
+	/**
+	 * Reverses the effects a standalone waiver names (ADR 0016) — the after-the-fact
+	 * mechanic, for effects that fired at append with no ruling in play (`R2:
+	 * ritual_completed AND late=true → demerits +1`), where there was never a
+	 * confirm sheet to uncheck.
+	 */
+	private reverseWaived(event: Event, waiver: Waiver): void {
+		const named = new Set(waiver.waived.map(waivedEffectKey));
+		const rows = this.standingEffectRows(event.id).filter((row) => {
+			const effect = waivedEffectOf(row);
+			return effect !== null && named.has(waivedEffectKey(effect));
+		});
+		for (const row of rows) {
+			this.reverseEffectRow(row, waiver.created_at, waiver.id);
+		}
+	}
+
+	/**
+	 * Reverses one landed effect, or files the row that says why it could not.
+	 *
+	 * Every decision here is read off the trace: what the effect *was*, and whether
+	 * anything non-commuting has touched its projection since. That is the
+	 * discipline ADR 0016 turns on — a rule edited since it fired would hand back a
+	 * different effects list, and reversing that list would undo something the
+	 * couple never received.
+	 */
+	private reverseEffectRow(
+		row: TraceRow,
+		at: number,
+		amendmentId: string,
+	): void {
+		if (row.cause.by !== "rule" && row.cause.by !== "amendment") return;
+		const cause = amendmentCause(
+			row.cause.event,
+			row.cause.rule,
+			amendmentId,
+			row.cause.effect_index,
+		);
+		const plan = planReversal(row, this.traceRowsAfter(row));
+		if (!plan.reversible) {
+			this.writeTrace(
+				traceReversalDeclined(cause, at, {
+					reason: plan.reason,
+					op: plan.effect,
+				}),
+			);
+			return;
+		}
+		const counter = this.counterById(plan.compensating.counter);
+		if (!counter) {
+			// The counter was deleted after the effect landed. Nothing to subtract
+			// from, and the ledger says so rather than silently doing nothing.
+			this.writeTrace(
+				traceReversalDeclined(cause, at, {
+					reason: "that counter no longer exists",
+					op: plan.effect,
+				}),
+			);
+			return;
+		}
+		const from = counter.value;
+		const to = applyCounterOp(from, plan.compensating);
+		this.sql.exec(
+			`UPDATE counters SET value = ?, updated_at = ? WHERE id = ?`,
+			to,
+			at,
+			plan.compensating.counter,
+		);
+		this.writeTrace(
+			traceWaived(cause, at, {
+				mechanic: "reversed",
+				op: plan.effect,
+				from,
+				to,
+			}),
+		);
+	}
+
+	/**
+	 * The effects of one rule on one event that are still *standing* — landed, and
+	 * not already overruled. Oldest first, so a reversal is planned against the
+	 * trace in the order it was written.
+	 *
+	 * "Not already overruled" is matched per row rather than per `(rule, index)`,
+	 * and the difference is load-bearing: correcting a ruling to B and back to A
+	 * fires A's effect a second time, and a set keyed only on the index would treat
+	 * the fresh effect as already handled by the waiver that overruled the first
+	 * one. So the rows are walked in order and each overruling row consumes the
+	 * oldest standing effect at its index — which is the pairing the live sequence
+	 * actually made, and the one a replay reproduces.
+	 */
+	private standingEffectRows(eventId: string): TraceRow[] {
+		return standingEffects(
+			this.sql
+				.exec<TraceColumnsRow>(
+					`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+						FROM trace WHERE caused_by_event = ? ORDER BY id ASC`,
+					eventId,
+				)
+				.toArray()
+				.map(decodeTraceRow),
+		);
+	}
+
+	/**
+	 * Every trace row on the same projection written after this one, oldest first —
+	 * the "has anything non-commuting happened since" window {@link planReversal}
+	 * scans. On a rebuild this reads the trace the replay is itself rebuilding,
+	 * which is exactly what makes the reversal replay to the same answer.
+	 */
+	private traceRowsAfter(row: TraceRow): TraceRow[] {
+		if (row.projection === null) return [];
+		return this.sql
+			.exec<TraceColumnsRow>(
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+					FROM trace WHERE projection = ? AND id > ? ORDER BY id ASC`,
+				row.projection,
+				row.id,
+			)
+			.toArray()
+			.map(decodeTraceRow);
+	}
+
+	/** Refuses a standalone waiver naming an effect that never landed, or is spent. */
+	private assertEffectsLanded(eventId: string, waived: WaivedEffect[]): void {
+		const standing = new Set(
+			this.standingEffectRows(eventId).flatMap((row) => {
+				const effect = waivedEffectOf(row);
+				return effect === null ? [] : [waivedEffectKey(effect)];
+			}),
+		);
+		for (const target of waived) {
+			if (!standing.has(waivedEffectKey(target))) {
+				throw coupleError(
+					"BAD_REQUEST",
+					`no standing effect to waive: ${waivedEffectKey(target)}`,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Refuses a confirm-sheet waiver naming an effect the ruling would not fire.
+	 * Runs the same pure re-evaluation the commit will, over a *provisional*
+	 * amendment built from the input — the ruling has no id yet, and this has to
+	 * answer before anything is written.
+	 */
+	private assertRulingWouldFire(
+		event: Event,
+		type: EventType,
+		priorAmendments: Amendment[],
+		input: Extract<AmendmentInput, { kind: "adjudication" }>,
+	): void {
+		const provisional: Amendment = {
+			kind: "adjudication",
+			id: "",
+			target_event_id: event.id,
+			actor: "",
+			created_at: Date.now(),
+			patch: input.patch,
+			supersedes: input.supersedes,
+		};
+		const fired = reevaluate(
+			this.rulesAt(event.logged_at),
+			this.ruleContext(
+				event,
+				compositeMetadata(event, priorAmendments),
+				type.awaiting,
+			),
+			this.ruleContext(
+				event,
+				compositeMetadata(event, [...priorAmendments, provisional]),
+				type.awaiting,
+			),
+		);
+		const offered = new Set(
+			fired.flatMap((rule) =>
+				rule.ops.map((_, index) =>
+					waivedEffectKey({ rule_id: rule.rule_id, effect_index: index }),
+				),
+			),
+		);
+		for (const target of input.waive ?? []) {
+			if (!offered.has(waivedEffectKey(target))) {
+				throw coupleError(
+					"BAD_REQUEST",
+					`this ruling does not fire ${waivedEffectKey(target)}; reload and rule again`,
+				);
+			}
+		}
+	}
+
+	/**
+	 * Inserts an amendment, assigning the server-owned id/created_at/actor.
+	 *
+	 * `suppresses` is server-owned too (ADR 0016): a client submits the effects it
+	 * unchecked *on* the ruling, and this path is what turns that into a companion
+	 * waiver naming the ruling it rode in with — a client can no more forge which
+	 * ruling a suppression belongs to than it can forge who ruled.
+	 */
+	private writeAmendment(
+		actor: string,
+		input: AmendmentInput,
+		suppresses?: string,
+	): Amendment {
 		const createdAt = Date.now();
 		const id = ulid(createdAt);
 		const patch =
 			input.kind === "adjudication" ? JSON.stringify(input.patch) : null;
 		const supersedes =
 			input.kind === "adjudication" ? (input.supersedes ?? null) : null;
+		const waived =
+			input.kind === "waiver" ? JSON.stringify(input.waived) : null;
 		const note = "note" in input ? (input.note ?? null) : null;
 		this.sql.exec(
-			`INSERT INTO amendments (id, target_event_id, kind, actor, created_at, patch, note, supersedes)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO amendments (id, target_event_id, kind, actor, created_at, patch, note, supersedes, waived, suppresses)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id,
 			input.target_event_id,
 			input.kind,
@@ -2384,6 +2722,8 @@ export class CoupleDO extends DurableObject<Env> {
 			patch,
 			note,
 			supersedes,
+			waived,
+			suppresses ?? null,
 		);
 		return this.rowToAmendment({
 			id,
@@ -2394,6 +2734,8 @@ export class CoupleDO extends DurableObject<Env> {
 			patch,
 			note,
 			supersedes,
+			waived,
+			suppresses: suppresses ?? null,
 		});
 	}
 
@@ -2697,12 +3039,35 @@ export class CoupleDO extends DurableObject<Env> {
 			if (!type) continue;
 			const amendments = amendmentsByEvent.get(event.id) ?? [];
 			amendments.forEach((amendment, index) => {
-				if (amendment.kind !== "adjudication") return;
 				const prior = amendments.slice(0, index);
-				steps.push({
-					at: amendment.created_at,
-					run: () => this.reevaluateOnAmendment(event, type, prior, amendment),
-				});
+				if (amendment.kind === "adjudication") {
+					// A confirm-sheet waiver is read at the same point in the sequence it
+					// was written, so a suppressed effect is suppressed again rather than
+					// firing and being compensated — live-equals-rebuild (ADR 0012) holds
+					// with no preserved-state exception, which is the property that made
+					// suppression worth preferring over fire-then-compensate.
+					const waiver = amendments.find(
+						(a): a is Waiver =>
+							a.kind === "waiver" && a.suppresses === amendment.id,
+					);
+					steps.push({
+						at: amendment.created_at,
+						run: () =>
+							this.reevaluateOnAmendment(event, type, prior, amendment, waiver),
+					});
+					return;
+				}
+				// A standalone waiver replays at its *own* position, so the
+				// commutativity check runs against the trace the replay is rebuilding —
+				// the same rows, in the same order, giving the same answer. A
+				// suppressing waiver is not a step of its own: it has no effect apart
+				// from the ruling it rode in with, which has already claimed it above.
+				if (amendment.kind === "waiver" && amendment.suppresses === undefined) {
+					steps.push({
+						at: amendment.created_at,
+						run: () => this.reverseWaived(event, amendment),
+					});
+				}
 			});
 		}
 		// A ruling is never created before its target's append, so on a timestamp
@@ -2735,7 +3100,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const counter = this.requireCounterRow(counterId);
 		const rows = this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
 					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
 				`counter:${counterId}`,
 			)
@@ -2752,7 +3117,7 @@ export class CoupleDO extends DurableObject<Env> {
 		this.requireMember(identityHash);
 		return this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
 					FROM trace WHERE caused_by_event = ? ORDER BY at ASC, id ASC`,
 				eventId,
 			)
@@ -2779,7 +3144,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const member = this.requireMember(identityHash);
 		const rows = this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail
+				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
 					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
 				projection,
 			)
@@ -2901,9 +3266,13 @@ export class CoupleDO extends DurableObject<Env> {
 			this.ruleContext(event, composite, awaiting),
 		);
 		for (const rule of fired) {
-			for (const op of rule.ops) {
-				this.applyEffectOp(event, rule.rule_id, op);
-			}
+			// The index is the effect's position in the rule's own `effects` list, and
+			// it rides into the trace row's cause: `(rule, effect_index)` is the pair a
+			// waiver names, and it has to be recorded at the moment the effect fires
+			// because nothing can recover it afterwards (ADR 0016).
+			rule.ops.forEach((op, index) => {
+				this.applyEffectOp(event, rule.rule_id, index, op);
+			});
 		}
 		for (const nearMiss of nearMisses) {
 			this.writeTrace(
@@ -2932,11 +3301,12 @@ export class CoupleDO extends DurableObject<Env> {
 	private applyEffectOp(
 		event: Event,
 		ruleId: string,
+		effectIndex: number,
 		op: EffectOp,
 		amendment?: Amendment,
 	): void {
 		const at = amendment?.created_at ?? event.logged_at;
-		const cause = this.effectCause(event, ruleId, amendment);
+		const cause = this.effectCause(event, ruleId, effectIndex, amendment);
 		switch (op.kind) {
 			case "counter": {
 				const row = this.counterById(op.counter);
@@ -2997,9 +3367,9 @@ export class CoupleDO extends DurableObject<Env> {
 				// The open-timer set moved, so the caller (appendEvent/re-eval) re-arms.
 				this.timersDirty = true;
 				if (op.op === "open") {
-					this.openTimer(event, ruleId, op);
+					this.openTimer(event, ruleId, effectIndex, op);
 				} else {
-					this.closeTimer(event, ruleId, op);
+					this.closeTimer(event, ruleId, effectIndex, op);
 				}
 				return;
 			case "notify":
@@ -3015,24 +3385,26 @@ export class CoupleDO extends DurableObject<Env> {
 	private effectCause(
 		event: Event,
 		ruleId: string,
+		effectIndex: number,
 		amendment?: Amendment,
 	): TraceCause {
 		return amendment
-			? amendmentCause(event.id, ruleId, amendment.id)
-			: ruleCause(event.id, ruleId);
+			? amendmentCause(event.id, ruleId, amendment.id, effectIndex)
+			: ruleCause(event.id, ruleId, effectIndex);
 	}
 
 	/** The one trace sink: encodes the detail and writes the single row. */
 	private writeTrace(entry: TraceEntry): void {
 		const cols = causeColumns(entry.cause);
 		this.sql.exec(
-			`INSERT INTO trace (at, caused_by_event, caused_by_rule, caused_by_amendment, actor, projection, detail)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			entry.at,
 			cols.caused_by_event,
 			cols.caused_by_rule,
 			cols.caused_by_amendment,
 			cols.actor,
+			cols.effect_index,
 			entry.projection,
 			encodeDetail(entry.detail),
 		);
@@ -3110,7 +3482,17 @@ export class CoupleDO extends DurableObject<Env> {
 	 * `opened_at` is the event's `occurred_at` so a backfilled session measures the
 	 * real elapsed span, not the log time.
 	 */
-	private openTimer(event: Event, ruleId: string, op: TimerOp): void {
+	private openTimer(
+		event: Event,
+		ruleId: string,
+		effectIndex: number,
+		op: TimerOp,
+	): void {
+		// The same `(rule, effect_index)` pair the counter and anchor paths record.
+		// A timer effect is never reversible, but it is still nameable: a dom who
+		// waives one gets a `reversal_declined` row saying so, which is the point of
+		// recording the refusal rather than hiding the affordance (ADR 0016).
+		const cause = ruleCause(event.id, ruleId, effectIndex);
 		// Re-adopt the instance this same event already opened, rather than adding a
 		// second one (#165). Live this can never match: the event was inserted moments
 		// ago and this is the first time the rule has fired on it. On *replay* it
@@ -3131,7 +3513,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const existing = this.timerOpenedBy(event.id, op.timer);
 		if (existing) {
 			this.writeTrace(
-				traceTimerOpen(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+				traceTimerOpen(cause, event.logged_at, op.timer, {
 					timer_id: existing.id,
 					match_on: op.match_on,
 					tag: op.tag,
@@ -3167,7 +3549,7 @@ export class CoupleDO extends DurableObject<Env> {
 				event.occurred_at,
 			);
 			this.writeTrace(
-				traceTimerOpen(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+				traceTimerOpen(cause, event.logged_at, op.timer, {
 					timer_id: id,
 					match_on: op.match_on,
 					tag: op.tag,
@@ -3189,7 +3571,7 @@ export class CoupleDO extends DurableObject<Env> {
 			event.occurred_at,
 		);
 		this.writeTrace(
-			traceTimerOpen(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+			traceTimerOpen(cause, event.logged_at, op.timer, {
 				timer_id: id,
 				match_on: op.match_on,
 				tag: op.tag,
@@ -3205,7 +3587,13 @@ export class CoupleDO extends DurableObject<Env> {
 	 * (`session_ended` with no `session_started`): rejected with a trace note, never
 	 * a wildcard that would close an unrelated session.
 	 */
-	private closeTimer(event: Event, ruleId: string, op: TimerOp): void {
+	private closeTimer(
+		event: Event,
+		ruleId: string,
+		effectIndex: number,
+		op: TimerOp,
+	): void {
+		const cause = ruleCause(event.id, ruleId, effectIndex);
 		const target = this.matchOpenTimer(
 			this.openTimerRows(op.timer, event.occurred_at),
 			op.match_on,
@@ -3230,32 +3618,22 @@ export class CoupleDO extends DurableObject<Env> {
 					autoClosed.id,
 				);
 				this.writeTrace(
-					traceTimerClose(
-						ruleCause(event.id, ruleId),
-						event.logged_at,
-						op.timer,
-						{
-							matched: true,
-							timer_id: autoClosed.id,
-							status: autoClosed.status ?? undefined,
-							reconciled_auto_closed: true,
-							note: "session already auto-closed past max; recorded actual end for review",
-						},
-					),
+					traceTimerClose(cause, event.logged_at, op.timer, {
+						matched: true,
+						timer_id: autoClosed.id,
+						status: autoClosed.status ?? undefined,
+						reconciled_auto_closed: true,
+						note: "session already auto-closed past max; recorded actual end for review",
+					}),
 				);
 				return;
 			}
 			this.writeTrace(
-				traceTimerClose(
-					ruleCause(event.id, ruleId),
-					event.logged_at,
-					op.timer,
-					{
-						matched: false,
-						match_on: op.match_on,
-						note: "no matching open timer",
-					},
-				),
+				traceTimerClose(cause, event.logged_at, op.timer, {
+					matched: false,
+					match_on: op.match_on,
+					note: "no matching open timer",
+				}),
 			);
 			return;
 		}
@@ -3269,15 +3647,10 @@ export class CoupleDO extends DurableObject<Env> {
 			const floor = this.timerState(target).tag as Floor | undefined;
 			if (!satisfiesFloor(event.visibility, floor)) {
 				this.writeTrace(
-					traceTimerSkipped(
-						ruleCause(event.id, ruleId),
-						event.logged_at,
-						op.timer,
-						{
-							reason: `${ruleId} skipped: answer below the '${floor}' floor`,
-							op: op.op,
-						},
-					),
+					traceTimerSkipped(cause, event.logged_at, op.timer, {
+						reason: `${ruleId} skipped: answer below the '${floor}' floor`,
+						op: op.op,
+					}),
 				);
 				return;
 			}
@@ -3297,7 +3670,7 @@ export class CoupleDO extends DurableObject<Env> {
 			target.id,
 		);
 		this.writeTrace(
-			traceTimerClose(ruleCause(event.id, ruleId), event.logged_at, op.timer, {
+			traceTimerClose(cause, event.logged_at, op.timer, {
 				matched: true,
 				timer_id: target.id,
 				status: op.status,
@@ -3306,8 +3679,11 @@ export class CoupleDO extends DurableObject<Env> {
 			}),
 		);
 		// The rule routes the derived duration; the timer computed it (handoff §4.3).
+		// The routed credit is the *same* effect, still — R16's close is one entry in
+		// the rule's effects list — so it carries the same index, and waiving that
+		// effect reaches both the close and the minutes it credited.
 		const routed = routeClosedTimerDuration(op, durationMinutes(durationMs));
-		if (routed) this.applyEffectOp(event, ruleId, routed);
+		if (routed) this.applyEffectOp(event, ruleId, effectIndex, routed);
 	}
 
 	/**
@@ -3915,7 +4291,7 @@ export class CoupleDO extends DurableObject<Env> {
 	private amendmentsOf(eventId: string): Amendment[] {
 		return this.sql
 			.exec<AmendmentRow>(
-				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes
+				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes, waived, suppresses
 					FROM amendments WHERE target_event_id = ? ORDER BY created_at ASC, id ASC`,
 				eventId,
 			)
@@ -3943,6 +4319,14 @@ export class CoupleDO extends DurableObject<Env> {
 				return { kind: "note_appended", ...base, note: row.note ?? "" };
 			case "response":
 				return { kind: "response", ...base, note: row.note ?? "" };
+			case "waiver":
+				return {
+					kind: "waiver",
+					...base,
+					waived: JSON.parse(row.waived ?? "[]") as WaivedEffect[],
+					suppresses: row.suppresses ?? undefined,
+					note: row.note ?? undefined,
+				};
 			default:
 				return { kind: "retracted", ...base, note: row.note ?? undefined };
 		}
@@ -3957,7 +4341,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const byEvent = new Map<string, Amendment[]>();
 		for (const row of this.sql
 			.exec<AmendmentRow>(
-				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes
+				`SELECT id, target_event_id, kind, actor, created_at, patch, note, supersedes, waived, suppresses
 					FROM amendments ORDER BY created_at ASC, id ASC`,
 			)
 			.toArray()) {

@@ -5,6 +5,7 @@ import {
 	NO_ACTIVE_TIMERS,
 	type RuleEventContext,
 	reevaluate,
+	unfired,
 } from "./engine.ts";
 import type { Rule } from "./rules.ts";
 
@@ -257,6 +258,73 @@ describe("reevaluate on amendment (handoff §4.2, §7)", () => {
 				ctx("orgasm", { permitted: true }),
 			),
 		).toEqual([]);
+	});
+
+	/**
+	 * The reversal counterpart (ADR 0016). This is where #184's limit was pinned:
+	 * that issue's regression test asserted a correction leaves the superseded
+	 * ruling's effects applied, and named #47 as the issue that would change it.
+	 * #47 landed as ADR 0016, so the assertion inverts — a correction now names the
+	 * rule that stopped matching so the caller can reverse what it did.
+	 *
+	 * What has *not* changed is `reevaluate` itself: it is still forward-only, and
+	 * still returns only the newly-matching rule. That is the half of #184's limit
+	 * that stands, and the split is the point.
+	 */
+	describe("unfired — the correction counterpart (ADR 0016)", () => {
+		it("names the rule a correction stopped matching", () => {
+			const before = ctx("orgasm", { permitted: true }); // Rperm had fired
+			const after = ctx("orgasm", { permitted: false }); // now Runp matches
+			expect(unfired(rules, before, after)).toEqual(["Rperm"]);
+			// The forward direction is unchanged, and deliberately does not mention
+			// Rperm: nothing is un-fired *here*.
+			expect(reevaluate(rules, before, after).map((f) => f.rule_id)).toEqual([
+				"Runp",
+			]);
+		});
+
+		it("names a rule the correction unset rather than re-ruled", () => {
+			// The #184 shape that is not a `supersedes`: a self-stated key the dom
+			// overrides. Same mechanism, because the question is only "does it still
+			// match", never how the metadata got there.
+			expect(
+				unfired(rules, ctx("orgasm", { permitted: true }), ctx("orgasm", {})),
+			).toEqual(["Rperm"]);
+		});
+
+		it("names nothing on the always-safe unset → set transition", () => {
+			// Nothing fired for a blank, so there is nothing to reverse — the one
+			// transition #184 identified as safe, and the reason every shipped
+			// amendment surface was safe by accident.
+			expect(
+				unfired(rules, ctx("orgasm", {}), ctx("orgasm", { permitted: true })),
+			).toEqual([]);
+		});
+
+		it("never names a rule that fired both before and after", () => {
+			// Runc is unconditional on the type: a correction to `permitted` has
+			// nothing to say about it, and reversing it would undo an effect the
+			// ruling never touched.
+			expect(
+				unfired(
+					rules,
+					ctx("orgasm", { permitted: true }),
+					ctx("orgasm", { permitted: false }),
+				),
+			).not.toContain("Runc");
+		});
+
+		it("returns ids, never effects", () => {
+			// The signature is the guard: what a rule *did* is the trace's answer, not
+			// this module's, because the definition may have been edited since it
+			// fired (ADR 0002).
+			const result = unfired(
+				rules,
+				ctx("orgasm", { permitted: true }),
+				ctx("orgasm", { permitted: false }),
+			);
+			expect(result.every((id) => typeof id === "string")).toBe(true);
+		});
 	});
 });
 

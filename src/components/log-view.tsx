@@ -212,6 +212,7 @@ export function LogView() {
 				agreements={agreements}
 				members={members}
 				selfId={self?.member_id ?? null}
+				selfRole={selfRole}
 				onAmended={refreshLog}
 			/>
 

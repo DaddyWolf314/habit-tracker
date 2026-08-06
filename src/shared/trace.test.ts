@@ -92,6 +92,23 @@ const ALL_DETAILS: TraceDetail[] = [
 		command: "cancel",
 		timer_id: "t5",
 	},
+	{
+		kind: "waived",
+		mechanic: "suppressed",
+		op: { kind: "counter", counter: "demerits", op: "increment", by: 2 },
+	},
+	{
+		kind: "waived",
+		mechanic: "reversed",
+		op: { kind: "counter", counter: "demerits", op: "increment", by: 2 },
+		from: 12,
+		to: 10,
+	},
+	{
+		kind: "reversal_declined",
+		reason: "an anchor reset has no inverse",
+		op: { kind: "anchor", anchor: "since_last_orgasm", at: 1_000 },
+	},
 ];
 
 describe("detail codec (JSON string at rest, typed at the read model)", () => {
@@ -142,6 +159,32 @@ describe("cause ⇄ columns (the sentinel overload is gone)", () => {
 		expect(causeColumns(domCommandCause("m1")).actor).toBe("m1");
 	});
 
+	it("round-trips the effect index, which is what a waiver names", () => {
+		// `(rule, effect_index)` has to survive the column boundary intact: it is the
+		// identity a waiver names, and the trace row's own id cannot serve because
+		// `rebuildCounters` deletes and re-derives every row (ADR 0016).
+		for (const cause of [
+			ruleCause("e1", "R12", 2),
+			amendmentCause("e1", "R12", "w1", 0),
+		]) {
+			expect(causeFromColumns(causeColumns(cause))).toEqual(cause);
+		}
+		expect(causeColumns(ruleCause("e1", "R12", 2)).effect_index).toBe(2);
+	});
+
+	it("reads a pre-v16 row back as unnameable rather than as effect 0", () => {
+		// Nothing recorded which effect of the rule wrote it, and inventing an index
+		// by re-reading today's definition is the re-derivation ADR 0016 forbids.
+		const cause = causeFromColumns({
+			caused_by_event: "e1",
+			caused_by_rule: "R2",
+			caused_by_amendment: null,
+			actor: null,
+			effect_index: null,
+		});
+		expect(cause).toEqual({ by: "rule", event: "e1", rule: "R2" });
+	});
+
 	it("distinguishes system_job from a bare direct cause", () => {
 		// Both have a null rule; a direct cause has an event, a system job does not.
 		expect(causeFromColumns(causeColumns(directCause("e2"))).by).toBe("direct");
@@ -159,6 +202,7 @@ describe("decodeTraceRow (the RPC boundary)", () => {
 			caused_by_event: "e1",
 			caused_by_rule: "R11",
 			caused_by_amendment: null,
+			effect_index: null,
 			actor: null,
 			projection: "counter:orgasms_permitted",
 			detail: encodeDetail({
@@ -185,6 +229,7 @@ describe("decodeTraceRow (the RPC boundary)", () => {
 			caused_by_event: "e1",
 			caused_by_rule: "R12",
 			caused_by_amendment: "am1",
+			effect_index: null,
 			actor: null,
 			projection: "counter:demerits",
 			detail: encodeDetail({
@@ -339,6 +384,7 @@ describe("summarizeEffectOp (confirm-sheet preview)", () => {
 				caused_by_event: "e",
 				caused_by_rule: "R8",
 				caused_by_amendment: null,
+				effect_index: null,
 				actor: null,
 				projection: "counter:demerits",
 				detail: encodeDetail({
@@ -392,6 +438,66 @@ describe("describeTraceRow (label-free chain line)", () => {
 			}),
 		);
 		expect(line.summary).toBe("+1 demerits");
+	});
+
+	it("a suppressed waiver says both halves in one line, tone 'effect'", () => {
+		// "R12 proposed +2 demerits, and the dom waived it" — and phrased through
+		// `summarizeEffectOp`, so it reads back in the words of the confirm sheet
+		// the dom unchecked it on.
+		const line = describeTraceRow(
+			row(amendmentCause("e", "R12", "w1", 2), "counter:demerits", {
+				kind: "waived",
+				mechanic: "suppressed",
+				op: { kind: "counter", counter: "demerits", op: "increment", by: 2 },
+			}),
+		);
+		expect(line).toEqual({
+			tone: "effect",
+			summary: "R12 · waived +2 demerits",
+			note: undefined,
+		});
+	});
+
+	it("a waived effect is not a near-miss", () => {
+		// The ledger has to distinguish "this never applied to you" (a rule that did
+		// not match) from "this applied and I let it go". Sharing a tone would make
+		// the log unable to say which happened.
+		const waived = describeTraceRow(
+			row(amendmentCause("e", "R12", "w1", 2), "counter:demerits", {
+				kind: "waived",
+				mechanic: "suppressed",
+				op: { kind: "counter", counter: "demerits", op: "increment", by: 2 },
+			}),
+		);
+		expect(waived.tone).not.toBe("near_miss");
+	});
+
+	it("a reversal carries the move it made as the note", () => {
+		const line = describeTraceRow(
+			row(amendmentCause("e", "R12", "w1", 2), "counter:demerits", {
+				kind: "waived",
+				mechanic: "reversed",
+				op: { kind: "counter", counter: "demerits", op: "increment", by: 2 },
+				from: 12,
+				to: 10,
+			}),
+		);
+		expect(line.summary).toBe("R12 · reversed +2 demerits");
+		expect(line.note).toBe("demerits 12 → 10");
+	});
+
+	it("a declined reversal says what stayed and why, in the near-miss shape", () => {
+		const line = describeTraceRow(
+			row(amendmentCause("e", "R12", "a2", 1), "anchor:since_last_orgasm", {
+				kind: "reversal_declined",
+				reason: "an anchor reset has no inverse",
+				op: { kind: "anchor", anchor: "since_last_orgasm", at: 1_000 },
+			}),
+		);
+		expect(line.tone).toBe("near_miss");
+		expect(line.summary).toBe(
+			"R12 · could not reverse reset since last orgasm streak: an anchor reset has no inverse",
+		);
 	});
 
 	it("near-misses carry tone 'near_miss' and the reason", () => {
@@ -464,6 +570,7 @@ describe("describeTraceRow (label-free chain line)", () => {
 				caused_by_event: null,
 				caused_by_rule: null,
 				caused_by_amendment: null,
+				effect_index: null,
 				actor: null,
 				projection: null,
 				detail: "{legacy garbage",

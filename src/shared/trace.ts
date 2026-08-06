@@ -26,6 +26,41 @@ const periodSchema = z.enum(["daily", "weekly"]);
 const matchSchema = z.record(z.string(), metadataValueSchema);
 
 /**
+ * A resolved rule effect, at rest inside a trace row (ADR 0016). Mirrors
+ * {@link EffectOp}, which is a plain TypeScript type in the zod-free engine; the
+ * two are kept honest by real code rather than an assertion — {@link traceWaived}
+ * assigns an `EffectOp` *into* this shape, and {@link describeTraceRow} passes
+ * this shape *into* `summarizeEffectOp`, so a divergence in either direction is a
+ * compile error at a call site.
+ *
+ * Only the waiver rows carry one, and they carry it for a specific reason: what
+ * was suppressed never became a projection change, so there is no `from`/`to` to
+ * describe it by, and a rebuild must be able to render the row without asking a
+ * rule definition that may have been edited since (ADR 0002).
+ */
+const effectOpSchema = z.discriminatedUnion("kind", [
+	z.object({
+		kind: z.literal("counter"),
+		counter: z.string(),
+		op: counterOpSchema,
+		by: z.number().optional(),
+	}),
+	z.object({ kind: z.literal("anchor"), anchor: z.string(), at: z.number() }),
+	z.object({
+		kind: z.literal("timer"),
+		timer: z.string(),
+		op: z.enum(["open", "close"]),
+		match_on: matchSchema.optional(),
+		tag: z.string().optional(),
+		duration_ms: z.number().optional(),
+		status: z.enum(["completed", "failed"]).optional(),
+		route_duration_to: z.string().optional(),
+		route_when_met: z.boolean().optional(),
+	}),
+	z.object({ kind: z.literal("notify"), target: z.string() }),
+]);
+
+/**
  * The typed change a trace row records — one variant per `kind`. This replaces
  * the former untyped `detail: string` blob: builders produce these, `encodeDetail`
  * serializes them, and the read model carries them decoded.
@@ -102,6 +137,41 @@ export const traceDetailSchema = z.discriminatedUnion("kind", [
 		from: z.number(),
 		to: z.number(),
 	}),
+	/**
+	 * An effect the dom overruled (ADR 0016). One row records **both halves** of
+	 * the fact — that R12 proposed +2 demerits, and that the dom waived it — which
+	 * is why the proposed `op` rides along rather than the row being a bare note
+	 * beside a counter row.
+	 *
+	 * `suppressed` is the confirm-sheet mechanic: the effect was never applied, so
+	 * there is no `from`/`to`, and the counter's history carries no peak that never
+	 * existed. `reversed` is the after-the-fact mechanic: `from`/`to` are the
+	 * compensating move, and `op` stays the effect that was *overruled* rather than
+	 * the inverse, because that is what a reader is being told about.
+	 *
+	 * Not a near-miss, deliberately: a near-miss is a rule that did not match, and
+	 * the ledger has to be able to distinguish "this never applied to you" from
+	 * "this applied and I let it go".
+	 */
+	z.object({
+		kind: z.literal("waived"),
+		mechanic: z.enum(["suppressed", "reversed"]),
+		op: effectOpSchema,
+		from: z.number().optional(),
+		to: z.number().optional(),
+	}),
+	/**
+	 * An effect that could not be un-fired, and why (ADR 0016) — in the shape a
+	 * near-miss established: the engine records why a rule did not fire so pending
+	 * state is legible, and the same instinct says to record why an effect did not
+	 * un-fire. This is #184's asymmetry stated in the ledger rather than lurking in
+	 * the model, and it is why a correction can always land.
+	 */
+	z.object({
+		kind: z.literal("reversal_declined"),
+		reason: z.string(),
+		op: effectOpSchema,
+	}),
 	z.object({
 		kind: z.literal("timer_command"),
 		// Live dom control over a running countdown (ADR 0004). Opening is no longer
@@ -131,17 +201,23 @@ export type DecodedDetail = TraceDetail | { kind: "unknown" };
  * `'dom_command'` sentinel — it now holds only real rule ids.
  */
 export type TraceCause =
-	| { by: "rule"; event: string; rule: string }
+	| { by: "rule"; event: string; rule: string; effect_index?: number }
 	| { by: "direct"; event: string }
-	| { by: "amendment"; event: string; rule: string; amendment: string }
+	| {
+			by: "amendment";
+			event: string;
+			rule: string;
+			amendment: string;
+			effect_index?: number;
+	  }
 	| { by: "system_job" }
 	| { by: "dom_command"; actor: string };
 
-export const ruleCause = (event: string, rule: string): TraceCause => ({
-	by: "rule",
-	event,
-	rule,
-});
+export const ruleCause = (
+	event: string,
+	rule: string,
+	effectIndex?: number,
+): TraceCause => ({ by: "rule", event, rule, effect_index: effectIndex });
 export const directCause = (event: string): TraceCause => ({
 	by: "direct",
 	event,
@@ -150,19 +226,36 @@ export const amendmentCause = (
 	event: string,
 	rule: string,
 	amendment: string,
-): TraceCause => ({ by: "amendment", event, rule, amendment });
+	effectIndex?: number,
+): TraceCause => ({
+	by: "amendment",
+	event,
+	rule,
+	amendment,
+	effect_index: effectIndex,
+});
 export const systemJobCause = (): TraceCause => ({ by: "system_job" });
 export const domCommandCause = (actor: string): TraceCause => ({
 	by: "dom_command",
 	actor,
 });
 
-/** The persisted cause columns of a trace row. */
+/**
+ * The persisted cause columns of a trace row.
+ *
+ * `effect_index` is part of the *cause*, not the detail: it completes the answer
+ * to "why does this row exist" — not merely rule R12, but R12's second effect —
+ * and that pair is the identity a waiver names (ADR 0016). Keeping it here rather
+ * than duplicating an optional field across every effect-shaped detail is what
+ * lets a standalone waiver find the row a landed effect wrote without the trace
+ * row ids having to be stable, which a rebuild makes sure they are not.
+ */
 export interface TraceCauseColumns {
 	caused_by_event: string | null;
 	caused_by_rule: string | null;
 	caused_by_amendment: string | null;
 	actor: string | null;
+	effect_index: number | null;
 }
 
 /** A cause → its stored columns. The one place the mapping is defined. */
@@ -174,6 +267,7 @@ export function causeColumns(cause: TraceCause): TraceCauseColumns {
 				caused_by_rule: cause.rule,
 				caused_by_amendment: null,
 				actor: null,
+				effect_index: cause.effect_index ?? null,
 			};
 		case "amendment":
 			return {
@@ -181,6 +275,7 @@ export function causeColumns(cause: TraceCause): TraceCauseColumns {
 				caused_by_rule: cause.rule,
 				caused_by_amendment: cause.amendment,
 				actor: null,
+				effect_index: cause.effect_index ?? null,
 			};
 		case "direct":
 			return {
@@ -188,6 +283,7 @@ export function causeColumns(cause: TraceCause): TraceCauseColumns {
 				caused_by_rule: null,
 				caused_by_amendment: null,
 				actor: null,
+				effect_index: null,
 			};
 		case "dom_command":
 			return {
@@ -195,6 +291,7 @@ export function causeColumns(cause: TraceCause): TraceCauseColumns {
 				caused_by_rule: null,
 				caused_by_amendment: null,
 				actor: cause.actor,
+				effect_index: null,
 			};
 		case "system_job":
 			return {
@@ -202,22 +299,33 @@ export function causeColumns(cause: TraceCause): TraceCauseColumns {
 				caused_by_rule: null,
 				caused_by_amendment: null,
 				actor: null,
+				effect_index: null,
 			};
 	}
 }
 
 /** Stored columns → typed cause. Inverse of {@link causeColumns}. */
 export function causeFromColumns(c: TraceCauseColumns): TraceCause {
+	// Rows written before the column existed carry null, which reads back as "this
+	// effect cannot be named by a waiver" — the honest answer, since nothing
+	// recorded which effect of the rule it was.
+	const effectIndex = c.effect_index ?? undefined;
 	if (c.caused_by_amendment !== null && c.caused_by_event !== null) {
 		return {
 			by: "amendment",
 			event: c.caused_by_event,
 			rule: c.caused_by_rule ?? "",
 			amendment: c.caused_by_amendment,
+			effect_index: effectIndex,
 		};
 	}
 	if (c.caused_by_event !== null && c.caused_by_rule !== null) {
-		return { by: "rule", event: c.caused_by_event, rule: c.caused_by_rule };
+		return {
+			by: "rule",
+			event: c.caused_by_event,
+			rule: c.caused_by_rule,
+			effect_index: effectIndex,
+		};
 	}
 	if (c.caused_by_event !== null)
 		return { by: "direct", event: c.caused_by_event };
@@ -406,6 +514,44 @@ export function traceNearMiss(
 	};
 }
 
+/**
+ * An effect the dom overruled (ADR 0016). `op` is the effect that was
+ * *overruled*, in both mechanics — for a reversal the compensating move is
+ * carried as `from`/`to` instead, since "R12's +2 demerits, reversed" is what a
+ * reader is being told and "−2 demerits" is merely how it was done.
+ */
+export function traceWaived(
+	cause: TraceCause,
+	at: number,
+	info: {
+		mechanic: "suppressed" | "reversed";
+		op: EffectOp;
+		from?: number;
+		to?: number;
+	},
+): TraceEntry {
+	return {
+		cause,
+		at,
+		projection: projectionOf(info.op),
+		detail: { kind: "waived", ...info },
+	};
+}
+
+/** An effect whose inverse no longer commutes, with the reason (ADR 0016). */
+export function traceReversalDeclined(
+	cause: TraceCause,
+	at: number,
+	info: { reason: string; op: EffectOp },
+): TraceEntry {
+	return {
+		cause,
+		at,
+		projection: projectionOf(info.op),
+		detail: { kind: "reversal_declined", ...info },
+	};
+}
+
 export function traceAutoClose(
 	at: number,
 	timer: string,
@@ -506,9 +652,32 @@ export function phraseCounter(
 }
 
 /**
+ * The projection an effect op targets, in the `kind:id` form the trace column
+ * uses. The one place the mapping is written down, so a waiver row lands on the
+ * same projection its effect would have — a suppressed `+2 demerits` has to
+ * appear on `counter:demerits`'s chain even though the counter never moved,
+ * because "why is this not 12" is asked of the counter.
+ */
+export function projectionOf(op: EffectOp): string {
+	switch (op.kind) {
+		case "counter":
+			return `counter:${op.counter}`;
+		case "anchor":
+			return `anchor:${op.anchor}`;
+		case "timer":
+			return `timer:${op.timer}`;
+		case "notify":
+			return `notify:${op.target}`;
+	}
+}
+
+/**
  * A forward-running phrase for one effect a ruling would fire — the line the dom's
- * confirm sheet lists before commit (handoff §8). Visibility only; the actual
- * effects apply server-side.
+ * confirm sheet lists before commit (handoff §8), and the line a `waived` row
+ * reads back through. The sheet's list is no longer visibility-only: each line is
+ * a checkbox, and unchecking one waives that effect (ADR 0016). Sharing this
+ * function is what makes the ledger say it in the words the dom unchecked. The
+ * effects themselves still apply — or are withheld — server-side.
  */
 export function summarizeEffectOp(op: EffectOp): string {
 	switch (op.kind) {
@@ -536,7 +705,7 @@ export interface TraceLine {
 }
 
 /** The name after the `counter:` / `timer:` / `anchor:` prefix. */
-function projectionName(projection: string | null): string {
+export function projectionName(projection: string | null): string {
 	if (!projection) return "projection";
 	const i = projection.indexOf(":");
 	return i === -1 ? projection : projection.slice(i + 1);
@@ -603,6 +772,27 @@ export function describeTraceRow(row: TraceRow): TraceLine {
 			return {
 				tone: "system",
 				summary: `${humanize(name)} reset (${detail.period})`,
+			};
+		case "waived":
+			// Both halves in one line, phrased through the same `summarizeEffectOp` the
+			// confirm sheet lists effects with — the dom reads back exactly the words
+			// they unchecked. A reversal appends the move it made, because unlike a
+			// suppression it changed a number someone can see.
+			return {
+				tone: "effect",
+				summary: `${prefix}${detail.mechanic === "suppressed" ? "waived" : "reversed"} ${summarizeEffectOp(detail.op)}`,
+				note:
+					detail.from !== undefined && detail.to !== undefined
+						? `${humanize(name)} ${detail.from} → ${detail.to}`
+						: undefined,
+			};
+		case "reversal_declined":
+			// The near-miss tone, for the reason the near-miss shape was borrowed: this
+			// is a recorded non-action with a stated cause, and it reads beside the
+			// effects that *did* land without being mistaken for one.
+			return {
+				tone: "near_miss",
+				summary: `${prefix}could not reverse ${summarizeEffectOp(detail.op)}: ${detail.reason}`,
 			};
 		case "timer_command":
 			return {

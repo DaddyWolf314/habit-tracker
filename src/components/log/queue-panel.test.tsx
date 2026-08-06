@@ -1,11 +1,18 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
 	amendEvent: vi.fn(() => Promise.resolve({})),
 }));
 
+import { amendEvent } from "#/lib/api.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
@@ -125,5 +132,92 @@ describe("the dom's ruling buttons", () => {
 		// one rung along.
 		renderQueue([{ ...PENDING, composite_metadata: { quality: "partial" } }]);
 		expect(screen.getByText(/Part of the way/)).not.toBeNull();
+	});
+});
+
+/**
+ * The confirm sheet's effect list is a set of checkboxes (#191, ADR 0016).
+ * `queue-panel.tsx` used to carry the comment this replaces — "visibility only;
+ * no effect-waiving (a scoring-layer concern)" — and the scoring layer is here.
+ */
+describe("waiving an effect on the confirm sheet", () => {
+	afterEach(cleanup);
+
+	/** Two effects, so unchecking one is distinguishable from unchecking all. */
+	const SCORING: VersionedRule[] = [
+		{
+			id: "R-quality",
+			origin: "custom",
+			adopted: false,
+			upstream_changed: false,
+			versions: [
+				{
+					effective_from: 0,
+					enabled: true,
+					name: "Partial work",
+					condition: {
+						type: "task_completed",
+						metadata: { quality: "partial" },
+					},
+					effects: [
+						{ verb: "increment_counter", counter: "demerits", by: 2 },
+						{ verb: "increment_counter", counter: "tasks_completed", by: 1 },
+					],
+				},
+			],
+		},
+	];
+
+	function reviewPartial() {
+		render(
+			<QueuePanel
+				events={[PENDING]}
+				types={[TYPE]}
+				rules={SCORING}
+				members={MEMBERS}
+				anchors={ANCHORS}
+				timers={[]}
+				selfRole="dom"
+				onAmended={() => {}}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Part of the way" }));
+		fireEvent.click(screen.getByRole("button", { name: "Review ruling" }));
+	}
+
+	it("renders each previewed effect as a checkbox, checked", () => {
+		reviewPartial();
+		const boxes = screen.getAllByRole("checkbox");
+		expect(boxes).toHaveLength(2);
+		expect(boxes.every((box) => (box as HTMLInputElement).checked)).toBe(true);
+		expect(screen.getByText("+2 demerits")).not.toBeNull();
+	});
+
+	it("sends the unchecked effect as a waiver, by rule and position", async () => {
+		reviewPartial();
+		fireEvent.click(screen.getAllByRole("checkbox")[0]);
+		fireEvent.click(screen.getByRole("button", { name: "Confirm ruling" }));
+
+		await waitFor(() =>
+			expect(amendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					kind: "adjudication",
+					waive: [{ rule_id: "R-quality", effect_index: 0 }],
+				}),
+			),
+		);
+	});
+
+	it("sends no waiver when nothing is unchecked", async () => {
+		// An ordinary ruling must not carry an empty waiver: the server gates a
+		// `waive` list on the rule-authoring roles, and an adjudicator who is not one
+		// would be refused for a field they never meant to send.
+		reviewPartial();
+		fireEvent.click(screen.getByRole("button", { name: "Confirm ruling" }));
+		await waitFor(() =>
+			expect(amendEvent).toHaveBeenCalledWith(
+				expect.objectContaining({ waive: undefined }),
+			),
+		);
 	});
 });

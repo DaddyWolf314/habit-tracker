@@ -440,3 +440,63 @@ describe("v14 counter versions", () => {
 		]);
 	});
 });
+
+/**
+ * v16 — an effect can be waived, and a commuting effect reversed (#191, ADR
+ * 0016). Two added columns and, deliberately, no backfill.
+ */
+describe("v16 waivers and the effect index", () => {
+	/** A DO paired before v16, holding one ruling and the trace row it caused. */
+	function preV16(): Database.Database {
+		const db = doAtVersion(15);
+		const sql = sqlStorage(db);
+		sql.exec(
+			`INSERT INTO amendments (id, target_event_id, kind, actor, created_at, patch, note, supersedes)
+				VALUES ('amd-1', 'evt-1', 'adjudication', 'm1', 1000, '{"permitted":false}', NULL, NULL)`,
+		);
+		sql.exec(
+			`INSERT INTO trace (at, caused_by_event, caused_by_rule, projection, detail)
+				VALUES (1000, 'evt-1', 'R12', 'counter:demerits', '{"kind":"counter","op":"increment","by":2,"from":0,"to":2}')`,
+		);
+		return db;
+	}
+
+	it("adds the waiver columns to a DO that already has amendments", () => {
+		const db = preV16();
+		expect(columns(db, "amendments")).not.toContain("waived");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "amendments")).toContain("waived");
+		expect(columns(db, "amendments")).toContain("suppresses");
+	});
+
+	it("adds the effect index to the trace", () => {
+		const db = preV16();
+		expect(columns(db, "trace")).not.toContain("effect_index");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "trace")).toContain("effect_index");
+	});
+
+	it("leaves existing rows null — no invented effect index", () => {
+		// Nothing recorded which effect of R12 wrote that row, and inventing one by
+		// re-reading today's rule definition is exactly the re-derivation ADR 0016
+		// forbids. Null reads back as "this effect cannot be named by a waiver",
+		// which is the honest answer; a rebuild re-derives it with an index.
+		const db = preV16();
+		runMigrations(sqlStorage(db));
+		const trace = db.prepare(`SELECT effect_index FROM trace`).get() as {
+			effect_index: number | null;
+		};
+		expect(trace.effect_index).toBeNull();
+		const amendment = db
+			.prepare(`SELECT waived, suppresses, patch FROM amendments`)
+			.get() as {
+			waived: string | null;
+			suppresses: string | null;
+			patch: string;
+		};
+		expect(amendment.waived).toBeNull();
+		expect(amendment.suppresses).toBeNull();
+		// And the ruling itself is untouched.
+		expect(JSON.parse(amendment.patch).permitted).toBe(false);
+	});
+});

@@ -14,6 +14,29 @@ const amendmentBase = {
 	created_at: z.number().int(),
 };
 
+/**
+ * One effect a waiver overrules, named by the rule that produced it and the
+ * effect's position in that rule's `effects` list (ADR 0016).
+ *
+ * A position rather than a description of the effect, because the trace row has
+ * to name *what* was waived and a rebuild has to reproduce the same choice: the
+ * pair `(rule_id, effect_index)` is stable across a replay in a way a phrase
+ * ("+2 demerits") is not, and it stays meaningful when a rule moves more than one
+ * counter. What it deliberately does *not* do is re-derive the effect from the
+ * rule definition on read — a definition may have been edited since (ADR 0002),
+ * so the effect that is reversed is always read back from the trace.
+ */
+export const waivedEffectSchema = z.object({
+	rule_id: z.string().min(1),
+	effect_index: z.number().int().min(0),
+});
+export type WaivedEffect = z.infer<typeof waivedEffectSchema>;
+
+/** The `rule#index` key a waived-effect set is looked up by. */
+export function waivedEffectKey(effect: WaivedEffect): string {
+	return `${effect.rule_id}#${effect.effect_index}`;
+}
+
 export const amendmentSchema = z.discriminatedUnion("kind", [
 	/**
 	 * A ruling on awaited keys. `patch` may only touch keys the actor's role is
@@ -55,8 +78,39 @@ export const amendmentSchema = z.discriminatedUnion("kind", [
 		note: z.string(),
 		...amendmentBase,
 	}),
+	/**
+	 * The dom overruling a rule's *output* while leaving the fact it matched on
+	 * standing (ADR 0016). Mercy, not correction — the rule fired correctly and is
+	 * being let go — which is why it is an amendment (a post-hoc record against an
+	 * event) rather than a direct counter adjustment: the latter would file a
+	 * relationship act under the `+1` sugar and leave the trace saying "dom
+	 * adjusted demerits −1" without ever saying why.
+	 *
+	 * One kind, two mechanics, chosen by whether the effect has landed:
+	 *  - `suppresses` set — waived on the confirm sheet, alongside the ruling whose
+	 *    id it carries. The effect is *never applied*; there is no compensating
+	 *    move, because a counter's history must carry no peak that never existed.
+	 *  - `suppresses` absent — waived after the effect landed (R2 fires at append,
+	 *    where there is no sheet to uncheck), so each named effect is **reversed**
+	 *    where its inverse still commutes and files a `reversal_declined` trace row
+	 *    where it does not.
+	 *
+	 * It touches no composite metadata: a waiver says nothing about whether the
+	 * fact was true, only about what follows from it.
+	 */
+	z.object({
+		kind: z.literal("waiver"),
+		waived: z.array(waivedEffectSchema).min(1),
+		/** The adjudication whose effects this suppressed before they landed. */
+		suppresses: z.string().optional(),
+		note: z.string().optional(),
+		...amendmentBase,
+	}),
 ]);
 export type Amendment = z.infer<typeof amendmentSchema>;
+
+/** A waiver, narrowed — the arm the suppression and reversal paths pass around. */
+export type Waiver = Extract<Amendment, { kind: "waiver" }>;
 
 /**
  * The payload a client submits to amend an event. The server assigns `id`,
@@ -72,6 +126,13 @@ export const amendmentInputSchema = z.discriminatedUnion("kind", [
 		patch: z.record(z.string(), metadataValueSchema),
 		note: z.string().optional(),
 		supersedes: z.string().optional(),
+		/**
+		 * Effects the dom unchecked on the confirm sheet (ADR 0016). Submitted with
+		 * the ruling rather than after it because suppression has to happen *before*
+		 * the effect lands: the server splits this into a companion `waiver`
+		 * amendment naming this ruling, and the re-evaluation skips exactly these.
+		 */
+		waive: z.array(waivedEffectSchema).optional(),
 	}),
 	z.object({
 		kind: z.literal("note_appended"),
@@ -87,6 +148,18 @@ export const amendmentInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("response"),
 		target_event_id: z.string().min(1),
 		note: z.string().min(1),
+	}),
+	/**
+	 * A standalone waiver over effects that have already landed — the entry point
+	 * from a log row, for the unconditional rules that fire at append with no
+	 * ruling in play. `suppresses` is absent by construction: a client cannot
+	 * suppress after the fact, and the server assigns it on the confirm-sheet path.
+	 */
+	z.object({
+		kind: z.literal("waiver"),
+		target_event_id: z.string().min(1),
+		waived: z.array(waivedEffectSchema).min(1),
+		note: z.string().optional(),
 	}),
 ]);
 export type AmendmentInput = z.infer<typeof amendmentInputSchema>;

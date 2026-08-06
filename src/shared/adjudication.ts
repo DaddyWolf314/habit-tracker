@@ -131,7 +131,7 @@ export function canRespondTo(
 
 /** One amendment rendered for the chain view (handoff §4.6). */
 export interface AmendmentLine {
-	tone: "ruling" | "note" | "retraction" | "response";
+	tone: "ruling" | "note" | "retraction" | "response" | "waiver";
 	/** What happened, minus the actor/time the row supplies. */
 	summary: string;
 	/** Any prose attached to the amendment. */
@@ -181,5 +181,20 @@ export function describeAmendment(amendment: Amendment): AmendmentLine {
 				note: amendment.note,
 				...base,
 			};
+		case "waiver": {
+			// The rules, not the effect phrases: the amendment names positions
+			// (`rule#index`), and what those positions *did* is the trace's answer —
+			// rendered a line below by `describeTraceRow`, through the effect phrasing
+			// the confirm sheet uses. Restating it here would mean re-deriving an
+			// effect from a rule definition that may have moved on (ADR 0002).
+			const rules = [...new Set(amendment.waived.map((w) => w.rule_id))];
+			const count = amendment.waived.length;
+			return {
+				tone: "waiver",
+				summary: `waived ${count === 1 ? "an effect" : `${count} effects`} of ${rules.join(", ")}`,
+				note: amendment.note,
+				...base,
+			};
+		}
 	}
 }

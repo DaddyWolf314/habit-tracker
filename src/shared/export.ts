@@ -75,6 +75,14 @@ export function amendmentToExportRow(amendment: Amendment): ExportRow {
 		note: "note" in amendment ? (amendment.note ?? null) : null,
 		supersedes:
 			amendment.kind === "adjudication" ? (amendment.supersedes ?? null) : null,
+		// A waiver's whole content is *which* effects it overruled (ADR 0016), so
+		// leaving these out would export the fact that a mercy happened without the
+		// fact of what it was — the export is the couple's record, and a waiver with
+		// no effects named is not one.
+		waived:
+			amendment.kind === "waiver" ? JSON.stringify(amendment.waived) : null,
+		suppresses:
+			amendment.kind === "waiver" ? (amendment.suppresses ?? null) : null,
 	};
 }
 

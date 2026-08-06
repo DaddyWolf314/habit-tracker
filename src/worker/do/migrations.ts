@@ -403,6 +403,36 @@ export const DO_MIGRATIONS: string[][] = [
 			PRIMARY KEY (type_id, field_key, option)
 		)`,
 	],
+	// v16 — an effect can be waived, and a commuting effect reversed (#191, ADR
+	// 0016). Two columns, one on each side of the act.
+	//
+	// `amendments.waived` holds the fifth kind's payload: the `(rule_id,
+	// effect_index)` pairs it overrules, as JSON. A position rather than a
+	// description, because a rebuild has to reproduce the same choice and a rule's
+	// definition may have been edited since (ADR 0002). `suppresses` names the
+	// adjudication a confirm-sheet waiver rode in with, and is the one bit that
+	// distinguishes the two mechanics: set ⇒ the effect was never applied; absent ⇒
+	// it landed and was reversed (or a `reversal_declined` row says why not). It is
+	// a separate column from `supersedes` on purpose — superseding replaces a
+	// ruling, suppressing withholds an effect, and one nullable TEXT column
+	// carrying either meaning is how the two get conflated later.
+	//
+	// `trace.effect_index` completes the cause of an effect row: not merely "R12",
+	// but "R12's second effect". That pair is what a waiver names, and it has to be
+	// a column rather than the trace row's own id because `rebuildCounters` deletes
+	// and re-derives every row — the ids are deliberately not stable across a
+	// rebuild, and a waiver written against one would dangle.
+	//
+	// **No backfill.** Rows written before this carry null, which reads back as
+	// "this effect cannot be named by a waiver": nothing recorded which effect of
+	// the rule wrote them, and inventing an index by re-reading today's rule
+	// definitions is exactly the re-derivation ADR 0016 forbids. A rebuild
+	// re-derives them with indices in the ordinary course.
+	[
+		`ALTER TABLE amendments ADD COLUMN waived TEXT`,
+		`ALTER TABLE amendments ADD COLUMN suppresses TEXT`,
+		`ALTER TABLE trace ADD COLUMN effect_index INTEGER`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";
