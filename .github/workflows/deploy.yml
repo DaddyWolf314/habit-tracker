@@ -1,0 +1,54 @@
+# Deploy to Cloudflare Workers on every push to main.
+#
+# Applies pending D1 migrations (migrations/d1) before deploying so new code
+# never runs against an old routing schema. Durable Object (CoupleDO) SQLite
+# migrations are handled in-code by the DO itself and need no CI step.
+#
+# Requires a repository secret:
+#   CLOUDFLARE_API_TOKEN — create at dash.cloudflare.com → My Profile →
+#     API Tokens → Create Token → Custom token, with exactly:
+#       Account → Workers Scripts → Edit   (wrangler deploy)
+#       Account → D1 → Edit                (D1 migrations)
+#     scoped under Account Resources to account 22d893d7fc1c1d8bb09d0e104d6f2564
+#     (matches account_id in wrangler.jsonc; no user/membership perms needed).
+#     Add it with: gh secret set CLOUDFLARE_API_TOKEN
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Apply D1 migrations
+        run: npm run db:migrate:remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Deploy
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
