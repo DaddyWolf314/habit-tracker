@@ -307,6 +307,23 @@ in and should not.
   couple's own event type still reads as words. _Avoid_: "display name" (an
   Agreement **version** carries one, a different thing); a label that restates
   the stored token.
+- **Option overlay** — a couple's own additions to a **pack enum**, stored beside
+  the pack definition rather than inside it and merged at the DO's *type read
+  seam* (ADR 0014, #185). **Additive only**: it may add a word and change what
+  that word reads as, never suppress a word the pack ships. The pack keeps
+  owning `event_types.definition`, so a version bump still delivers every other
+  change to a type the couple has extended — which is what makes this not
+  **adoption**: an event type is a composite, and freezing one to add a word
+  would pay for it with the whole rest of the type. Downstream, a couple's word
+  is indistinguishable from the pack's — that indistinguishability *is* the
+  design, and the vocabulary editor asks for provenance separately rather than
+  putting it where every reader would see it. _Avoid_: "custom type" (a whole
+  type authored by a couple, a different thing); "adopted" (ADR 0002's word, for
+  rules and Agreement kinds).
+- **Option token** — the stored value of an enum option, as opposed to its
+  **Option label**. Lower snake case, minted once, and never moved: it is what a
+  logged event, a rule condition and an export carry, so renaming one would
+  orphan every event holding it. Renaming a word changes only the label.
 - **Valence** — `positive | negative | neutral` on a type or counter; drives
   display and the deferred scoring layer. Overridable per rule effect.
 - **Composite state** — an event's current metadata: original overlaid by

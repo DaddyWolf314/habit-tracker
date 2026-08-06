@@ -84,9 +84,16 @@ export interface TimerDebugRow {
  * through `blockConcurrencyWhile`, which the real runtime does not await either
  * — but the fake awaits it before handing the DO back, so a test never observes
  * a half-seeded schema.
+ *
+ * Pass an existing database to **wake a second DO over the same storage**. That
+ * is what a deploy does: the code changes, and the next wake re-runs migrations
+ * and re-seeds against whatever is already there. It is the only way to exercise
+ * `ensureSeeded`'s upsert on a couple that has been used (#185).
  */
-export async function newCoupleDO(): Promise<DoHarness> {
-	const db = new Database(":memory:");
+export async function newCoupleDO(
+	existing?: Database.Database,
+): Promise<DoHarness> {
+	const db = existing ?? new Database(":memory:");
 	const sql = sqlStorage(db);
 	let alarmAt: number | null = null;
 	let gate: Promise<unknown> = Promise.resolve();

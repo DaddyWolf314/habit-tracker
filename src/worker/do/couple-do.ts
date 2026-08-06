@@ -61,6 +61,10 @@ import {
 	checkMetadataValue,
 	type EventType,
 	eventTypeSchema,
+	type MetadataField,
+	type OptionAddition,
+	optionAdditionSchema,
+	withAddedOptions,
 } from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
 import {
@@ -121,6 +125,7 @@ import {
 	type MetadataValue,
 	type Role,
 	resolveSubjectRole,
+	rolePermits,
 	type Visibility,
 } from "#/shared/roles.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
@@ -298,6 +303,15 @@ interface CounterVersionRow {
 	counter_id: string;
 	effective_from: number;
 	definition: string;
+	[key: string]: SqlStorageValue;
+}
+
+/** One couple-added enum option (#185) — the overlay `withAddedOptions` folds in. */
+interface OptionRow {
+	type_id: string;
+	field_key: string;
+	option: string;
+	label: string | null;
 	[key: string]: SqlStorageValue;
 }
 
@@ -1931,6 +1945,154 @@ export class CoupleDO extends DurableObject<Env> {
 			JSON.stringify(type),
 		);
 		return type;
+	}
+
+	/**
+	 * The couple's own added options, unmerged (#185) — which words are *theirs*.
+	 *
+	 * Deliberately its own endpoint rather than a marker on the merged type. Every
+	 * other reader must be unable to tell a couple's word from the pack's, since
+	 * that indistinguishability is what buys the zero downstream changes; the
+	 * editor is the one surface with a legitimate need for provenance, so it asks
+	 * for it separately instead of putting it where everyone would see it.
+	 */
+	async listEventTypeOptions(identityHash: string): Promise<OptionAddition[]> {
+		this.requireMember(identityHash);
+		return this.optionAdditions();
+	}
+
+	/**
+	 * Adds a word to a pack enum (#185, ADR 0014) and returns the type as it now
+	 * reads. Additive: the pack definition is untouched, so a later bump still
+	 * delivers every other change to this type.
+	 *
+	 * Returning the merged type rather than an ack is what makes the composer show
+	 * the new word immediately — one round trip, through the same seam every other
+	 * reader uses.
+	 */
+	async addEventTypeOption(
+		identityHash: string,
+		input: unknown,
+	): Promise<EventType> {
+		const me = this.requireMember(identityHash);
+		const addition = this.parseOptionAddition(input);
+		const field = this.enumFieldToExtend(me, addition);
+		// One membership test covers both collisions, because the field is read
+		// through the merged seam: a word the pack already ships and a word this
+		// couple already added are the same answer to the person typing it.
+		if (field.options.includes(addition.option)) {
+			throw coupleError("CONFLICT", "that option already exists");
+		}
+		this.sql.exec(
+			`INSERT INTO event_type_options
+				(type_id, field_key, option, label, added_by, added_at)
+				VALUES (?, ?, ?, ?, ?, ?)`,
+			addition.type_id,
+			addition.field_key,
+			addition.option,
+			addition.label ?? null,
+			me.id,
+			Date.now(),
+		);
+		return this.eventTypeById(addition.type_id) as EventType;
+	}
+
+	/**
+	 * Renames a word the couple added — its **label**, never its token. The token
+	 * is what logged events, rule conditions and the export carry, so renaming one
+	 * would orphan every event holding it; the label is the only part a person
+	 * reads, and ADR 0008 already routes every surface through `optionLabel`.
+	 *
+	 * Only a couple-added option is renamable. Overriding the pack's own copy is a
+	 * different mechanism — it forks copy a bump is meant to keep improving — and
+	 * is out of scope here for the same reason suppressing a pack option is.
+	 */
+	async renameEventTypeOption(
+		identityHash: string,
+		input: unknown,
+	): Promise<EventType> {
+		const me = this.requireMember(identityHash);
+		const addition = this.parseOptionAddition(input);
+		if (!addition.label) {
+			throw coupleError("BAD_REQUEST", "a word needs something to read as");
+		}
+		this.enumFieldToExtend(me, addition);
+		const existing = this.sql
+			.exec<{ option: string }>(
+				`SELECT option FROM event_type_options
+					WHERE type_id = ? AND field_key = ? AND option = ?`,
+				addition.type_id,
+				addition.field_key,
+				addition.option,
+			)
+			.toArray()[0];
+		if (!existing) {
+			throw coupleError("BAD_REQUEST", "only a word you added can be renamed");
+		}
+		this.sql.exec(
+			`UPDATE event_type_options SET label = ?
+				WHERE type_id = ? AND field_key = ? AND option = ?`,
+			addition.label,
+			addition.type_id,
+			addition.field_key,
+			addition.option,
+		);
+		return this.eventTypeById(addition.type_id) as EventType;
+	}
+
+	private parseOptionAddition(input: unknown): OptionAddition {
+		const parsed = optionAdditionSchema.safeParse(input);
+		if (!parsed.success) {
+			throw coupleError(
+				"BAD_REQUEST",
+				parsed.error.issues[0]?.message ?? "invalid option",
+			);
+		}
+		return parsed.data;
+	}
+
+	/**
+	 * The enum field this caller may extend, or the reason they may not.
+	 *
+	 * Gated on the field's own `set_permission` rather than on a policy of its own.
+	 * The type schema already says who may put a value in this field, and adding to
+	 * the list of values you may put there is that same authority — so the words
+	 * for what happened to you are never behind your partner, and a pack type that
+	 * tightens a field tightens who may extend it with nothing to keep in step. A
+	 * second answer here would be a second thing to get wrong.
+	 */
+	private enumFieldToExtend(
+		me: MemberRow,
+		addition: OptionAddition,
+	): Extract<MetadataField, { kind: "enum" }> {
+		this.assertLive();
+		if (this.status() !== "active") {
+			throw coupleError("BAD_REQUEST", "roles are not confirmed yet");
+		}
+		const type = this.eventTypeById(addition.type_id);
+		if (!type) {
+			throw coupleError(
+				"BAD_REQUEST",
+				`unknown event type: ${addition.type_id}`,
+			);
+		}
+		const field = type.metadata[addition.field_key];
+		if (!field) {
+			throw coupleError("BAD_REQUEST", `unknown field: ${addition.field_key}`);
+		}
+		if (field.kind !== "enum") {
+			throw coupleError(
+				"BAD_REQUEST",
+				`${addition.field_key} is not a list of options`,
+			);
+		}
+		if (!this.roleAllowed(me.role as Role | null, field.set_permission)) {
+			throw coupleError(
+				"FORBIDDEN",
+				`your role may not set: ${addition.field_key}`,
+			);
+		}
+		return field;
 	}
 
 	// ── Event log (handoff §4.1) ─────────────────────────────────────────────
@@ -3619,7 +3781,7 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	private roleAllowed(role: Role | null, permitted: Role[]): boolean {
-		return role !== null && permitted.includes(role);
+		return rolePermits(role, permitted);
 	}
 
 	/**
@@ -3653,11 +3815,22 @@ export class CoupleDO extends DurableObject<Env> {
 
 	// ── Event / counter SQL helpers ──────────────────────────────────────────
 
+	/**
+	 * The type read seam (#185, ADR 0014). Every server-side read of a type goes
+	 * through here or {@link eventTypeById}, and both fold the couple's added enum
+	 * options in — so log validation, rule validation, the queue, the engine, the
+	 * export and the client all see one merged vocabulary with no per-caller
+	 * awareness. Nothing downstream can tell a couple's word from the pack's,
+	 * which is the property the whole design buys.
+	 */
 	private eventTypes(): EventType[] {
+		const additions = this.optionAdditions();
 		return this.sql
 			.exec<{ definition: string }>(`SELECT definition FROM event_types`)
 			.toArray()
-			.map((r) => JSON.parse(r.definition) as EventType);
+			.map((r) =>
+				withAddedOptions(JSON.parse(r.definition) as EventType, additions),
+			);
 	}
 
 	private eventTypeById(id: string): EventType | undefined {
@@ -3667,7 +3840,38 @@ export class CoupleDO extends DurableObject<Env> {
 				id,
 			)
 			.toArray()[0];
-		return row ? (JSON.parse(row.definition) as EventType) : undefined;
+		return row
+			? withAddedOptions(
+					JSON.parse(row.definition) as EventType,
+					this.optionAdditions(id),
+				)
+			: undefined;
+	}
+
+	/**
+	 * The couple's added enum options, oldest first — the order they appear in
+	 * after the pack's own, so the list a person sees does not reshuffle when they
+	 * rename one.
+	 */
+	private optionAdditions(typeId?: string): OptionAddition[] {
+		const rows = (
+			typeId === undefined
+				? this.sql.exec<OptionRow>(
+						`SELECT type_id, field_key, option, label FROM event_type_options
+							ORDER BY added_at ASC, option ASC`,
+					)
+				: this.sql.exec<OptionRow>(
+						`SELECT type_id, field_key, option, label FROM event_type_options
+							WHERE type_id = ? ORDER BY added_at ASC, option ASC`,
+						typeId,
+					)
+		).toArray();
+		return rows.map((row) => ({
+			type_id: row.type_id,
+			field_key: row.field_key,
+			option: row.option,
+			...(row.label === null ? {} : { label: row.label }),
+		}));
 	}
 
 	private eventRows(

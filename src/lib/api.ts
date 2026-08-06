@@ -12,7 +12,7 @@ import type {
 	CreateCounterBody,
 	UpdateCounterBody,
 } from "#/shared/counters.ts";
-import type { EventType } from "#/shared/event-types.ts";
+import type { EventType, OptionAddition } from "#/shared/event-types.ts";
 import type { EventView, LogEventInput } from "#/shared/events.ts";
 import type {
 	CoupleExport,
@@ -282,6 +282,38 @@ export function listAuditLog(): Promise<{ entries: AuditEntry[] }> {
 /** The couple's event-type schema set (starter seven + custom). */
 export function listEventTypes(): Promise<{ types: EventType[] }> {
 	return apiFetch<{ types: EventType[] }>("/api/event-types");
+}
+
+/**
+ * The words this couple added, unmerged (#185) — provenance the merged types
+ * deliberately do not carry, so only the editor asks for it.
+ */
+export function listEventTypeOptions(): Promise<{ options: OptionAddition[] }> {
+	return apiFetch<{ options: OptionAddition[] }>("/api/event-types/options");
+}
+
+/**
+ * Adds a word to a pack enum (#185). Both of these return the type as it now
+ * reads, so the caller re-renders from the server's merge rather than patching
+ * a local copy and hoping the two agree.
+ */
+export function addEventTypeOption(
+	addition: OptionAddition,
+): Promise<EventType> {
+	return apiFetch<EventType>("/api/event-types/options", {
+		method: "POST",
+		body: addition,
+	});
+}
+
+/** Changes what a couple-added word reads as. The stored token never moves. */
+export function renameEventTypeOption(
+	addition: OptionAddition & { label: string },
+): Promise<EventType> {
+	return apiFetch<EventType>("/api/event-types/options", {
+		method: "PATCH",
+		body: addition,
+	});
 }
 
 /** The event log, newest first, as composite views. */
