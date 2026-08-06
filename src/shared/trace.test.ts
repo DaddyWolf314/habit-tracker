@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { VersionedAgreement } from "./agreements.ts";
 import type { EffectOp } from "./engine.ts";
 import {
 	amendmentCause,
@@ -400,6 +401,21 @@ describe("summarizeEffectOp (confirm-sheet preview)", () => {
 	});
 });
 
+/** A term renamed since it was cited, so a citation has both halves to render. */
+const AGREEMENT: VersionedAgreement = {
+	id: "ag_1",
+	kind: "protocol",
+	versions: [
+		{ effective_from: 0, name: "Ten demerits", text: "…", retired: false },
+		{
+			effective_from: 2_000,
+			name: "A week of quiet",
+			text: "…",
+			retired: false,
+		},
+	],
+};
+
 describe("describeTraceRow (label-free chain line)", () => {
 	const row = (
 		cause: TraceCause,
@@ -425,6 +441,44 @@ describe("describeTraceRow (label-free chain line)", () => {
 			}),
 		);
 		expect(line).toEqual({ tone: "effect", summary: "R2 · +1 demerits" });
+	});
+
+	it("names a crossing's rung and the term as it read at the time", () => {
+		// Two clocks in one line: the rung is what the ladder said when the counter
+		// moved, the name is what the term said when the act happened (ADR 0006).
+		const line = describeTraceRow(
+			row(directCause("e"), "counter:demerits", {
+				kind: "crossing",
+				rung: 10,
+				agreement_ref: "ag_1",
+				occurred_at: 1_000,
+				from: 9,
+				to: 10,
+			}),
+			{ agreements: [AGREEMENT], now: 3_000 },
+		);
+		expect(line.tone).toBe("effect");
+		expect(line.summary).toBe("demerits crossed 10");
+		// Renamed since, so the reader can still find it — and the *old* name leads,
+		// because rendering today's would rewrite what the crossing announced.
+		expect(line.note).toBe("Ten demerits (now: A week of quiet)");
+	});
+
+	it("falls back to the raw ref when the corpus isn't to hand", () => {
+		// The counter's own chain view renders these rows without the corpus beside
+		// them; an opaque id is a better answer than a blank.
+		const line = describeTraceRow(
+			row(ruleCause("e", "R2"), "counter:demerits", {
+				kind: "crossing",
+				rung: 10,
+				agreement_ref: "ag_1",
+				occurred_at: 1_000,
+				from: 9,
+				to: 10,
+			}),
+		);
+		expect(line.summary).toBe("R2 · demerits crossed 10");
+		expect(line.note).toBe("ag_1");
 	});
 
 	it("direct manipulation has no rule prefix", () => {

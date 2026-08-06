@@ -46,6 +46,27 @@ export interface NotificationSignals {
 	 * reaches the badge.
 	 */
 	agreement_changes: number;
+	/**
+	 * Rung crossings neither this member has looked at yet (#193, ADR 0015).
+	 *
+	 * The one signal here that is not addressed to *someone*. Every other entry
+	 * counts a thing a partner did to this member — a ruling, a response, a rule
+	 * they changed — and a crossing is nobody's approach: a bare logged event
+	 * notifies no one, so without this a crossing reaches the dom only when the
+	 * underlying event happens to be pending a ruling, and reaches the sub not at
+	 * all.
+	 *
+	 * Counted for **both** members, unfiltered by actor, and that is the deliberate
+	 * difference from {@link rule_changes}. A rule change is news only to the
+	 * partner who didn't make it; a ladder is a term binding both, and hiding its
+	 * state from the person it binds would make the consent record asymmetric in the
+	 * one direction it must never be (Handoff §8's "no anxiety mechanics" governs
+	 * pressure the *app* invents, not a term the couple agreed).
+	 *
+	 * Still a count, never content — which rung, on which counter, and what it
+	 * costs are all inside the app.
+	 */
+	crossings: number;
 }
 
 /** The single content-free unread count shown as "You have N new items". */
@@ -55,7 +76,8 @@ export function unreadCount(signals: NotificationSignals): number {
 		signals.updates_received +
 		(signals.recovery_pending ? 1 : 0) +
 		signals.rule_changes +
-		signals.agreement_changes
+		signals.agreement_changes +
+		signals.crossings
 	);
 }
 

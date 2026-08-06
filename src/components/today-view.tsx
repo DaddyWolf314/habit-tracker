@@ -6,10 +6,12 @@ import { ConversationFlagsPanel } from "#/components/today/conversation-flags-pa
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
 import { QueueEntry } from "#/components/today/queue-entry.tsx";
+import { RungsPanel } from "#/components/today/rungs-panel.tsx";
 import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
 import { TargetsPanel } from "#/components/today/targets-panel.tsx";
 import {
 	getRoles,
+	listAgreements,
 	listAnchors,
 	listConversationFlags,
 	listCounters,
@@ -22,6 +24,7 @@ import {
 } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { AnchorView } from "#/shared/anchors.ts";
 import type { ConversationFlagView } from "#/shared/conversations.ts";
 import type { Counter } from "#/shared/counters.ts";
@@ -47,6 +50,9 @@ export function TodayView() {
 	const [members, setMembers] = useState<RoleMember[]>([]);
 	const [openPrompts, setOpenPrompts] = useState<OpenPromptView[]>([]);
 	const [counters, setCounters] = useState<Counter[]>([]);
+	// The corpus, for the rung banner (#193): a rung carries a number and cites an
+	// Agreement for what crossing it means, so the words come from here.
+	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
 	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	// Folded server-side too (#88): a conversation flag is one metadata key, and
 	// deriving it here would mean holding the whole log to find it.
@@ -74,6 +80,7 @@ export function TodayView() {
 			{ anchors },
 			{ flags },
 			{ events },
+			{ agreements },
 		] = await Promise.all([
 			listTimers(),
 			listOpenPrompts(),
@@ -84,6 +91,7 @@ export function TodayView() {
 			listAnchors(),
 			listConversationFlags(),
 			listEvents(),
+			listAgreements(),
 		]);
 		setTimers(timers);
 		setEvents(events);
@@ -99,6 +107,10 @@ export function TodayView() {
 		setAwaiting(awaiting);
 		setAnchors(anchors);
 		setFlags(flags);
+		// The corpus rides the poll for the reason the rules do: a partner can
+		// revise the term a standing rung cites while this screen is open, and the
+		// banner has to be reading what binds now.
+		setAgreements(agreements);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -128,6 +140,7 @@ export function TodayView() {
 				anchorRes,
 				flagRes,
 				logRes,
+				agreementRes,
 			] = await Promise.all([
 				listTimers(),
 				getRoles(),
@@ -139,6 +152,7 @@ export function TodayView() {
 				listAnchors(),
 				listConversationFlags(),
 				listEvents(),
+				listAgreements(),
 			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
@@ -150,6 +164,7 @@ export function TodayView() {
 			setAnchors(anchorRes.anchors);
 			setFlags(flagRes.flags);
 			setEvents(logRes.events);
+			setAgreements(agreementRes.agreements);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -209,6 +224,10 @@ export function TodayView() {
 			/>
 
 			<AnchorsPanel anchors={anchors} />
+
+			{/* Above the targets: a standing rung is a term the couple agreed, and it
+			    outranks what you are aiming at today. */}
+			<RungsPanel counters={counters} agreements={agreements} />
 
 			<TargetsPanel
 				counters={counters}

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { describeCitation, type VersionedAgreement } from "./agreements.ts";
 import type { EffectOp } from "./engine.ts";
 import { type MetadataValue, metadataValueSchema } from "./roles.ts";
 
@@ -127,6 +128,36 @@ export const traceDetailSchema = z.discriminatedUnion("kind", [
 		op: z.enum(["increment", "decrement"]),
 		/** The `by_from` key that routed nothing usable — the actionable half. */
 		key: z.string(),
+	}),
+	/**
+	 * A counter crossed a rung going up (ADR 0015) — **a recorded moment, not a
+	 * debt.** Nothing closes it and nobody owes anything: ADR 0007 pulls the other
+	 * way, but the closer precedents are #182's empty `awaiting` for an act and the
+	 * Response's "a gift, not a debt". An open crossing would assert an obligation
+	 * the app cannot verify was discharged.
+	 *
+	 * The row is written beside the counter move rather than derived from it,
+	 * because what it announces — the rung, and the term it cites — is resolved
+	 * from the definition in force at the move, and a later edit to the ladder must
+	 * not rewrite what a past crossing said.
+	 */
+	z.object({
+		kind: z.literal("crossing"),
+		/** The rung's threshold. Not the row's `at`, which is when the move landed. */
+		rung: z.number().int(),
+		/** The Agreement the rung cites — its wording, never a copy of the prose. */
+		agreement_ref: z.string(),
+		/**
+		 * The moment the cited term resolves against: the causing event's
+		 * `occurred_at` (ADR 0006), or the boundary for a rollover fold, which has no
+		 * causing event. Stored for the reason the `anchor` detail stores one — the
+		 * row's own `at` is log-time, and a consented term is read at the moment the
+		 * person was bound — and stored rather than left to the reader because the
+		 * counter's own chain view renders these rows without the events beside them.
+		 */
+		occurred_at: z.number().int(),
+		from: z.number(),
+		to: z.number(),
 	}),
 	z.object({ kind: z.literal("notify"), target: z.string() }),
 	/** A rule matched on type but didn't fire; drives the "waiting on: …" hint. */
@@ -532,6 +563,32 @@ export function traceCounterSkipped(
 	};
 }
 
+/**
+ * A counter crossed a rung (ADR 0015). Lands on the counter's own chain beside
+ * the move that crossed it, and takes that move's cause — a rule effect, a direct
+ * `+1`, or the rollover fold — because the crossing has no cause of its own: it is
+ * the same fact about the same move, said in the couple's terms.
+ */
+export function traceCrossing(
+	cause: TraceCause,
+	at: number,
+	counterId: string,
+	info: {
+		rung: number;
+		agreement_ref: string;
+		occurred_at: number;
+		from: number;
+		to: number;
+	},
+): TraceEntry {
+	return {
+		cause,
+		at,
+		projection: `counter:${counterId}`,
+		detail: { kind: "crossing", ...info },
+	};
+}
+
 export function traceNotify(
 	cause: TraceCause,
 	at: number,
@@ -782,11 +839,32 @@ export function projectionName(projection: string | null): string {
 }
 
 /**
+ * What a line needs from outside the row itself. Only a crossing wants anything:
+ * it cites an Agreement, and a citation renders as the term's *name*, never as
+ * its id (ADR 0006).
+ *
+ * Optional, and every caller that has no corpus to hand gets a line naming the
+ * raw ref instead — an opaque id is a better answer than a blank, which is the
+ * same call `describeCitation` makes for a term the couple no longer holds.
+ */
+export interface TraceContext {
+	agreements?: VersionedAgreement[];
+	/**
+	 * "Now", for the `(now: …)` half a renamed term renders. Defaults to the
+	 * crossing's own moment, which reads as "nothing has been renamed since".
+	 */
+	now?: number;
+}
+
+/**
  * Describes one trace row as a structured, label-free line (mirrors
  * `describeAmendment` in `adjudication.ts`). Never throws — an unrecognized detail
  * degrades to a generic line, since this renders the consent-record + log view.
  */
-export function describeTraceRow(row: TraceRow): TraceLine {
+export function describeTraceRow(
+	row: TraceRow,
+	context: TraceContext = {},
+): TraceLine {
 	const { cause, detail, projection } = row;
 	const prefix =
 		cause.by === "rule" || cause.by === "amendment" ? `${cause.rule} · ` : "";
@@ -828,6 +906,29 @@ export function describeTraceRow(row: TraceRow): TraceLine {
 			// `effect` rather than `near_miss`: the rule fired and this effect had
 			// nothing to move, which is a different fact from the rule not applying.
 			return { tone: "effect", summary: detail.reason };
+		case "crossing": {
+			// The term as it read **when the act happened** (ADR 0006), resolved
+			// through the same `describeCitation` an event's citing ref renders
+			// through, so a crossing and the event that caused it name the term the
+			// same way. Renegotiating the consequence afterwards writes a new version
+			// with a later `effective_from`, which this reading never reaches — so a
+			// past crossing keeps announcing what it announced.
+			const cited =
+				describeCitation(
+					context.agreements ?? [],
+					detail.agreement_ref,
+					detail.occurred_at,
+					context.now ?? detail.occurred_at,
+				) ?? detail.agreement_ref;
+			return {
+				// `effect`, not `system`: a crossing is something that happened to a
+				// projection, not a non-action and not a job's housekeeping — and it
+				// keeps the tone of the move it rides beside, whichever caused it.
+				tone: "effect",
+				summary: `${prefix}${humanize(name)} crossed ${detail.rung}`,
+				note: cited,
+			};
+		}
 		case "notify":
 			return { tone: "effect", summary: `${prefix}notify ${humanize(name)}` };
 		case "auto_close":

@@ -29,6 +29,7 @@ function signals(
 		recovery_pending: false,
 		rule_changes: 0,
 		agreement_changes: 0,
+		crossings: 0,
 		...partial,
 	};
 }
@@ -59,6 +60,13 @@ describe("unreadCount", () => {
 				signals({ pending_events: 1, recovery_pending: true, rule_changes: 3 }),
 			),
 		).toBe(5);
+	});
+
+	it("adds a crossing, for both members and whoever moved the counter (#193)", () => {
+		// The one signal not addressed to someone: nobody made it happen *to* the
+		// other, and a ladder binds the pair, so neither is filtered out of it.
+		expect(unreadCount(signals({ crossings: 2 }))).toBe(2);
+		expect(unreadCount(signals({ pending_events: 1, crossings: 1 }))).toBe(2);
 	});
 
 	it("is zero when nothing awaits", () => {
