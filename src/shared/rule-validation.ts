@@ -119,13 +119,12 @@ function checkEffectTarget(
 		case "decrement_counter":
 			return (
 				checkCounterTarget(effect.counter, ctx) ??
-				// A routed magnitude must name a field declared whole (ADR 0015).
-				// Beside the other routed keys because it is one: at runtime an absent
-				// key routes `undefined`, and a fractional one would drive the counter
-				// cache non-integer and break reads and export somewhere nobody is
-				// looking.
+				// A routed magnitude must name a field that can actually hold one
+				// (ADR 0015). Beside the other routed keys because it is one: at
+				// runtime an absent key routes `undefined`, which degrades the effect
+				// somewhere invisible instead of failing somewhere visible.
 				checkRoutedKey("by_from", effect.by_from, type, ["number"], {
-					integer: true,
+					magnitude: true,
 				})
 			);
 		case "reset_counter":
@@ -187,18 +186,17 @@ function checkCounterTarget(
  * Ensures a routed event key (`tag_from`, `duration_from`, `by_from`) exists on
  * the triggering type and is a field kind the routing can actually use.
  *
- * `require.integer` is the extra demand a routed *magnitude* makes (ADR 0015):
- * the field must not merely be a number but be declared whole, because the
- * counter it lands in is. Expressed as an option rather than a separate check so
- * the two failures read as one family — a routing that cannot work is refused
- * here, at creation, whichever way it cannot work.
+ * `require.magnitude` is the extra demand a **routed magnitude** makes
+ * (ADR 0015) — see {@link checkMagnitudeField}. Expressed as an option rather
+ * than a separate check so the failures read as one family: a routing that
+ * cannot work is refused here, at creation, whichever way it cannot work.
  */
 function checkRoutedKey(
 	label: string,
 	key: string | undefined,
 	type: EventType,
 	kinds: MetadataField["kind"][],
-	require?: { integer: boolean },
+	require?: { magnitude: boolean },
 ): string | null {
 	if (key === undefined) return null;
 	const field = type.metadata[key];
@@ -208,8 +206,52 @@ function checkRoutedKey(
 	if (!kinds.includes(field.kind)) {
 		return `effect ${label} key '${key}' on ${type.id} must be a ${kinds.join(" or ")} field`;
 	}
-	if (require?.integer && !(field.kind === "number" && field.integer)) {
+	if (require?.magnitude) {
+		return checkMagnitudeField(label, key, type, field);
+	}
+	return null;
+}
+
+/**
+ * Ensures a field can hold a **magnitude** — an amount, and only an amount
+ * (ADR 0015). Two demands, and the second is the one the first invites you to
+ * forget:
+ *
+ * **Whole**, because the counter it lands in is: `increment_counter.by` is
+ * `z.number().int()` and a fraction would drive the counter cache non-integer
+ * and break reads and export somewhere nobody is looking.
+ *
+ * **Non-negative**, because the *verb* carries the direction. `increment_counter`
+ * with a routed `-3` subtracts, so the rule's own verb and the couple's counter
+ * disagree and nothing reports it; the trace then reads `+-3 demerits`, since
+ * `phraseCounter` prepends the sign the verb implies. ADR 0015 put direction on
+ * the definition — "`by` is already a weight … and `valence` is already its
+ * direction" — and a routed amount must not be able to move it, because the
+ * person who *logs* the event is not always the person who authored the rule.
+ *
+ * Declared rather than observed: the field must carry `min` at 0 or above, so
+ * `checkMetadataValue`'s existing bound enforcement keeps the negative out on
+ * both write paths. A field that merely happens never to receive one is not a
+ * magnitude field, and a runtime clamp would invent a number nobody wrote — the
+ * same objection ADR 0015 raised against rounding.
+ */
+function checkMagnitudeField(
+	label: string,
+	key: string,
+	type: EventType,
+	field: MetadataField,
+): string | null {
+	// Unreachable: `kinds` is `["number"]` wherever a magnitude is required, and
+	// that check has already run. Kept so the narrowing is the compiler's, not a
+	// cast, if a future caller widens `kinds`.
+	if (field.kind !== "number") {
+		return `effect ${label} key '${key}' on ${type.id} must be a number field`;
+	}
+	if (!field.integer) {
 		return `effect ${label} key '${key}' on ${type.id} must be declared integer — a counter cannot hold a fraction`;
+	}
+	if (field.min === undefined || field.min < 0) {
+		return `effect ${label} key '${key}' on ${type.id} must declare min 0 or higher — the effect's verb carries the direction, so a routed amount must not be able to invert it`;
 	}
 	return null;
 }

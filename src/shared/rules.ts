@@ -177,10 +177,14 @@ export const TIMER_CLOSE_STATUSES: readonly TimerCloseStatus[] =
  * would make the trace read `+1` for a rule its author believed was proportional.
  * The effect skips instead (see `resolveEffect`).
  *
- * The key must name a field declared `integer: true` ({@link validateRule}), so a
- * `2.5` can never reach an integer counter. The *absent* case cannot move to
- * authoring time — a validly-declared field may be optional and left blank — and
- * is handled at runtime, once, in the engine.
+ * The key must name a field that can hold a magnitude ({@link validateRule}):
+ * declared `integer: true`, so a `2.5` can never reach an integer counter, and
+ * declared `min` at 0 or above, so a routed `-3` cannot make an
+ * `increment_counter` subtract. The verb carries the direction; this carries only
+ * the amount.
+ *
+ * The *absent* case cannot move to authoring time — a validly-declared field may
+ * be optional and left blank — and is handled at runtime, once, in the engine.
  */
 const byFromSchema = z.string().optional();
 

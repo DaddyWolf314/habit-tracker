@@ -2180,9 +2180,13 @@ describe("counter_value at the DO boundary (ADR 0015)", () => {
 			log_permission: ["dom", "switch"],
 			subject_required: true,
 			metadata: {
+				// Whole and floored at zero — the two things a routed magnitude's
+				// field must declare (ADR 0015). Optional, which is what makes the
+				// skip below reachable at all.
 				weight: {
 					kind: "number",
 					integer: true,
+					min: 0,
 					label: "Weight",
 					required: false,
 					set_permission: ["dom", "switch"],
@@ -2242,7 +2246,14 @@ describe("counter_value at the DO boundary (ADR 0015)", () => {
 		);
 	});
 
-	it("refuses a fractional routed magnitude at rule creation, not at runtime", async () => {
+	/**
+	 * Both ways a field can fail to be a magnitude, refused at the DO boundary
+	 * rather than at runtime (ADR 0015) — so the refusal is proven to reach
+	 * `createRule` and not merely to exist in `validateRule`.
+	 */
+	async function coupleWithMeasured(
+		declared: Record<string, unknown>,
+	): Promise<ActiveCouple> {
 		const couple = await activeCouple();
 		await couple.do.createEventType(DOM, {
 			id: "measured",
@@ -2256,25 +2267,46 @@ describe("counter_value at the DO boundary (ADR 0015)", () => {
 					label: "Amount",
 					required: false,
 					set_permission: ["dom", "switch"],
+					...declared,
 				},
 			},
 			awaiting: [],
 		});
-		await expect(
-			couple.do.createRule(DOM, {
-				id: "custom-measured",
-				name: "Measured penalty",
-				condition: { type: "measured", metadata: {} },
-				effects: [
-					{
-						verb: "increment_counter",
-						counter: "demerits",
-						by: 1,
-						by_from: "amount",
-					},
-				],
-			}),
-		).rejects.toThrow(/declared integer/);
+		return couple;
+	}
+
+	function measuredRule(couple: ActiveCouple) {
+		return couple.do.createRule(DOM, {
+			id: "custom-measured",
+			name: "Measured penalty",
+			condition: { type: "measured", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "amount",
+				},
+			],
+		});
+	}
+
+	it("refuses a fractional routed magnitude at rule creation, not at runtime", async () => {
+		const couple = await coupleWithMeasured({ min: 0 });
+		await expect(measuredRule(couple)).rejects.toThrow(/declared integer/);
+	});
+
+	it("refuses a routed magnitude whose field permits a negative", async () => {
+		// The verb carries the direction. Without a declared floor, `amount: -3`
+		// would make this `increment_counter` subtract — the rule's own verb and
+		// the counter disagreeing, with the logger overriding the rule's author.
+		const couple = await coupleWithMeasured({ integer: true });
+		await expect(measuredRule(couple)).rejects.toThrow(/min 0 or higher/);
+	});
+
+	it("accepts one whose field is whole and floored at zero", async () => {
+		const couple = await coupleWithMeasured({ integer: true, min: 0 });
+		await expect(measuredRule(couple)).resolves.toBeDefined();
 	});
 });
 

@@ -450,10 +450,15 @@ describe("counter_value and by_from", () => {
 		expect(validateRule(r, ctx)).toEqual({ ok: true });
 	});
 
-	it("refuses a by_from on a number field not declared integer", () => {
-		// The whole point of the flag: without it, `by_from` could route 2.5 into
-		// an integer counter and nothing could see it coming. Refused at creation,
-		// beside the other routed-key errors — never at runtime.
+	/**
+	 * A context carrying one extra type, `weighed`, whose single `kilograms`
+	 * field is declared however a case needs. The pack's own number fields are all
+	 * whole and floored at 1, so the ways a routed magnitude can be refused are
+	 * only reachable through a field a couple authored.
+	 */
+	function ctxWithKilograms(
+		declared: Record<string, unknown>,
+	): RuleValidationContext {
 		const weighed = eventTypeSchema.parse({
 			id: "weighed",
 			label: "Weighed",
@@ -466,30 +471,73 @@ describe("counter_value and by_from", () => {
 					kind: "number",
 					label: "Kilograms",
 					set_permission: ["dom", "sub", "switch"],
+					...declared,
 				},
 			},
 			awaiting: [],
 		});
-		const looseCtx: RuleValidationContext = {
+		return {
 			...ctx,
 			eventTypes: new Map([...ctx.eventTypes, [weighed.id, weighed]]),
 		};
-		const r = rule({
-			id: "X",
-			condition: { type: "weighed", metadata: {} },
-			effects: [
-				{
-					verb: "increment_counter",
-					counter: "demerits",
-					by: 1,
-					by_from: "kilograms",
-				},
-			],
-		});
-		const result = validateRule(r, looseCtx);
-		expect(result.ok).toBe(false);
-		if (result.ok) throw new Error("unreachable");
-		expect(result.error).toContain("must be declared integer");
+	}
+
+	/** A rule routing `kilograms` into `demerits` — the shape all three cases take. */
+	const routesKilograms = rule({
+		id: "X",
+		condition: { type: "weighed", metadata: {} },
+		effects: [
+			{
+				verb: "increment_counter",
+				counter: "demerits",
+				by: 1,
+				by_from: "kilograms",
+			},
+		],
+	});
+
+	function failureIn(where: RuleValidationContext): string {
+		const result = validateRule(routesKilograms, where);
+		if (result.ok) throw new Error("expected a validation failure");
+		return result.error;
+	}
+
+	it("refuses a by_from on a number field not declared integer", () => {
+		// The whole point of the flag: without it, `by_from` could route 2.5 into
+		// an integer counter and nothing could see it coming. Refused at creation,
+		// beside the other routed-key errors — never at runtime.
+		expect(failureIn(ctxWithKilograms({ min: 0 }))).toContain(
+			"must be declared integer",
+		);
+	});
+
+	it("refuses a by_from on a field that never declared a floor", () => {
+		// A magnitude is an amount, not a direction. Without a declared `min`,
+		// nothing stops `kilograms: -3` reaching an `increment_counter` and making
+		// it subtract — the verb and the counter would disagree, and the trace
+		// would read `+-3 demerits`.
+		expect(failureIn(ctxWithKilograms({ integer: true }))).toContain(
+			"must declare min 0 or higher",
+		);
+	});
+
+	it("refuses a by_from on a field whose floor is below zero", () => {
+		// A declared floor is only worth anything if it is at or above zero:
+		// `min: -10` permits exactly the inversion the check exists to refuse.
+		expect(failureIn(ctxWithKilograms({ integer: true, min: -10 }))).toContain(
+			"must declare min 0 or higher",
+		);
+	});
+
+	it("accepts a by_from on a field declared whole and floored at zero", () => {
+		// `min: 0` is enough — `checkMetadataValue` already enforces the bound on
+		// both write paths, so the negative can never be logged or amended in.
+		expect(
+			validateRule(
+				routesKilograms,
+				ctxWithKilograms({ integer: true, min: 0 }),
+			),
+		).toEqual({ ok: true });
 	});
 
 	it("refuses a by_from on a non-number field", () => {

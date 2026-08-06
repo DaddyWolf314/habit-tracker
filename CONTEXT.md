@@ -31,13 +31,18 @@ in and should not.
   as a **near-miss**; the rule fired and was overruled.
 - **Routed magnitude** — `by_from`, naming the metadata key whose number becomes a
   counter op's amount ("+= the severity the dom ruled"). Routing, not computation,
-  and the same shape `duration_from` already uses. Legal only on a `number` field
-  declared `integer: true`, refused at creation otherwise, because a fractional
-  amount would drive the counter cache non-integer. An absent value at runtime
-  **skips** the effect with a trace note rather than falling back to `by` (which
-  would print `+1` for a rule its author believed was proportional) or rounding.
-  _Avoid_: "weight" — `by` is already the weight; this is where the weight is read
-  from.
+  and the same shape `duration_from` already uses. An **amount, and only an
+  amount**: legal only on a `number` field declared `integer: true` *and* `min` at
+  0 or above, refused at creation otherwise. Whole because a fraction would drive
+  the counter cache non-integer; non-negative because the **Effect**'s verb carries
+  the direction, and a routed `-3` on an increment would subtract — the rule's verb
+  and the counter disagreeing, with the person who *logs* the event overriding the
+  one who authored the rule. An absent value at runtime **skips** the effect with a
+  trace note rather than falling back to `by` (which would print `+1` for a rule
+  its author believed was proportional) or rounding. _Avoid_: "weight" — `by` is
+  already the weight; this is where the weight is read from. Also avoid clamping a
+  negative at runtime: the refusal belongs at authoring time, and a clamp invents a
+  number nobody wrote.
 - **Ambient-state predicate** — the condition clause matching on what was
   *running* when an event happened: `timer_active`, a map of timer definition to
   expected activity (`{ denial_period: true }`, `{ session_stopwatch: false }`).
