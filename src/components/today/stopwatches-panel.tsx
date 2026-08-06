@@ -420,12 +420,7 @@ function ActForm({
 
 	if (!open) {
 		return (
-			<Button
-				variant="ghost"
-				size="xs"
-				className="mt-2"
-				onClick={() => setOpen(true)}
-			>
+			<Button variant="ghost" className="mt-2" onClick={() => setOpen(true)}>
 				+ Log an act
 			</Button>
 		);
@@ -489,15 +484,10 @@ function ActForm({
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
 			<div className="flex gap-2">
-				<Button size="sm" onClick={submit} disabled={busy || act === ""}>
+				<Button onClick={submit} disabled={busy || act === ""}>
 					{busy ? "…" : "Log act"}
 				</Button>
-				<Button
-					variant="ghost"
-					size="sm"
-					onClick={() => setOpen(false)}
-					disabled={busy}
-				>
+				<Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>
 					Cancel
 				</Button>
 			</div>

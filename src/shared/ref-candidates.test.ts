@@ -393,12 +393,6 @@ describe("refCandidates", () => {
 });
 
 /**
- * Citing refs (#121, ADR 0006). Their candidates are the Agreements *in force* —
- * the opposite lifecycle from an echoing ref's, whose candidates are open timers
- * and which drops a row the moment it resolves. A retired Agreement leaves the
- * picker while every citation already made against it still resolves.
- */
-/**
  * A ref that *echoes* an id without closing anything (#182) — an `act` scoped to
  * the session it happened in. Nothing in the pack conditions on `act`, so under
  * the old same-type derivation these all fell back to a free-text box for a ULID.
@@ -491,8 +485,58 @@ describe("refCandidates — a non-closing echo", () => {
 			Array.from({ length: RECENT_ECHO_CANDIDATES }, (_, i) => `s${i}`),
 		);
 	});
+
+	it("stays a closer when another type also closes the same timer on the key", () => {
+		// `closes` is a property of the asking type, not of whichever rule happened
+		// to be read last. Two rules closing one timer on one key from different
+		// types is legal; the shipped pack has no such pair, so only a couple-added
+		// rule reaches this. Read per rule, the sibling's `closes: false` would
+		// answer for `session_ended` and hand a closer the resolved rows an echo
+		// gets — offering to close a session that already ended.
+		const ABANDON_SESSION: Rule = {
+			id: "R16b",
+			enabled: true,
+			condition: { type: "session_abandoned", metadata: {} },
+			effects: [
+				{
+					verb: "close_timer",
+					timer: "session_stopwatch",
+					match_on: { session_id: "session_id" },
+					status: "failed",
+				},
+			],
+		};
+		const timers = [
+			timer({
+				tag: "scene",
+				match: { session_id: "s1" },
+				status: "completed",
+				opened_at: NOW - 3_600_000,
+				closed_at: NOW - 3_000_000,
+			}),
+		];
+		const args = {
+			rules: [...RULES, ABANDON_SESSION],
+			timers,
+			key: "session_id",
+			now: NOW,
+		};
+
+		expect(offer({ ...args, typeId: "session_ended" })).toEqual([]);
+		// The sibling rule cuts the other way too: a type that closes nothing here
+		// is still a pure echo, and still sees the resolved row.
+		expect(offer({ ...args, typeId: "act" })).toEqual([
+			{ value: "s1", label: "scene — 10m 0s · 50m 0s ago" },
+		]);
+	});
 });
 
+/**
+ * Citing refs (#121, ADR 0006). Their candidates are the Agreements *in force* —
+ * the opposite lifecycle from an echoing ref's, whose candidates are open timers
+ * and which drops a row the moment it resolves. A retired Agreement leaves the
+ * picker while every citation already made against it still resolves.
+ */
 describe("citing-ref candidates", () => {
 	const MAR = 1_700_000_000_000;
 	const JUN = MAR + 90 * 86_400_000;

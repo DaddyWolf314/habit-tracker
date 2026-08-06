@@ -573,13 +573,6 @@ describe("citing refs in the shipped pack", () => {
 	});
 });
 
-/**
- * Option display copy in the pack (#155, ADR 0008). The generic controls fall
- * back to a de-slug for anything the copy misses, which is right for a couple's
- * own enum and wrong here: partial pack copy would look exactly like an
- * oversight, and the surface that gets it would quietly disagree with the ones
- * that don't. So the pack's obligation is total.
- */
 describe("acts in the shipped pack (#182)", () => {
 	const typeById = (id: string) => {
 		const type = STARTER_EVENT_TYPES.find((t) => t.id === id);
@@ -617,6 +610,13 @@ describe("acts in the shipped pack (#182)", () => {
 	});
 });
 
+/**
+ * Option display copy in the pack (#155, ADR 0008). The generic controls fall
+ * back to a de-slug for anything the copy misses, which is right for a couple's
+ * own enum and wrong here: partial pack copy would look exactly like an
+ * oversight, and the surface that gets it would quietly disagree with the ones
+ * that don't. So the pack's obligation is total.
+ */
 describe("option labels in the shipped pack", () => {
 	const packEnums = STARTER_EVENT_TYPES.flatMap((type) =>
 		Object.entries(type.metadata).flatMap(([key, field]) =>

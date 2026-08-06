@@ -52,17 +52,22 @@ interface TimerMatch {
 	timerKey: string;
 	/**
 	 * Whether an event of the *asking* type would close this timer through this
-	 * key — i.e. the rule that produced this match conditions on `typeId`. Drives
-	 * candidacy: a closer may only name a row it could really discharge, an echo
-	 * may name a resolved one ({@link isCandidate}).
+	 * key — i.e. *some* enabled rule conditioning on `typeId` closes this timer on
+	 * this key. Folded across every rule reaching the same timer/key pair, not read
+	 * off one of them: a second rule closing the same pair from another type says
+	 * nothing about whether this type discharges the row, and letting it answer
+	 * would hand a closer the resolved rows an echo gets. Drives candidacy: a
+	 * closer may only name a row it could really discharge, an echo may name a
+	 * resolved one ({@link isCandidate}).
 	 */
 	closes: boolean;
 }
 
 /**
- * The timer definitions `key` names, and whether an event of `typeId` would
- * *close* each one. Disabled rules are skipped, exactly as `evaluateRules` skips
- * them — a picker must offer only what a close would really find.
+ * The timer definitions `key` names, one entry per timer/key pair, and whether
+ * an event of `typeId` would *close* each one. Disabled rules are skipped,
+ * exactly as `evaluateRules` skips them — a picker must offer only what a close
+ * would really find.
  *
  * Deliberately not filtered to rules on `typeId` (#182). A rule matching a timer
  * on key K is the statement "K names an existing row", and that is true of the
@@ -74,22 +79,27 @@ interface TimerMatch {
  * a couple's own type scoped to a couple's own span gets a picker for free.
  */
 function timerMatches(rules: Rule[], typeId: string, key: string) {
-	const matches: TimerMatch[] = [];
+	// Collapsed per timer/key rather than per rule, so `closes` is the OR over
+	// every rule reaching that pair. Two rules closing one timer on one key from
+	// different types is legal — the shipped pack has no such pair, but a couple
+	// can write one — and as separate entries the non-closing sibling would answer
+	// candidacy for rows the asking type really does discharge.
+	const byPair = new Map<string, TimerMatch>();
 	for (const rule of rules) {
 		if (rule.enabled === false) continue;
 		for (const effect of rule.effects) {
 			if (effect.verb !== "close_timer" || !effect.match_on) continue;
 			for (const [timerKey, eventKey] of Object.entries(effect.match_on)) {
 				if (eventKey !== key) continue;
-				matches.push({
-					timer: effect.timer,
-					timerKey,
-					closes: rule.condition.type === typeId,
-				});
+				const closes = rule.condition.type === typeId;
+				const pair = JSON.stringify([effect.timer, timerKey]);
+				const prior = byPair.get(pair);
+				if (prior) prior.closes ||= closes;
+				else byPair.set(pair, { timer: effect.timer, timerKey, closes });
 			}
 		}
 	}
-	return matches;
+	return [...byPair.values()];
 }
 
 /**
@@ -222,8 +232,10 @@ export function refCandidates({
 	// about to discharge. Minting (ADR 0005) means new rows can no longer share an
 	// id at all; rows opened before it still can, so the tie-break stays.
 	//
-	// Candidacy is asked per match rather than per row, because whether a row
-	// qualifies now depends on whether *this* type closes it (#182).
+	// Candidacy is asked per timer/key pair rather than per row, because whether a
+	// row qualifies now depends on whether *this* type closes it (#182) — and per
+	// pair rather than per rule, so a second rule closing the same pair from
+	// another type cannot answer for this one.
 	const byValue = new Map<string, TimerView>();
 	for (const t of timers) {
 		for (const { timer, timerKey, closes } of matches) {
@@ -242,6 +254,8 @@ export function refCandidates({
 	// caller's (newest-first), so the head is the most recent. A key that closes
 	// anything at all keeps its full list — hiding a row the event could actually
 	// discharge is the one failure worth avoiding, so the mixed case errs long.
+	// Reads the same folded `closes` the loop above did, so the bound and candidacy
+	// cannot disagree about which flavor this is.
 	const rows = matches.every((m) => !m.closes)
 		? [...byValue].slice(0, RECENT_ECHO_CANDIDATES)
 		: [...byValue];
