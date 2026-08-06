@@ -306,8 +306,9 @@ export function listConversationFlags(): Promise<{
 	return apiFetch<{ flags: ConversationFlagView[] }>("/api/conversation-flags");
 }
 
-export function ackRulings(): Promise<{ ok: boolean }> {
-	return apiFetch<{ ok: boolean }>("/api/rulings/seen", { method: "POST" });
+/** Marks a partner's rulings and responses on your own events seen (#136, #183). */
+export function ackUpdates(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/updates/seen", { method: "POST" });
 }
 
 export function listEvents(): Promise<{ events: EventView[] }> {

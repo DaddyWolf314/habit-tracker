@@ -517,11 +517,12 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				stub.conversationFlags(auth.identityHash).then((r) => json(r)),
 			);
 		}
-		// #136: the sub's half of the queue signal. Acknowledged from the log,
-		// where a ruling's content is; explicit, so a GET never mutates.
-		if (path === "/api/rulings/seen" && method === "POST") {
+		// #136: the sub's half of the queue signal — a partner's ruling, or their
+		// response (#183). Acknowledged from the log, where that content is;
+		// explicit, so a GET never mutates.
+		if (path === "/api/updates/seen" && method === "POST") {
 			return await withAuth(request, env, ({ auth, stub }) =>
-				stub.ackRulings(auth.identityHash).then(() => json({ ok: true })),
+				stub.ackUpdates(auth.identityHash).then(() => json({ ok: true })),
 			);
 		}
 		// ── #64: rules screen — view, edit, enable/disable, delete ──────────────

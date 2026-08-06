@@ -338,11 +338,15 @@ in and should not.
   _Avoid_: "grade", "score", "rating" (see **Adjudication**); copy implying a
   self-stated quality awaits approval.
 - **Notification** — the single content-free unread *count* a member polls, shown
-  as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): pending-
-  adjudication events plus a targeted recovery notice, composed in one place
+  as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): events
+  awaiting *this* member's ruling, what their partner has said back about their own
+  entries (a ruling or a **Response**, #183), a targeted recovery notice, and the
+  partner's rule and Agreement changes — composed in one place
   (`shared/notifications.ts`). A number only, never any relationship content.
-  _Avoid_: "inbox" (a count, not a container — and the banned adjudication-queue
-  synonym).
+  Everything it counts is **addressed to the viewer**: a bare logged event notifies
+  nobody, and one entry counts once however many times it was amended, because a
+  content-free number cannot say which of six things it means. _Avoid_: "inbox" (a
+  count, not a container — and the banned adjudication-queue synonym).
 
 ## Journaling
 
@@ -425,8 +429,14 @@ primitive — it is a *category of event types* plus a question/answer pairing.
   without the words), never on `secret` ones. On a `check_in` carrying
   `wants_conversation` a response is also what **closes the conversation flag**
   (ADR 0007). Fires no rules, does not touch composite metadata, and is
-  inherently visible to the entry's author. _Avoid_: overloading `note_appended`
-  (that is the author's own added context) for this.
+  inherently visible to the entry's author — who is *told*: a response raises
+  their **Notification** count and lands behind the same content-safe reveal a
+  ruling does (#183). Writable from any log row the viewer did not author and
+  that is not `secret`, a gate that mirrors `validateResponse` rather than
+  listing respondable **Event types** — a client-side allowlist would be a second
+  answer to a question validation already answers, and would omit every type the
+  pack grows next. _Avoid_: overloading `note_appended` (that is the author's own
+  added context) for this; a per-type respond affordance.
 
 - **Conversation flag** — the open state of a `check_in` carrying
   `flag=wants_conversation` (R18): open until the *other* member attaches a

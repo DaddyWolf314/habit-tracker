@@ -1,10 +1,12 @@
 import { useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
+import { ResponseComposer } from "#/components/response-composer.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
-import { ackRulings, amendEvent, getEventTrace } from "#/lib/api.ts";
+import { ackUpdates, amendEvent, getEventTrace } from "#/lib/api.ts";
 import {
 	type AmendmentLine,
+	canRespondTo,
 	describeAmendment,
 	isOwnPending,
 } from "#/shared/adjudication.ts";
@@ -56,7 +58,12 @@ export function EventStream({
 	members: RoleMember[];
 	/** The corpus, so a citation reads as a name rather than an id (#121). */
 	agreements?: VersionedAgreement[];
-	/** The viewer's member id, so they can note/retract their own pending events. */
+	/**
+	 * The viewer's member id: it decides whose row this is, and so which of the
+	 * three amendment affordances a row offers — note/retract on your own pending
+	 * event, respond on your partner's (#183), reveal on your own once they have
+	 * said something back.
+	 */
 	selfId?: string | null;
 	onAmended?: () => void;
 }) {
@@ -139,13 +146,26 @@ function EventRow({
 	// way in (ADR 0005); this is the same rule on the way out. The export still
 	// serializes every key, so the consent record stays whole.
 	const meta = readableMetadata(type, event.composite_metadata);
-	// The in-force ruling on the viewer's own event, if any (amendments arrive in
-	// created_at order, so the last adjudication is the current one). Drives the
-	// sub-side reveal below.
-	const ownRuling =
+	// What the viewer's partner has said back about the viewer's own event: the
+	// in-force ruling (amendments arrive in created_at order, so the last
+	// adjudication is the current one) and every response landed on it (#183).
+	// Drives the reveal below.
+	//
+	// Responses belong here and not only in the chain drill-in, because the count
+	// they now raise has to be clearable: `ackUpdates` fires on the reveal tap and
+	// nowhere else, so a response on an entry that carries no ruling — a journal
+	// entry, an act — would otherwise leave a badge nobody could ever put down.
+	// Superseded rulings stay out: what is delivered is the decision in force, not
+	// its drafting history. The chain is where the corrections are.
+	const received =
 		selfId !== null && event.actor === selfId && !event.retracted
-			? event.amendments.filter((a) => a.kind === "adjudication").at(-1)
-			: undefined;
+			? [
+					...event.amendments
+						.filter((a) => a.kind === "adjudication")
+						.slice(-1),
+					...event.amendments.filter((a) => a.kind === "response"),
+				].sort((a, b) => a.created_at - b.created_at)
+			: [];
 
 	return (
 		<li className="py-3">
@@ -220,7 +240,13 @@ function EventRow({
 				<OwnEventActions eventId={event.id} onAmended={onAmended} />
 			)}
 
-			{ownRuling && <RulingReveal line={describeAmendment(ownRuling)} />}
+			{canRespondTo(event, selfId) && (
+				<RespondAction eventId={event.id} onAmended={onAmended} />
+			)}
+
+			{received.length > 0 && (
+				<UpdateReveal lines={received.map(describeAmendment)} />
+			)}
 
 			{open && (
 				<div
@@ -393,22 +419,75 @@ function OwnEventActions({
 }
 
 /**
- * The sub-side ruling reveal (handoff §8, "Sub side"): receiving a ruling is
- * emotionally load-bearing, so the dom's decision is not dumped inline — it sits
- * behind a content-safe "You have an update" until the sub chooses to open it, a
- * small deliberate interaction. Shown on the author's own resolved event.
+ * Respond to a partner's entry from the log (#183).
  *
- * Revealing is also what marks rulings *seen* (#136): the tap is the moment the
+ * A `response` has been implemented server-side since ADR 0001 and reachable from
+ * exactly one screen — the conversation-flags reply — so the dom could react to
+ * "I want to talk" and to nothing else the sub ever wrote. This is the affordance
+ * everywhere else, and it matters more now that an act carries `awaiting: []`
+ * (#182): a response is the *only* way the dom engages with an act at all.
+ *
+ * Which rows get it is {@link canRespondTo}'s question, not this component's —
+ * see there for why the gate is authorship and visibility rather than a list of
+ * respondable types.
+ */
+function RespondAction({
+	eventId,
+	onAmended,
+}: {
+	eventId: string;
+	onAmended?: () => void;
+}) {
+	const [open, setOpen] = useState(false);
+
+	if (!open) {
+		return (
+			<Button
+				variant="outline"
+				size="sm"
+				className="mt-2"
+				onClick={() => setOpen(true)}
+			>
+				Respond
+			</Button>
+		);
+	}
+
+	return (
+		<ResponseComposer
+			eventId={eventId}
+			submitLabel="Respond"
+			onCancel={() => setOpen(false)}
+			onResponded={() => {
+				setOpen(false);
+				onAmended?.();
+			}}
+		/>
+	);
+}
+
+/**
+ * The sub-side reveal (handoff §8, "Sub side"): receiving a ruling is emotionally
+ * load-bearing, so the dom's decision is not dumped inline — it sits behind a
+ * content-safe "You have an update" until the sub chooses to open it, a small
+ * deliberate interaction. Shown on the author's own event.
+ *
+ * A partner's `response` is delivered the same way (#183). The argument is
+ * verbatim the same one: "proud of you" written on the sub's act is the moment
+ * the spec calls emotionally load-bearing, and it should land as a moment rather
+ * than as text already on screen when they scrolled past.
+ *
+ * Revealing is also what marks updates *seen* (#136): the tap is the moment the
  * sub actually receives it, so acknowledging on page load instead would clear
  * their signal before they had read anything — which is what this button exists
  * to prevent.
  *
- * The watermark is per-member and time-based, so revealing one ruling marks any
+ * The watermark is per-member and time-based, so revealing one update marks any
  * others already landed as seen too. Per-event read state would be finer and is
  * not built; the coarse version is chosen over acking on load, which was simply
  * wrong.
  */
-function RulingReveal({ line }: { line: AmendmentLine }) {
+function UpdateReveal({ lines }: { lines: AmendmentLine[] }) {
 	const [revealed, setRevealed] = useState(false);
 
 	if (!revealed) {
@@ -420,8 +499,8 @@ function RulingReveal({ line }: { line: AmendmentLine }) {
 				onClick={() => {
 					setRevealed(true);
 					// A failed ack leaves the count up: telling someone twice beats
-					// marking a ruling seen that never reached the server.
-					ackRulings().catch(() => {});
+					// marking an update seen that never reached the server.
+					ackUpdates().catch(() => {});
 				}}
 			>
 				You have an update — reveal
@@ -430,11 +509,15 @@ function RulingReveal({ line }: { line: AmendmentLine }) {
 	}
 
 	return (
-		<div className="mt-2 rounded-md border bg-muted/40 p-3 text-sm">
-			<p className="font-medium">{line.summary}</p>
-			{line.note && (
-				<p className="mt-1 italic text-muted-foreground">“{line.note}”</p>
-			)}
+		<div className="mt-2 space-y-2 rounded-md border bg-muted/40 p-3 text-sm">
+			{lines.map((line) => (
+				<div key={`${line.at}-${line.tone}`}>
+					<p className="font-medium">{line.summary}</p>
+					{line.note && (
+						<p className="mt-1 italic text-muted-foreground">“{line.note}”</p>
+					)}
+				</div>
+			))}
 		</div>
 	);
 }

@@ -1,7 +1,6 @@
 import { useState } from "react";
+import { ResponseComposer } from "#/components/response-composer.tsx";
 import { Button } from "#/components/ui/button.tsx";
-import { Textarea } from "#/components/ui/textarea.tsx";
-import { amendEvent } from "#/lib/api.ts";
 import {
 	anchorElapsedDays,
 	anchorElapsedMs,
@@ -22,6 +21,10 @@ import type { ConversationFlagView } from "#/shared/conversations.ts";
  * record, attached to what prompted it, rather than a badge someone tapped away.
  * The flag never expires: the app cannot observe a conversation, so only a person
  * may end one. That is why an unanswered ask just keeps sitting here.
+ *
+ * The form itself is the shared {@link ResponseComposer}: since #183 the log can
+ * write a response too, and a response written here is not a different act from a
+ * response written there.
  */
 export function ConversationFlagsPanel({
 	flags,
@@ -83,10 +86,11 @@ export function ConversationFlagsPanel({
 								)}
 							</div>
 							{replying === flag.event_id && (
-								<ReplyForm
+								<ResponseComposer
 									eventId={flag.event_id}
+									submitLabel="Reply"
 									onCancel={() => setReplying(null)}
-									onReplied={() => {
+									onResponded={() => {
 										setReplying(null);
 										onChange();
 									}}
@@ -108,68 +112,4 @@ export function ConversationFlagsPanel({
 function askedText(days: number | null): string {
 	if (days === null || days === 0) return "Asked today";
 	return `Asked ${elapsedDaysText(days)} ago`;
-}
-
-/**
- * The inline reply. Prose is required because a `response` carries prose (ADR
- * 0001 — it is the partner's *reaction*, not an acknowledgement): the whole
- * difference between this and a dismissable chip is that there is somewhere to
- * answer. Unlike the journal composer there is no visibility choice — a `check_in`
- * is not journaling-capable and is always `shared`, which is exactly why a response
- * is allowed on one at all (ADR 0007).
- */
-function ReplyForm({
-	eventId,
-	onCancel,
-	onReplied,
-}: {
-	eventId: string;
-	onCancel: () => void;
-	onReplied: () => void;
-}) {
-	const [note, setNote] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-
-	async function submit() {
-		if (!note.trim()) {
-			setError("Write something back.");
-			return;
-		}
-		setBusy(true);
-		setError(null);
-		try {
-			await amendEvent({
-				kind: "response",
-				target_event_id: eventId,
-				note: note.trim(),
-			});
-			onReplied();
-		} catch (err) {
-			setError(err instanceof Error ? err.message : "Couldn't send that.");
-		} finally {
-			setBusy(false);
-		}
-	}
-
-	return (
-		<div className="mt-2 space-y-2">
-			<Textarea
-				placeholder="Say something back."
-				value={note}
-				onChange={(e) => setNote(e.target.value)}
-			/>
-
-			{error && <p className="text-sm text-destructive">{error}</p>}
-
-			<div className="flex gap-2">
-				<Button onClick={submit} disabled={busy}>
-					{busy ? "…" : "Reply"}
-				</Button>
-				<Button variant="ghost" onClick={onCancel} disabled={busy}>
-					Cancel
-				</Button>
-			</div>
-		</div>
-	);
 }

@@ -102,8 +102,8 @@ import {
 	type RuleChangeNotice,
 	ruleChangeAction,
 	ruleChangeKindFromAction,
-	rulingsReceivedSince,
 	unreadCount,
+	updatesReceivedSince,
 } from "#/shared/notifications.ts";
 import {
 	applyCounterEvent,
@@ -1051,10 +1051,10 @@ export class CoupleDO extends DurableObject<Env> {
 					})),
 					role,
 				}),
-				rulings_received: rulingsReceivedSince({
+				updates_received: updatesReceivedSince({
 					events,
 					memberId: me.id,
-					seenAt: Number(this.getSetting(`rulings_seen_at_${me.id}`) ?? "0"),
+					seenAt: Number(this.getSetting(`updates_seen_at_${me.id}`) ?? "0"),
 				}),
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
 				rule_changes: this.ruleChangesUnseen(me.id),
@@ -4405,12 +4405,13 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
-	 * Marks the caller's received rulings seen (#136) — sent by the log, which is
-	 * where a ruling's content lives. Explicit, so a GET never mutates.
+	 * Marks everything the caller's partner has said back to them seen — rulings
+	 * and responses alike (#136, #183). Sent by the log, which is where that
+	 * content lives. Explicit, so a GET never mutates.
 	 */
-	async ackRulings(identityHash: string): Promise<void> {
+	async ackUpdates(identityHash: string): Promise<void> {
 		const me = this.requireMember(identityHash);
-		this.setSetting(`rulings_seen_at_${me.id}`, String(Date.now()));
+		this.setSetting(`updates_seen_at_${me.id}`, String(Date.now()));
 	}
 
 	private ruleChangesUnseen(memberId: string): number {
