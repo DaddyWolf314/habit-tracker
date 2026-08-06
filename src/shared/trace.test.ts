@@ -486,7 +486,7 @@ describe("describeTraceRow (label-free chain line)", () => {
 		expect(line.note).toBe("demerits 12 → 10");
 	});
 
-	it("a declined reversal says what stayed and why, in the near-miss shape", () => {
+	it("a declined reversal says what stayed and why", () => {
 		const line = describeTraceRow(
 			row(amendmentCause("e", "R12", "a2", 1), "anchor:since_last_orgasm", {
 				kind: "reversal_declined",
@@ -494,10 +494,27 @@ describe("describeTraceRow (label-free chain line)", () => {
 				op: { kind: "anchor", anchor: "since_last_orgasm", at: 1_000 },
 			}),
 		);
-		expect(line.tone).toBe("near_miss");
 		expect(line.summary).toBe(
 			"R12 · could not reverse reset since last orgasm streak: an anchor reset has no inverse",
 		);
+	});
+
+	it("a declined reversal is not toned as a near-miss", () => {
+		// ADR 0016 borrows the near-miss *shape* — a recorded non-action with a
+		// stated cause — and CONTEXT's **Effect** entry forbids the likeness going
+		// any further: "reading a waived effect as a near-miss; the rule fired and
+		// was overruled". This row is the sharpest case, because the effect fired
+		// *and is still standing*: a near-miss tone would carry it into the chain
+		// view's "○" glyph, which says the rule never fired at all.
+		const line = describeTraceRow(
+			row(amendmentCause("e", "R12", "a2", 1), "anchor:since_last_orgasm", {
+				kind: "reversal_declined",
+				reason: "an anchor reset has no inverse",
+				op: { kind: "anchor", anchor: "since_last_orgasm", at: 1_000 },
+			}),
+		);
+		expect(line.tone).toBe("declined");
+		expect(line.tone).not.toBe("near_miss");
 	});
 
 	it("near-misses carry tone 'near_miss' and the reason", () => {

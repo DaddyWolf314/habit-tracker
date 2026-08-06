@@ -446,6 +446,27 @@ describe("the standalone waiver on a chain row", () => {
 		expect(screen.queryByRole("button", { name: "Waive" })).toBeNull();
 	});
 
+	it("does not mark a declined reversal with the near-miss glyph", async () => {
+		// CONTEXT, **Effect**: "_Avoid_: reading a waived effect as a near-miss; the
+		// rule fired and was overruled." The "○" says the rule never fired, and this
+		// row means the opposite — the effect fired, could not be un-fired, and is
+		// still standing. It stays muted, but it keeps the effect bullet.
+		const declined = {
+			...R2_DEMERIT,
+			id: 3,
+			caused_by_amendment: "w1",
+			detail: JSON.stringify({
+				kind: "reversal_declined",
+				reason: "demerits was reset since, so the inverse no longer commutes",
+				op: { kind: "counter", counter: "demerits", op: "increment", by: 1 },
+			}),
+		};
+		await openChain("dom", [declined]);
+		const line = screen.getByText(/could not reverse/);
+		expect(line.textContent).toContain("•");
+		expect(line.textContent).not.toContain("○");
+	});
+
 	it("names the effect by rule and position on confirm", async () => {
 		await openChain("dom");
 		fireEvent.click(screen.getByRole("button", { name: "Waive" }));

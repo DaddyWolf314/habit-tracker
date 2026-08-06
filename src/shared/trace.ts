@@ -694,8 +694,23 @@ export function summarizeEffectOp(op: EffectOp): string {
 	}
 }
 
-/** The tone of a chain line, so the UI styles rulings/near-misses/system jobs. */
-export type TraceTone = "effect" | "near_miss" | "system" | "command";
+/**
+ * The tone of a chain line, so the UI styles rulings/near-misses/system jobs.
+ *
+ * `declined` is deliberately **not** `near_miss`, though both record a
+ * non-action with a stated reason and both read as muted. CONTEXT's **Effect**
+ * entry forbids the conflation outright — "_Avoid_: reading a waived effect as a
+ * near-miss; the rule fired and was overruled" — and a `reversal_declined` row is
+ * the sharpest case of it: the effect fired *and is still standing*, so the
+ * near-miss glyph would tell the reader the exact opposite of what happened.
+ * Sharing the tone value is how that reading gets into the UI by accident.
+ */
+export type TraceTone =
+	| "effect"
+	| "near_miss"
+	| "declined"
+	| "system"
+	| "command";
 
 /** One trace row rendered for the chain view — label-free, the UI styles `tone`. */
 export interface TraceLine {
@@ -787,11 +802,13 @@ export function describeTraceRow(row: TraceRow): TraceLine {
 						: undefined,
 			};
 		case "reversal_declined":
-			// The near-miss tone, for the reason the near-miss shape was borrowed: this
-			// is a recorded non-action with a stated cause, and it reads beside the
-			// effects that *did* land without being mistaken for one.
+			// Its own tone, not `near_miss`. ADR 0016 borrows the near-miss *shape* — a
+			// recorded non-action with a stated cause — and that is as far as the
+			// likeness goes: a near-miss says the rule never fired, while this says the
+			// effect fired, could not be un-fired, and is still standing. Those are
+			// opposite facts about the same counter.
 			return {
-				tone: "near_miss",
+				tone: "declined",
 				summary: `${prefix}could not reverse ${summarizeEffectOp(detail.op)}: ${detail.reason}`,
 			};
 		case "timer_command":

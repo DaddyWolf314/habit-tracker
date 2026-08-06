@@ -1815,6 +1815,129 @@ describe("waiving an effect (ADR 0016)", () => {
 		});
 	});
 
+	describe("a correction touches only the key it corrected", () => {
+		/**
+		 * The case a single-key ruling cannot reach. `compositeMetadata` drops a
+		 * superseded patch **wholesale**, so a ruling that decided two awaited keys
+		 * and is corrected on one — the other re-asserted — leaves the second key's
+		 * rule matching before *and* after. `unfired` therefore never names it and
+		 * `reevaluate` never re-fires it (forward-only), so reversing it off the
+		 * superseded ruling's trace rows would strip an effect that nothing would
+		 * ever put back.
+		 */
+		async function ruledOnTwoKeysThenCorrectedOnOne(): Promise<{
+			couple: ActiveCouple;
+			eventId: string;
+		}> {
+			const couple = await activeCouple();
+			await couple.do.createEventType(DOM, {
+				id: "scene_reviewed",
+				label: "Scene reviewed",
+				valence: "neutral",
+				log_permission: ["dom", "sub", "switch"],
+				subject_required: true,
+				metadata: {
+					obedience: {
+						kind: "enum",
+						options: ["good", "poor"],
+						label: "Obedience",
+						required: false,
+						set_permission: [],
+						adjudicated_by: ["dom"],
+					},
+					service: {
+						kind: "enum",
+						options: ["good", "poor"],
+						label: "Service",
+						required: false,
+						set_permission: [],
+						adjudicated_by: ["dom"],
+					},
+				},
+				awaiting: ["obedience", "service"],
+			});
+			await couple.do.createRule(DOM, {
+				id: "custom-poor-obedience",
+				name: "Poor obedience",
+				condition: {
+					type: "scene_reviewed",
+					metadata: { obedience: "poor" },
+				},
+				effects: [{ verb: "increment_counter", counter: "demerits", by: 3 }],
+			});
+			await couple.do.createRule(DOM, {
+				id: "custom-poor-service",
+				name: "Poor service",
+				condition: { type: "scene_reviewed", metadata: { service: "poor" } },
+				effects: [
+					{ verb: "increment_counter", counter: "infractions_lifetime", by: 1 },
+				],
+			});
+
+			advance(HOUR);
+			const event = await couple.do.logEvent(SUB, {
+				type: "scene_reviewed",
+				metadata: {},
+				subject: couple.subId,
+				visibility: "shared",
+			});
+			advance(HOUR);
+			// One ruling, both keys — so both rules fire from the same amendment.
+			const ruled = await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { obedience: "poor", service: "poor" },
+			});
+			expect((await counters(couple)).demerits).toBe(3);
+			expect((await counters(couple)).infractions_lifetime).toBe(1);
+
+			advance(HOUR);
+			// The dom got *obedience* wrong and says so, re-asserting service.
+			const ruling = ruled.amendments.find((a) => a.kind === "adjudication");
+			await couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { obedience: "good", service: "poor" },
+				supersedes: ruling?.id,
+			});
+			return { couple, eventId: event.id };
+		}
+
+		it("reverses the corrected key's effect", async () => {
+			const { couple } = await ruledOnTwoKeysThenCorrectedOnOne();
+			expect((await counters(couple)).demerits).toBe(0);
+		});
+
+		it("leaves the re-asserted key's effect standing", async () => {
+			// The fact it hangs on is still true, and nothing would re-apply it: the
+			// rule fired before and fires after, so it is in neither `unfired` nor
+			// `reevaluate`'s forward set.
+			const { couple } = await ruledOnTwoKeysThenCorrectedOnOne();
+			expect((await counters(couple)).infractions_lifetime).toBe(1);
+		});
+
+		it("files no waiver row against the rule that still matches", async () => {
+			const { couple, eventId } = await ruledOnTwoKeysThenCorrectedOnOne();
+			const overruled = (await couple.do.getEventTrace(DOM, eventId)).filter(
+				(row) =>
+					row.detail.kind === "waived" ||
+					row.detail.kind === "reversal_declined",
+			);
+			const rules = overruled.map((row) =>
+				row.cause.by === "amendment" ? row.cause.rule : "",
+			);
+			expect(rules).not.toContain("custom-poor-service");
+			expect(rules).toContain("custom-poor-obedience");
+		});
+
+		it("agrees with a rebuild", async () => {
+			const { couple } = await ruledOnTwoKeysThenCorrectedOnOne();
+			const live = await counters(couple);
+			await couple.do.rebuildCounters(DOM);
+			expect(await counters(couple)).toEqual(live);
+		});
+	});
+
 	describe("the anchor effects nothing can undo", () => {
 		it("leaves the anchor where the wrong ruling put it", async () => {
 			// Stated as its own test because it is the part of #184's asymmetry that

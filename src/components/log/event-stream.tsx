@@ -319,11 +319,19 @@ function EventRow({
 							{trace?.map((row) => {
 								const line = describeTraceRow(row);
 								const isNearMiss = line.tone === "near_miss";
+								// A declined reversal reads muted like a near-miss — both record
+								// something that did not happen — but keeps the effect bullet,
+								// because the effect *did* happen and is still standing. The "○"
+								// means "this rule never fired", which is the one thing this row
+								// must not be read as (CONTEXT, **Effect**).
+								const isDeclined = line.tone === "declined";
 								const waivable = standing.get(row.id);
 								return (
 									<li
 										key={row.id}
-										className={isNearMiss ? "italic opacity-70" : undefined}
+										className={
+											isNearMiss || isDeclined ? "italic opacity-70" : undefined
+										}
 									>
 										{isNearMiss ? "○ " : "• "}
 										{line.summary}

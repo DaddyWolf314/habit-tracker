@@ -2473,6 +2473,10 @@ export class CoupleDO extends DurableObject<Env> {
 	 *
 	 * The two overlap on an ordinary correction, which is why they are folded into
 	 * one row set: each effect is reversed once, or declined once, never twice.
+	 *
+	 * Both are then gated on the rule no longer firing — see the comment on
+	 * `firesAfter`, which is what keeps a multi-key correction from stripping the
+	 * effects of the key it did not touch.
 	 */
 	private reverseCorrectedEffects(
 		event: Event,
@@ -2482,15 +2486,35 @@ export class CoupleDO extends DurableObject<Env> {
 		afterCtx: RuleEventContext,
 	): void {
 		const stranded = new Set(unfired(rules, beforeCtx, afterCtx));
+		// The gate both sources pass through: a rule that **still fires** under the
+		// corrected state has its effects attached to a fact that is still true, so
+		// there is nothing stranded to reverse.
+		//
+		// Asking it forward, of `after`, rather than backward of `before`, is the
+		// whole trick. The backward question is the one ambient drift corrupts (see
+		// R26 above); the forward one is about the state the correction just
+		// established, which nothing has had a chance to move yet.
+		//
+		// Without this gate the superseded-ruling source over-reverses, because
+		// `compositeMetadata` drops a superseded patch *wholesale*: a ruling that
+		// patched two awaited keys and is corrected on only one — the other
+		// re-asserted — leaves the second key's rule matching before and after. It is
+		// therefore in neither `unfired` nor `reevaluate`'s forward set, so reversing
+		// it would strip an effect that nothing would ever re-apply.
+		const firesAfter = new Set(
+			evaluateRules(rules, afterCtx).fired.map((f) => f.rule_id),
+		);
 		const rows = this.standingEffectRows(event.id).filter((row) => {
-			if (row.cause.by !== "rule" && row.cause.by !== "amendment") return false;
+			const named = waivedEffectOf(row);
+			if (named === null) return false;
+			if (firesAfter.has(named.rule_id)) return false;
 			if (
 				row.cause.by === "amendment" &&
 				row.cause.amendment === amendment.supersedes
 			) {
 				return true;
 			}
-			return stranded.has(row.cause.rule);
+			return stranded.has(named.rule_id);
 		});
 		for (const row of rows) {
 			this.reverseEffectRow(row, amendment.created_at, amendment.id);
