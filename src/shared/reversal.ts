@@ -186,16 +186,21 @@ function blockerReason(row: TraceRow, counter: string): string {
  * projection that was written after it, oldest first — the caller's query, since
  * only the caller knows whether it is reading the live trace or the one a replay
  * is rebuilding.
+ *
+ * Returns **null** for a row that records no effect — a near-miss, a system job,
+ * a waiver row itself. Null rather than a declined plan, because a declined plan
+ * has to name the effect it is declining, and there is no honest op to name:
+ * inventing one would have the caller write a `reversal_declined` row claiming an
+ * effect that never fired, which is precisely the kind of thing this whole
+ * mechanism exists to keep out of the ledger. `standingEffects` already filters
+ * these out, so a caller reaching this has asked the wrong question.
  */
-export function planReversal(row: TraceRow, later: TraceRow[]): ReversalPlan {
+export function planReversal(
+	row: TraceRow,
+	later: TraceRow[],
+): ReversalPlan | null {
 	const effect = effectOpOf(row);
-	if (effect === null) {
-		return {
-			reversible: false,
-			effect: { kind: "notify", target: projectionName(row.projection) },
-			reason: "this row records no effect to reverse",
-		};
-	}
+	if (effect === null) return null;
 	if (effect.kind === "anchor") {
 		return {
 			reversible: false,

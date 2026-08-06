@@ -427,6 +427,15 @@ interface TimerState {
 type TimerOp = Extract<EffectOp, { kind: "timer" }>;
 
 /**
+ * Every column {@link TraceColumnsRow} needs, for the five queries that read the
+ * trace back. One constant because `decodeTraceRow` needs the full set and a
+ * query that quietly omits one decodes to a row missing a field nothing checks —
+ * `effect_index` was added to all five by hand, which is four chances to miss one.
+ */
+const TRACE_COLUMNS =
+	"id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail";
+
+/**
  * The raw stored columns of a trace row. Kept here (not in the isomorphic shared
  * module) because the SqlStorage index signature is a Workers type; it is
  * structurally a `TraceRowColumns`, so `decodeTraceRow` reads it directly.
@@ -2560,6 +2569,11 @@ export class CoupleDO extends DurableObject<Env> {
 			row.cause.effect_index,
 		);
 		const plan = planReversal(row, this.traceRowsAfter(row));
+		// No effect on the row, so nothing to reverse and nothing to say about it.
+		// `standingEffectRows` does not surface these, so this is a guard rather than
+		// a case — and staying silent is the point: a row here would name an effect
+		// that never fired.
+		if (plan === null) return;
 		if (!plan.reversible) {
 			this.writeTrace(
 				traceReversalDeclined(cause, at, {
@@ -2616,7 +2630,7 @@ export class CoupleDO extends DurableObject<Env> {
 		return standingEffects(
 			this.sql
 				.exec<TraceColumnsRow>(
-					`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+					`SELECT ${TRACE_COLUMNS}
 						FROM trace WHERE caused_by_event = ? ORDER BY id ASC`,
 					eventId,
 				)
@@ -2635,7 +2649,7 @@ export class CoupleDO extends DurableObject<Env> {
 		if (row.projection === null) return [];
 		return this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+				`SELECT ${TRACE_COLUMNS}
 					FROM trace WHERE projection = ? AND id > ? ORDER BY id ASC`,
 				row.projection,
 				row.id,
@@ -3124,7 +3138,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const counter = this.requireCounterRow(counterId);
 		const rows = this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+				`SELECT ${TRACE_COLUMNS}
 					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
 				`counter:${counterId}`,
 			)
@@ -3141,7 +3155,7 @@ export class CoupleDO extends DurableObject<Env> {
 		this.requireMember(identityHash);
 		return this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+				`SELECT ${TRACE_COLUMNS}
 					FROM trace WHERE caused_by_event = ? ORDER BY at ASC, id ASC`,
 				eventId,
 			)
@@ -3168,7 +3182,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const member = this.requireMember(identityHash);
 		const rows = this.sql
 			.exec<TraceColumnsRow>(
-				`SELECT id, at, caused_by_event, caused_by_rule, caused_by_amendment, actor, effect_index, projection, detail
+				`SELECT ${TRACE_COLUMNS}
 					FROM trace WHERE projection = ? ORDER BY at DESC, id DESC`,
 				projection,
 			)

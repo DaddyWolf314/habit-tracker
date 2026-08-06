@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { effectOpOf, planReversal, standingEffects } from "./reversal.ts";
+import {
+	effectOpOf,
+	planReversal,
+	type ReversalPlan,
+	standingEffects,
+} from "./reversal.ts";
 import {
 	amendmentCause,
 	directCause,
@@ -90,9 +95,21 @@ describe("effectOpOf — the effect is read from the trace, not the rule", () =>
 	});
 });
 
+/**
+ * `planReversal` for a row that *does* record an effect. Null is the answer for a
+ * row that records none, which every case below except the last one is not — so
+ * unwrapping here keeps those cases about commutativity rather than about the
+ * nullable return.
+ */
+function planned(row: TraceRow, later: TraceRow[] = []): ReversalPlan {
+	const plan = planReversal(row, later);
+	if (plan === null) throw new Error("expected a plan for an effect row");
+	return plan;
+}
+
 describe("planReversal — reversible exactly when the inverse still commutes", () => {
 	it("reverses an increment with nothing in between", () => {
-		const plan = planReversal(increment(2, 10), []);
+		const plan = planned(increment(2, 10), []);
 		expect(plan).toEqual({
 			reversible: true,
 			effect: { kind: "counter", counter: "demerits", op: "increment", by: 2 },
@@ -106,7 +123,7 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 	});
 
 	it("inverts a decrement too", () => {
-		const plan = planReversal(decrement(3, 10), []);
+		const plan = planned(decrement(3, 10), []);
 		expect(plan.reversible && plan.compensating.op).toBe("increment");
 	});
 
@@ -121,7 +138,7 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 			increment(7, -2),
 			decrement(1, 5),
 		];
-		const plan = planReversal(target, between);
+		const plan = planned(target, between);
 		expect(plan.reversible && plan.compensating.by).toBe(2);
 	});
 
@@ -134,7 +151,7 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 			projection: "counter:demerits",
 			detail: { kind: "counter", op: "reset", from: 12, to: 0 },
 		};
-		const plan = planReversal(target, [acknowledgment]);
+		const plan = planned(target, [acknowledgment]);
 		expect(plan.reversible).toBe(false);
 		expect(!plan.reversible && plan.reason).toMatch(/reset since/);
 	});
@@ -147,7 +164,7 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 			projection: "counter:demerits",
 			detail: { kind: "scheduled_reset", period: "weekly", from: 12, to: 0 },
 		};
-		expect(planReversal(increment(2, 10), [period]).reversible).toBe(false);
+		expect(planned(increment(2, 10), [period]).reversible).toBe(false);
 		const fold: TraceRow = {
 			id: nextId++,
 			at: 9_999,
@@ -162,11 +179,11 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 				to: 4,
 			},
 		};
-		expect(planReversal(increment(2, 10), [fold]).reversible).toBe(false);
+		expect(planned(increment(2, 10), [fold]).reversible).toBe(false);
 	});
 
 	it("declines a counter reset — its inverse would clobber what accrued since", () => {
-		const plan = planReversal(
+		const plan = planned(
 			row({ kind: "counter", op: "reset", from: 12, to: 0 }),
 			[],
 		);
@@ -175,21 +192,21 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 	});
 
 	it("declines an anchor reset, a timer op, and a notify", () => {
-		const anchor = planReversal(
+		const anchor = planned(
 			row(
 				{ kind: "anchor", at: 500, from: 100, to: 500 },
 				{ projection: "anchor:since_last_orgasm" },
 			),
 			[],
 		);
-		const timer = planReversal(
+		const timer = planned(
 			row(
 				{ kind: "timer_close", matched: true, timer_id: "t1" },
 				{ projection: "timer:denial_period" },
 			),
 			[],
 		);
-		const notify = planReversal(
+		const notify = planned(
 			row(
 				{ kind: "notify", target: "partner" },
 				{ projection: "notify:partner" },
@@ -208,8 +225,24 @@ describe("planReversal — reversible exactly when the inverse still commutes", 
 	it("only counts non-commuting rows on the same projection", () => {
 		// The caller hands over the window; a reset on a *different* counter is
 		// simply not in it. Stated so the seam is not mistaken for a global scan.
-		const plan = planReversal(increment(2, 10), []);
+		const plan = planned(increment(2, 10), []);
 		expect(plan.reversible).toBe(true);
+	});
+
+	it("returns null for a row that records no effect, rather than inventing one", () => {
+		// A declined plan has to name the effect it declines, and there is none here.
+		// Naming one anyway would have the caller write a `reversal_declined` row
+		// claiming an effect that never fired — a lie in the ledger, from the
+		// mechanism whose entire purpose is keeping the ledger honest.
+		expect(
+			planReversal(
+				row(
+					{ kind: "near_miss", reason: "…", awaiting: ["permitted"] },
+					{ projection: null },
+				),
+				[],
+			),
+		).toBeNull();
 	});
 });
 
