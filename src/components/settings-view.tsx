@@ -78,6 +78,22 @@ export function SettingsView() {
 				</div>
 			</div>
 
+			{/* Beside Rules for the same reason (#123): authoring is a rare act, and
+			    the tab bar is for what you reach daily. You add a word once and then
+			    use it from the composer for months. */}
+			<div className="rounded-md border p-4">
+				<h2 className="font-medium">Your words</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					The app ships a starting vocabulary — acts, activities, severities.
+					Add your own to any of those lists.
+				</p>
+				<div className="mt-3">
+					<Link to="/vocabulary" className="text-sm underline">
+						Edit your words
+					</Link>
+				</div>
+			</div>
+
 			<div className="rounded-md border p-4">
 				<h2 className="font-medium">Your devices</h2>
 				<p className="mt-1 text-sm text-muted-foreground">

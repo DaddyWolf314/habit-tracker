@@ -100,6 +100,35 @@ export function isOwnPending(
 	);
 }
 
+/**
+ * Whether `memberId` may respond to this event — the gate for the respond
+ * affordance wherever a partner's entry is rendered (#183).
+ *
+ * Deliberately a *mirror of the server's* check rather than a list of types you
+ * may respond to. `validateResponse` (`amendment-validation.ts`) already answers
+ * "may this response be written", and it answers it from authorship and
+ * visibility alone; a client-side type allowlist would be a second source of
+ * truth about the same question, and the two would drift the moment the pack
+ * grows a type. So this asks exactly what the server asks:
+ *  - not your own entry (a response to yourself is what `note_appended` is for);
+ *  - not `secret` (the read model omits those from the partner's log entirely,
+ *    so this is belt-and-braces — but stating it keeps the mirror honest);
+ *  - not retracted, because `validateAmendment` refuses *every* amendment on a
+ *    retracted event before it reaches `validateResponse`. Offering a button
+ *    that can only fail is worse than offering none.
+ */
+export function canRespondTo(
+	event: Pick<EventView, "actor" | "visibility" | "retracted">,
+	memberId: string | null,
+): boolean {
+	return (
+		memberId !== null &&
+		event.actor !== memberId &&
+		event.visibility !== "secret" &&
+		!event.retracted
+	);
+}
+
 /** One amendment rendered for the chain view (handoff §4.6). */
 export interface AmendmentLine {
 	tone: "ruling" | "note" | "retraction" | "response";

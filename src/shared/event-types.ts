@@ -115,6 +115,51 @@ export function optionLabel(field: MetadataField, option: string): string {
 }
 
 /**
+ * What an option token may look like (#185). Tokens are machine values: they are
+ * what an event stores, what a rule condition matches on, and what an export
+ * carries, so a couple-authored one has to read like a pack-authored one. Lower
+ * snake case keeps {@link optionLabel}'s de-slug rung honest — an option whose
+ * label is later cleared still reads as words.
+ */
+export const optionTokenSchema = z
+	.string()
+	.regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/, "use lowercase words, e.g. after_care")
+	.max(40);
+
+/**
+ * The token for a word a person typed — "After care" → `after_care`. Shared
+ * rather than duplicated in the editor, so the token the UI previews is the
+ * token the server stores and validates. Returns "" for input with nothing
+ * token-worthy in it, which the caller rejects as an empty word.
+ */
+export function toOptionToken(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "");
+}
+
+function extendEnum(
+	field: Extract<MetadataField, { kind: "enum" }>,
+	additions: readonly OptionAddition[],
+): MetadataField {
+	const options = [...field.options];
+	const labels = { ...field.option_labels };
+	for (const { option, label } of additions) {
+		// The pack has since shipped this option itself. It is the pack's now: keep
+		// its position and its copy, so a bump that relabels it wins over a label
+		// the couple typed before it existed. The overlay row is left alone, so the
+		// word survives if a later bump drops it again.
+		if (field.options.includes(option)) continue;
+		options.push(option);
+		if (label) labels[option] = label;
+	}
+	return Object.keys(labels).length > 0
+		? { ...field, options, option_labels: labels }
+		: { ...field, options };
+}
+
+/**
  * One `awaiting` entry (handoff §5, ADR 0003). A bare key gates pending status
  * regardless of subject — today's meaning, unchanged. A qualified entry gates
  * only when the event's subject resolves to the named role: the starter
@@ -175,6 +220,67 @@ export const eventTypeSchema = z.object({
 	journaling: z.boolean().default(false),
 });
 export type EventType = z.infer<typeof eventTypeSchema>;
+
+/**
+ * One option a couple added to a pack enum (#185, ADR 0014).
+ *
+ * This is an **overlay**, not a fork. Adopt-on-edit (ADR 0002) is right for a
+ * rule, which is one atomic statement, and wrong for an event type, which is a
+ * composite — a couple who added one act would freeze `detail`, `awaiting`,
+ * `option_labels` and the permissions along with it, paying for one word with
+ * every future pack improvement to the type. An added option is a delta in a way
+ * that an edited rule condition is not, so it rides alongside the pack
+ * definition instead of replacing it.
+ */
+export const optionAdditionSchema = z.object({
+	type_id: z.string(),
+	field_key: z.string(),
+	option: optionTokenSchema,
+	label: z.string().trim().min(1).max(60).optional(),
+});
+export type OptionAddition = z.infer<typeof optionAdditionSchema>;
+
+/**
+ * A pack type with the couple's added options folded in — the merge the whole of
+ * #185 rests on.
+ *
+ * It runs at the DO's *type read seam* (`eventTypeById` / `listEventTypes`),
+ * never at a call site, because two validators test enum membership and would
+ * otherwise refuse a couple's own word outright: {@link checkMetadataValue} on
+ * both write paths, and `rule-validation.ts` at rule creation. Merging once at
+ * the read means log validation, rule validation, the composer, the queue, the
+ * engine and {@link optionLabel} all see the same set with no per-caller
+ * awareness — and a couple-added option is indistinguishable from a pack one
+ * everywhere downstream, which is the point.
+ *
+ * Additions for other types are ignored, so a caller may pass the whole overlay.
+ */
+export function withAddedOptions(
+	type: EventType,
+	additions: readonly OptionAddition[],
+): EventType {
+	const byField = new Map<string, OptionAddition[]>();
+	for (const addition of additions) {
+		if (addition.type_id !== type.id) continue;
+		const forField = byField.get(addition.field_key);
+		if (forField) forField.push(addition);
+		else byField.set(addition.field_key, [addition]);
+	}
+	if (byField.size === 0) return type;
+
+	const metadata: Record<string, MetadataField> = {};
+	for (const [key, field] of Object.entries(type.metadata)) {
+		const added = byField.get(key);
+		// An overlay outlives the definition it rides on. A pack bump may drop the
+		// field or change its kind, and an addition to something that is no longer
+		// an enum is inert rather than fatal — the same graceful-degradation call
+		// `optionLabel`'s de-slug rung makes, and the reason `seedDefaults` can keep
+		// blindly upserting.
+		metadata[key] =
+			added && field.kind === "enum" ? extendEnum(field, added) : field;
+	}
+	return { ...type, metadata };
+}
 
 /**
  * Ensures a metadata value fits its field's kind. Returns null when it does, or

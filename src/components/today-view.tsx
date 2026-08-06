@@ -13,6 +13,7 @@ import {
 	listAnchors,
 	listConversationFlags,
 	listCounters,
+	listEvents,
 	listEventTypes,
 	listOpenPrompts,
 	listRules,
@@ -25,6 +26,7 @@ import type { AnchorView } from "#/shared/anchors.ts";
 import type { ConversationFlagView } from "#/shared/conversations.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
+import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -53,6 +55,10 @@ export function TodayView() {
 	// see the poll below.
 	const [rules, setRules] = useState<Rule[]>([]);
 	const [types, setTypes] = useState<EventType[]>([]);
+	// The log, for the session card's contents list (#182): a running session
+	// shows the acts logged against it, which is a read over events rather than
+	// over timers. Bounded — `listEvents` caps at 200 server-side.
+	const [events, setEvents] = useState<EventView[]>([]);
 	// One integer, folded server-side: Today never holds the log (#136).
 	const [awaiting, setAwaiting] = useState(0);
 	const [error, setError] = useState<string | null>(null);
@@ -67,6 +73,7 @@ export function TodayView() {
 			{ awaiting },
 			{ anchors },
 			{ flags },
+			{ events },
 		] = await Promise.all([
 			listTimers(),
 			listOpenPrompts(),
@@ -76,8 +83,10 @@ export function TodayView() {
 			queueCount(),
 			listAnchors(),
 			listConversationFlags(),
+			listEvents(),
 		]);
 		setTimers(timers);
+		setEvents(events);
 		setOpenPrompts(prompts);
 		setCounters(counters);
 		// Rules and types ride the poll too, not just the first load: a dom can
@@ -118,6 +127,7 @@ export function TodayView() {
 				eventRes,
 				anchorRes,
 				flagRes,
+				logRes,
 			] = await Promise.all([
 				listTimers(),
 				getRoles(),
@@ -128,6 +138,7 @@ export function TodayView() {
 				queueCount(),
 				listAnchors(),
 				listConversationFlags(),
+				listEvents(),
 			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
@@ -138,6 +149,7 @@ export function TodayView() {
 			setAwaiting(eventRes.awaiting);
 			setAnchors(anchorRes.anchors);
 			setFlags(flagRes.flags);
+			setEvents(logRes.events);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -207,6 +219,9 @@ export function TodayView() {
 
 			<StopwatchesPanel
 				timers={timers}
+				types={types}
+				events={events}
+				members={members}
 				selfId={self?.member_id ?? null}
 				onChange={refreshAfterMutation}
 			/>

@@ -13,6 +13,7 @@ import {
 	resetCounterInputSchema,
 	updateCounterInputSchema,
 } from "#/shared/counters.ts";
+import { optionAdditionSchema } from "#/shared/event-types.ts";
 import { logEventInputSchema } from "#/shared/events.ts";
 import {
 	mintDeviceInputSchema,
@@ -188,6 +189,40 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				const body = await request.json().catch(() => null);
 				const type = await stub.createEventType(auth.identityHash, body);
 				return json(type, 201);
+			});
+		}
+		// The couple's own words on a pack enum (#185). Three verbs on one path: GET
+		// is the unmerged overlay, which only the editor needs (everywhere else must
+		// not be able to tell a couple's word from the pack's); POST adds a token;
+		// PATCH changes only what it reads as, never the token, because logged
+		// events carry it.
+		if (path === "/api/event-types/options" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listEventTypeOptions(auth.identityHash)
+					.then((options) => json({ options })),
+			);
+		}
+		if (path === "/api/event-types/options" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, optionAdditionSchema);
+				if ("response" in parsed) return parsed.response;
+				const type = await stub.addEventTypeOption(
+					auth.identityHash,
+					parsed.data,
+				);
+				return json(type, 201);
+			});
+		}
+		if (path === "/api/event-types/options" && method === "PATCH") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, optionAdditionSchema);
+				if ("response" in parsed) return parsed.response;
+				const type = await stub.renameEventTypeOption(
+					auth.identityHash,
+					parsed.data,
+				);
+				return json(type);
 			});
 		}
 		if (path === "/api/events" && method === "GET") {
@@ -517,11 +552,12 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 				stub.conversationFlags(auth.identityHash).then((r) => json(r)),
 			);
 		}
-		// #136: the sub's half of the queue signal. Acknowledged from the log,
-		// where a ruling's content is; explicit, so a GET never mutates.
-		if (path === "/api/rulings/seen" && method === "POST") {
+		// #136: the sub's half of the queue signal — a partner's ruling, or their
+		// response (#183). Acknowledged from the log, where that content is;
+		// explicit, so a GET never mutates.
+		if (path === "/api/updates/seen" && method === "POST") {
 			return await withAuth(request, env, ({ auth, stub }) =>
-				stub.ackRulings(auth.identityHash).then(() => json({ ok: true })),
+				stub.ackUpdates(auth.identityHash).then(() => json({ ok: true })),
 			);
 		}
 		// ── #64: rules screen — view, edit, enable/disable, delete ──────────────

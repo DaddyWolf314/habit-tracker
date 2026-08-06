@@ -161,6 +161,27 @@ in and should not.
   landed yet turns on alarm timing and polling, not on anything the author did,
   so the two never get different words in the UI. _Avoid_: "due" and "late" as
   competing display words; "overdue" as a status name.
+- **Act** — an event recording *what happened* inside a scene: one `act` event per
+  thing done, carrying an `act` enum (`impact`, `bondage`, `aftercare`, …), an
+  optional short `detail`, and the `session_id` of the session it happened in. Its
+  **subject** is the *recipient*, so direction comes free and a rule qualifies on
+  `subject_role` exactly as ADR 0003 intends — a session about the sub can still
+  contain an act the dom received. One type carrying an enum rather than a type per
+  act, because a rule condition's `type` is a single string: with N types, "any act"
+  is N rules that silently under-cover every time the vocabulary grows. Its
+  **`awaiting` is empty** — an act is a record, never a ruling. Nobody adjudicates
+  it, so it never reaches the **adjudication queue** or the unread count; the dom's
+  engagement with one is a `response` amendment. _Avoid_: "activity" (that is the
+  *session's* enum — what kind of scene it was, not what was done in it); "act" for
+  the session as a whole; modeling acts as a list on `session_started`, since a
+  **span** can never be individually timed, noted, or retracted.
+- **Session contents** — what a session reports about itself: every non-retracted
+  event echoing its `session_id`, minus the `session_started`/`session_ended` pair
+  that bounds it. Read off the **metadata** rather than a type allowlist, so
+  `orgasm` and `edge` — which carry the same optional `session_id` — appear beside
+  an **Act** without any surface naming them, and a couple's own type scoped to the
+  session appears for free. _Avoid_: "session log"; "contents" for the timer row
+  itself (the row is the span, the contents are the events inside it).
 - **Target counter** — a counter carrying a daily/weekly target. A **streak** is a
   property of one: a consecutive-target-met count the DO alarm evaluates at
   rollover — never a rule. _Avoid_: modeling a streak as a rule.
@@ -237,9 +258,17 @@ in and should not.
   assigns it at log time and a client may never supply one (`minted: true`,
   ADR 0005). `task_assigned`, `session_started`, `journal_prompt`.
 - **Echoing ref** — a ref repeating an id minted elsewhere, in order to pair with
-  it: `task_completed`, `session_ended`, `journal_entry`. Every ref that pairs
-  events is originating or echoing, and the schema flag says which. _Avoid_:
-  "copy", "reference back".
+  it. Two flavors, differing in what they may name rather than in what the schema
+  declares: a **closing echo** discharges the row it names (`task_completed`,
+  `session_ended`, `journal_entry` — each closes a timer through a rule), while a
+  **non-closing echo** only says which row the event belongs to (an **Act**'s
+  `session_id`, and the same key on `orgasm`/`edge`). Which one an event is stays
+  *derived* from the couple's own rules, never declared on the field: a rule
+  matching a timer on key K is the statement "K names an existing row", and that
+  holds wherever K appears. Every ref that pairs events is originating or echoing,
+  and the schema flag says which. _Avoid_: "copy", "reference back"; assuming an
+  echo closes something — that conflates *can this event resolve the row* with *can
+  this event name the row*.
 - **Citing ref** — the third flavor: a ref naming a **definition** rather than an
   id minted by an event (`infraction`'s `rule_ref`, `ritual_completed`'s
   `ritual_id` — both naming an **Agreement**). Nothing mints it at log time, and
@@ -255,12 +284,17 @@ in and should not.
   minted, never matched. A ref that gains a definition becomes citing (or an
   originating/echoing pair) like the rest.
 - **Ref candidate** — an id a ref may still name; what qualifies depends on the
-  flavor. For an **echoing** ref: an open timer, or one that expired recently
+  flavor. For a **closing echo**: an open timer, or one that expired recently
   enough to stay in grace — echoing late still pairs the event for history even
   though it no longer closes anything, and a resolved timer (completed, canceled,
-  auto-closed) is never a candidate. For a **citing** ref: the Agreements in
-  force — a retired Agreement is offered for no new citation, yet every past
-  citation of it still resolves and every rule matching it still fires on replay.
+  auto-closed) is never a candidate, because *closing* it again means nothing. For
+  a **non-closing echo**: the most recent rows at any status — "we did impact
+  during last night's scene", logged the next morning, names a resolved row and
+  means everything. Bounded by **count** rather than by a time window, because a
+  window goes empty on a quiet couple and an empty list degrades the field back to
+  the free-text ULID box ADR 0005 exists to remove. For a **citing** ref: the
+  Agreements in force — a retired Agreement is offered for no new citation, yet
+  every past citation still resolves and every rule matching it still fires on replay.
   _Avoid_: "live" (the repo's informal word for polling and ticking),
   "suggestion", "autocomplete".
 - **Option label** — the display copy an enum option carries, keyed by stored
@@ -273,6 +307,23 @@ in and should not.
   couple's own event type still reads as words. _Avoid_: "display name" (an
   Agreement **version** carries one, a different thing); a label that restates
   the stored token.
+- **Option overlay** — a couple's own additions to a **pack enum**, stored beside
+  the pack definition rather than inside it and merged at the DO's *type read
+  seam* (ADR 0014, #185). **Additive only**: it may add a word and change what
+  that word reads as, never suppress a word the pack ships. The pack keeps
+  owning `event_types.definition`, so a version bump still delivers every other
+  change to a type the couple has extended — which is what makes this not
+  **adoption**: an event type is a composite, and freezing one to add a word
+  would pay for it with the whole rest of the type. Downstream, a couple's word
+  is indistinguishable from the pack's — that indistinguishability *is* the
+  design, and the vocabulary editor asks for provenance separately rather than
+  putting it where every reader would see it. _Avoid_: "custom type" (a whole
+  type authored by a couple, a different thing); "adopted" (ADR 0002's word, for
+  rules and Agreement kinds).
+- **Option token** — the stored value of an enum option, as opposed to its
+  **Option label**. Lower snake case, minted once, and never moved: it is what a
+  logged event, a rule condition and an export carry, so renaming one would
+  orphan every event holding it. Renaming a word changes only the label.
 - **Valence** — `positive | negative | neutral` on a type or counter; drives
   display and the deferred scoring layer. Overridable per rule effect.
 - **Composite state** — an event's current metadata: original overlaid by
@@ -304,11 +355,15 @@ in and should not.
   _Avoid_: "grade", "score", "rating" (see **Adjudication**); copy implying a
   self-stated quality awaits approval.
 - **Notification** — the single content-free unread *count* a member polls, shown
-  as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): pending-
-  adjudication events plus a targeted recovery notice, composed in one place
+  as a discretion-safe badge ("You have N new items"; handoff §3.5, #42): events
+  awaiting *this* member's ruling, what their partner has said back about their own
+  entries (a ruling or a **Response**, #183), a targeted recovery notice, and the
+  partner's rule and Agreement changes — composed in one place
   (`shared/notifications.ts`). A number only, never any relationship content.
-  _Avoid_: "inbox" (a count, not a container — and the banned adjudication-queue
-  synonym).
+  Everything it counts is **addressed to the viewer**: a bare logged event notifies
+  nobody, and one entry counts once however many times it was amended, because a
+  content-free number cannot say which of six things it means. _Avoid_: "inbox" (a
+  count, not a container — and the banned adjudication-queue synonym).
 
 ## Journaling
 
@@ -391,8 +446,14 @@ primitive — it is a *category of event types* plus a question/answer pairing.
   without the words), never on `secret` ones. On a `check_in` carrying
   `wants_conversation` a response is also what **closes the conversation flag**
   (ADR 0007). Fires no rules, does not touch composite metadata, and is
-  inherently visible to the entry's author. _Avoid_: overloading `note_appended`
-  (that is the author's own added context) for this.
+  inherently visible to the entry's author — who is *told*: a response raises
+  their **Notification** count and lands behind the same content-safe reveal a
+  ruling does (#183). Writable from any log row the viewer did not author and
+  that is not `secret`, a gate that mirrors `validateResponse` rather than
+  listing respondable **Event types** — a client-side allowlist would be a second
+  answer to a question validation already answers, and would omit every type the
+  pack grows next. _Avoid_: overloading `note_appended` (that is the author's own
+  added context) for this; a per-type respond affordance.
 
 - **Conversation flag** — the open state of a `check_in` carrying
   `flag=wants_conversation` (R18): open until the *other* member attaches a

@@ -34,6 +34,23 @@ export const permissionListSchema = z.array(roleSchema);
 export type PermissionList = z.infer<typeof permissionListSchema>;
 
 /**
+ * Whether a role may do what a permission list gates. An unresolved role permits
+ * nothing — a member before role confirmation has no authority, which is the
+ * floor the DO has always enforced.
+ *
+ * Shared because #185 gave a *client* screen a reason to ask: the vocabulary
+ * editor shows only the fields you may extend, and the server gates the write on
+ * the same list. Two copies of "is this role in this list" is how a screen ends
+ * up offering a control whose write is refused.
+ */
+export function rolePermits(
+	role: Role | null | undefined,
+	permitted: readonly Role[],
+): boolean {
+	return role != null && permitted.includes(role);
+}
+
+/**
  * Values a piece of event metadata may hold. Kinds are boolean | enum | number
  * | text | ref only — freeform prose lives in `note`, and a `text` value is a
  * short label rather than an exception to that (ADR 0005). At rest an enum, ref,

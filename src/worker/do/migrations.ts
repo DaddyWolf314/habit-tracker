@@ -373,6 +373,36 @@ export const DO_MIGRATIONS: string[][] = [
 		`INSERT INTO counter_versions (counter_id, effective_from, definition)
 			SELECT id, 0, definition FROM counters`,
 	],
+	// v15 — a couple can extend a pack enum (#185, ADR 0014). Their added options
+	// live *beside* the pack definition rather than inside it, which is the whole
+	// design: `event_types.definition` stays pack-owned and `seedDefaults` keeps
+	// blindly upserting it, so a bump still delivers every improvement to a type
+	// the couple has extended.
+	//
+	// This is deliberately not the shape v8/v12 gave rules and agreement kinds. An
+	// `adopted` column freezes a whole definition, which is right for a rule (one
+	// atomic statement) and wrong for a type (a composite of options, `detail`,
+	// `awaiting` and permissions) — a couple who added one word would stop
+	// receiving pack changes to everything else on it. There is correspondingly no
+	// `upstream_changed` here: nothing is skipped, so there is nothing to notice.
+	//
+	// The primary key makes an option idempotent per field, and `label` is nullable
+	// because "no copy" is a real state that `optionLabel` already renders (it
+	// de-slugs), distinct from a label typed and then cleared. `added_by` is the
+	// member id, kept so a later surface can say whose word it is; nothing reads it
+	// yet. **No backfill** — the table is the first record of couple-authored
+	// vocabulary, and there was none before it.
+	[
+		`CREATE TABLE IF NOT EXISTS event_type_options (
+			type_id TEXT NOT NULL,
+			field_key TEXT NOT NULL,
+			option TEXT NOT NULL,
+			label TEXT,
+			added_by TEXT,
+			added_at INTEGER NOT NULL,
+			PRIMARY KEY (type_id, field_key, option)
+		)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

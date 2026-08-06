@@ -573,6 +573,43 @@ describe("citing refs in the shipped pack", () => {
 	});
 });
 
+describe("acts in the shipped pack (#182)", () => {
+	const typeById = (id: string) => {
+		const type = STARTER_EVENT_TYPES.find((t) => t.id === id);
+		if (!type) throw new Error(`no ${id} in the pack`);
+		return type;
+	};
+
+	it("an act awaits nothing — it is a record, never a ruling", () => {
+		// The decision, not an oversight. Nobody adjudicates an act: asserting a
+		// verdict nobody asked for is the less truthful record, and `awaiting`
+		// qualifies on subject_role only, so it could never have told "the dom did
+		// this to the sub" apart from "the sub did this". An empty `awaiting` is
+		// what keeps an act out of the queue and out of the unread badge.
+		expect(typeById("act").awaiting).toEqual([]);
+		for (const [key, field] of Object.entries(typeById("act").metadata)) {
+			expect({ key, adjudicated_by: field.adjudicated_by }).toEqual({
+				key,
+				adjudicated_by: undefined,
+			});
+		}
+	});
+
+	it("every act-shaped type can name the session it happened in", () => {
+		// `orgasm` and `edge` were acts already and could not be linked to the
+		// session they occurred in, so a session could never report its contents.
+		// The ref echoes an id it does not close — never minted here, or the server
+		// would assign a fresh one instead of pairing with the running session.
+		for (const id of ["act", "orgasm", "edge"]) {
+			const field = typeById(id).metadata.session_id;
+			expect({ id, kind: field?.kind }).toEqual({ id, kind: "ref" });
+			expect(field?.kind === "ref" && field.ref_kind).toBe("session");
+			expect(field?.kind === "ref" && field.minted).toBeUndefined();
+			expect(field?.required).toBe(false);
+		}
+	});
+});
+
 /**
  * Option display copy in the pack (#155, ADR 0008). The generic controls fall
  * back to a de-slug for anything the copy misses, which is right for a couple's

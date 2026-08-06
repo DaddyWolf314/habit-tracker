@@ -2,9 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
 	awaitingKeysFor,
 	checkMetadataValue,
+	type EventType,
 	eventTypeSchema,
 	metadataFieldSchema,
+	type OptionAddition,
 	optionLabel,
+	optionTokenSchema,
+	toOptionToken,
+	withAddedOptions,
 } from "./event-types.ts";
 import { visibilityAllowedForType } from "./visibility.ts";
 
@@ -172,5 +177,131 @@ describe("optionLabel", () => {
 			set_permission: ["sub"],
 		});
 		expect(optionLabel(bool, "yes")).toBe("yes");
+	});
+});
+
+/**
+ * The overlay merge (#185, ADR 0014). These are the shape rules the DO's read
+ * seam relies on; the consumers that would otherwise refuse a couple's word —
+ * log validation, amendment validation, rule validation, `seedDefaults` — are
+ * covered end to end in `worker/do/couple-do.type-options.test.ts`.
+ *
+ * The theme they share is degradation. An overlay outlives the definition it
+ * rides on, so every case where the pack has moved underneath it resolves to
+ * "inert" — never a throw, and never a corrupted field.
+ */
+describe("withAddedOptions", () => {
+	const actType = eventTypeSchema.parse({
+		id: "act",
+		label: "Act",
+		log_permission: ["sub"],
+		metadata: {
+			act: {
+				kind: "enum",
+				options: ["impact", "oral"],
+				option_labels: { impact: "Impact", oral: "Oral" },
+				label: "Act",
+				set_permission: ["sub"],
+			},
+			session_id: { kind: "ref", label: "Session", set_permission: ["sub"] },
+		},
+	});
+	const added = (over: Partial<OptionAddition> = {}): OptionAddition => ({
+		type_id: "act",
+		field_key: "act",
+		option: "aftercare",
+		label: "Aftercare",
+		...over,
+	});
+
+	function options(type: EventType, key = "act"): string[] {
+		const field = type.metadata[key];
+		return field?.kind === "enum" ? field.options : [];
+	}
+
+	function enumOf(type: EventType, key = "act") {
+		const field = type.metadata[key];
+		if (field?.kind !== "enum") throw new Error(`${key} is not an enum`);
+		return field;
+	}
+
+	it("appends the couple's options after the pack's, in the order given", () => {
+		const merged = withAddedOptions(actType, [
+			added(),
+			added({ option: "worship", label: "Worship" }),
+		]);
+		expect(options(merged)).toEqual(["impact", "oral", "aftercare", "worship"]);
+	});
+
+	it("merges the copy so optionLabel resolves a couple's word", () => {
+		const field = enumOf(withAddedOptions(actType, [added()]));
+		expect(optionLabel(field, "aftercare")).toBe("Aftercare");
+		expect(optionLabel(field, "impact")).toBe("Impact");
+	});
+
+	it("de-slugs an addition with no label of its own", () => {
+		const merged = withAddedOptions(actType, [
+			added({ option: "after_care", label: undefined }),
+		]);
+		expect(optionLabel(enumOf(merged), "after_care")).toBe("after care");
+	});
+
+	it("does not mutate the pack definition it was given", () => {
+		withAddedOptions(actType, [added()]);
+		expect(options(actType)).toEqual(["impact", "oral"]);
+	});
+
+	it("ignores additions for another type", () => {
+		const merged = withAddedOptions(actType, [added({ type_id: "orgasm" })]);
+		expect(merged).toBe(actType);
+	});
+
+	it("is inert when the pack has since dropped the field", () => {
+		const merged = withAddedOptions(actType, [added({ field_key: "gone" })]);
+		expect(options(merged)).toEqual(["impact", "oral"]);
+	});
+
+	it("is inert when the pack has since changed the field's kind", () => {
+		const merged = withAddedOptions(actType, [
+			added({ field_key: "session_id" }),
+		]);
+		expect(merged.metadata.session_id.kind).toBe("ref");
+	});
+
+	it("yields to a pack that has since shipped the same option", () => {
+		// Position and copy are the pack's: it owns the option now, so a bump that
+		// relabels it wins over a label typed before the option existed.
+		const field = enumOf(
+			withAddedOptions(actType, [
+				added({ option: "impact", label: "Impact play" }),
+			]),
+		);
+		expect(field.options).toEqual(["impact", "oral"]);
+		expect(field.option_labels?.impact).toBe("Impact");
+	});
+});
+
+/**
+ * Tokens are machine values — an event stores one, a rule condition matches on
+ * one, an export carries one — so a couple-authored token has to read like a
+ * pack-authored one, and `toOptionToken` is the single path from typed words to
+ * one. Sharing it with the editor is what makes the token previewed the token
+ * stored.
+ */
+describe("toOptionToken", () => {
+	it("lowercases and joins words with underscores", () => {
+		expect(toOptionToken("Aftercare check")).toBe("aftercare_check");
+		expect(toOptionToken("  Rope   play!  ")).toBe("rope_play");
+	});
+
+	it("produces a token the schema accepts", () => {
+		expect(
+			optionTokenSchema.safeParse(toOptionToken("Rope play")).success,
+		).toBe(true);
+	});
+
+	it("returns empty for input with no word in it", () => {
+		expect(toOptionToken("!!!")).toBe("");
+		expect(optionTokenSchema.safeParse("").success).toBe(false);
 	});
 });

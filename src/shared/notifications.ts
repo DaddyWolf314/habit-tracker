@@ -19,11 +19,12 @@ export interface NotificationSignals {
 	 */
 	pending_events: number;
 	/**
-	 * Rulings landed on this member's own events since they last looked (#136,
-	 * §8.3 — "You have an update"). The sub's half of the queue signal, and the
-	 * reason their count is not simply zero.
+	 * Amendments a partner landed on this member's own events since they last
+	 * looked (#136, §8.3 — "You have an update"): a ruling, or a response (#183).
+	 * The sub's half of the queue signal, and the reason their count is not simply
+	 * zero.
 	 */
-	rulings_received: number;
+	updates_received: number;
 	/** A partner-assisted recovery is in progress and worth noticing (#41). */
 	recovery_pending: boolean;
 	/**
@@ -51,7 +52,7 @@ export interface NotificationSignals {
 export function unreadCount(signals: NotificationSignals): number {
 	return (
 		signals.pending_events +
-		signals.rulings_received +
+		signals.updates_received +
 		(signals.recovery_pending ? 1 : 0) +
 		signals.rule_changes +
 		signals.agreement_changes
@@ -201,20 +202,38 @@ export function awaitingMyRuling(args: Parameters<typeof queueFor>[0]): number {
 }
 
 /**
- * Rulings landed on this member's own events since they last looked (#136,
- * handoff §8.3 — "On ruling: content-safe notification ('You have an update')").
+ * What a partner has said back about this member's own events since they last
+ * looked (#136, handoff §8.3 — "On ruling: content-safe notification ('You have
+ * an update')").
  *
  * This half never existed. When the dom ruled, the sub's count silently *dropped*
  * — the one moment the spec calls "emotionally load-bearing in LDR play" was the
  * one moment nothing happened.
  *
+ * A `response` is that same moment (#183): the dom writes "proud of you" on the
+ * sub's act, and while this counted rulings only, the sub was never told. So the
+ * question is not "was it a ruling" but **"did my partner address this to me"** —
+ * and asking that directly is why there is no `kind` filter here. It needs none:
+ * `note_appended` and `retracted` are author-only by `validateAmendment`, so on
+ * an event this member authored the `actor !== memberId` test already excludes
+ * them, leaving exactly `adjudication | response`. A filter would restate a rule
+ * validation already enforces, and would have to be revisited every time the
+ * amendment vocabulary grows.
+ *
+ * **A bare event counts for nobody.** Logging an act notifies no one: the badge is
+ * things addressed *to* you, and an act is a record, not an approach (#182). It
+ * is also a count with no content by design (#42), so six acts in one scene would
+ * spike the dom to "6 new items" on a badge that cannot say which — or that any
+ * of them wanted anything.
+ *
  * A ruling you made yourself is not news to you, so only the other member's
- * amendments count — and an *event* counts once however many times its ruling
- * was corrected. Counting corrections separately would inflate "N new items" for
- * one thing that happened, which is the same overstatement this issue exists to
- * remove from the other side of the count.
+ * amendments count — and an *event* counts once however many times it was
+ * amended. Counting each separately would inflate "N new items" for one thing
+ * that happened, which is the same overstatement this exists to remove from the
+ * other side of the count; two responses on one entry is one unread item for the
+ * same reason a corrected ruling always was.
  */
-export function rulingsReceivedSince({
+export function updatesReceivedSince({
 	events,
 	memberId,
 	seenAt,
@@ -227,10 +246,7 @@ export function rulingsReceivedSince({
 	for (const event of events) {
 		if (event.actor !== memberId) continue;
 		const heard = event.amendments.some(
-			(a) =>
-				a.kind === "adjudication" &&
-				a.actor !== memberId &&
-				a.created_at > seenAt,
+			(a) => a.actor !== memberId && a.created_at > seenAt,
 		);
 		if (heard) count++;
 	}

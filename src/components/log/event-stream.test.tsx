@@ -9,13 +9,14 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
-	ackRulings: vi.fn(() => Promise.resolve({ ok: true })),
+	ackUpdates: vi.fn(() => Promise.resolve({ ok: true })),
 	amendEvent: vi.fn(() => Promise.resolve({})),
 	getEventTrace: vi.fn(() => Promise.resolve({ rows: [] })),
 }));
 
-import { amendEvent } from "#/lib/api.ts";
+import { ackUpdates, amendEvent } from "#/lib/api.ts";
 import type { VersionedAgreement } from "#/shared/agreements.ts";
+import type { Amendment } from "#/shared/amendments.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
@@ -248,5 +249,121 @@ describe("the chain drill-in reports its state", () => {
 		expect(
 			document.getElementById(toggle.getAttribute("aria-controls") ?? ""),
 		).not.toBeNull();
+	});
+});
+
+/**
+ * Responding to a partner's entry from the log (#183). The `response` amendment
+ * has been implemented server-side since ADR 0001 and reachable from exactly one
+ * screen — the conversation-flags reply — so the dom could react to "I want to
+ * talk" and to nothing else the sub ever wrote. It matters more now that an act
+ * carries `awaiting: []` (#182): a response is the only way the dom engages with
+ * an act at all.
+ */
+describe("responding to a partner's entry", () => {
+	afterEach(() => {
+		cleanup();
+		vi.mocked(amendEvent).mockClear();
+	});
+
+	/** m2's entry, seen by m1 — the viewer in `renderStream`. */
+	const theirs = (over: Partial<EventView> = {}) =>
+		event({ type: "act", actor: "m2", ...over });
+
+	it("offers Respond on a partner's entry, whatever its type", () => {
+		// No type allowlist: an act, an orgasm, a completion and a journal entry
+		// are the same question, and `canRespondTo` is where it is answered.
+		for (const type of ["act", "orgasm", "task_completed", "journal_entry"]) {
+			renderStream([theirs({ type })]);
+			expect(screen.getByRole("button", { name: "Respond" })).not.toBeNull();
+			cleanup();
+		}
+	});
+
+	it("offers nothing on your own entry", () => {
+		// A response to your own entry is meaningless — that is what a note is for.
+		renderStream([event({ type: "act", actor: "m1" })]);
+		expect(screen.queryByRole("button", { name: "Respond" })).toBeNull();
+	});
+
+	it("offers nothing on a secret entry", () => {
+		renderStream([theirs({ type: "journal_entry", visibility: "secret" })]);
+		expect(screen.queryByRole("button", { name: "Respond" })).toBeNull();
+	});
+
+	it("writes a response amendment carrying the prose", async () => {
+		renderStream([theirs()]);
+		fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+		fireEvent.change(screen.getByRole("textbox"), {
+			target: { value: "proud of you" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+		await act(async () => {});
+		expect(vi.mocked(amendEvent)).toHaveBeenCalledWith({
+			kind: "response",
+			target_event_id: "evt-1",
+			note: "proud of you",
+		});
+	});
+
+	it("refuses an empty response", () => {
+		// A response *is* the reaction, not an acknowledgement of one, so there has
+		// to be something in it — the difference between this and a chip you tap away.
+		renderStream([theirs()]);
+		fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+		fireEvent.click(screen.getByRole("button", { name: "Respond" }));
+		expect(vi.mocked(amendEvent)).not.toHaveBeenCalled();
+		expect(screen.getByText("Write something back.")).not.toBeNull();
+	});
+});
+
+/**
+ * A partner's response lands behind the same content-safe reveal a ruling does
+ * (#183). Two reasons, and either alone would be enough: "proud of you" is the
+ * moment §8.3 calls emotionally load-bearing, and `ackUpdates` fires on the
+ * reveal tap and nowhere else — so a response on an entry that carries no ruling
+ * would otherwise raise a badge nobody could ever put down.
+ */
+describe("receiving a partner's response", () => {
+	afterEach(() => {
+		cleanup();
+		vi.mocked(ackUpdates).mockClear();
+	});
+
+	const responded = () =>
+		renderStream([
+			event({
+				type: "journal_entry",
+				actor: "m1",
+				amendments: [
+					{
+						id: "am-1",
+						target_event_id: "evt-1",
+						kind: "response",
+						actor: "m2",
+						created_at: 1_700_000_001_000,
+						note: "proud of you",
+					} as Amendment,
+				],
+			}),
+		]);
+
+	it("holds the prose behind the reveal until it is tapped", () => {
+		responded();
+		expect(screen.queryByText(/proud of you/)).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "You have an update — reveal" }),
+		).not.toBeNull();
+	});
+
+	it("shows the response and marks updates seen on the tap", () => {
+		responded();
+		fireEvent.click(
+			screen.getByRole("button", { name: "You have an update — reveal" }),
+		);
+		expect(screen.getByText(/proud of you/)).not.toBeNull();
+		// The tap is the moment they actually receive it; acking on load would
+		// clear the signal before they had read anything (#136).
+		expect(vi.mocked(ackUpdates)).toHaveBeenCalled();
 	});
 });

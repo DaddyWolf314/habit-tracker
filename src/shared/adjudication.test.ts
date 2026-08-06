@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	awaitedRulings,
+	canRespondTo,
 	describeAmendment,
 	isOwnPending,
 } from "./adjudication.ts";
@@ -103,6 +104,57 @@ describe("isOwnPending", () => {
 		expect(isOwnPending(event({ pending: false }), "sub-1")).toBe(false);
 		expect(isOwnPending(event({ retracted: true }), "sub-1")).toBe(false);
 		expect(isOwnPending(event(), null)).toBe(false);
+	});
+});
+
+/**
+ * The respond gate (#183) mirrors `validateResponse`, so the affordance appears
+ * on exactly the rows the server will accept a response for — and, crucially, it
+ * asks about authorship and visibility rather than about the event's *type*. A
+ * client-side allowlist of respondable types would be a second answer to a
+ * question validation already answers, and would silently omit every type the
+ * pack grows next.
+ */
+describe("canRespondTo", () => {
+	it("is true for a partner's shared entry, whatever its type", () => {
+		expect(canRespondTo(event(), "dom-1")).toBe(true);
+		// Nothing here reads `type`: an act, an orgasm, a completion and a journal
+		// entry are the same question, which is the point of the gate.
+		expect(canRespondTo(event({ type: "act" }), "dom-1")).toBe(true);
+		expect(canRespondTo(event({ type: "journal_entry" }), "dom-1")).toBe(true);
+	});
+
+	it("is false on your own entry", () => {
+		// Responding to yourself is meaningless — that is what a note is for.
+		expect(canRespondTo(event(), "sub-1")).toBe(false);
+	});
+
+	it("is false on a secret entry", () => {
+		// The dom must not learn a secret entry even exists; the read model already
+		// omits it, and this refuses the same thing on the way in (ADR 0001).
+		expect(canRespondTo(event({ visibility: "secret" }), "dom-1")).toBe(false);
+	});
+
+	it("is true on a sealed entry", () => {
+		// Sealed prose stays hidden, but the funnel gives the responder the
+		// existence row — a response is exactly what ADR 0001 allows there.
+		expect(canRespondTo(event({ visibility: "sealed" }), "dom-1")).toBe(true);
+	});
+
+	it("is false once the entry is retracted", () => {
+		// `validateAmendment` refuses every amendment on a retracted event before
+		// `validateResponse` is even reached, so the button could only ever fail.
+		expect(canRespondTo(event({ retracted: true }), "dom-1")).toBe(false);
+	});
+
+	it("is false for a viewer with no member id", () => {
+		expect(canRespondTo(event(), null)).toBe(false);
+	});
+
+	it("does not care whether the entry is still pending", () => {
+		// An act carries `awaiting: []` and so is never pending (#182). A response
+		// is the only way the dom engages with one at all.
+		expect(canRespondTo(event({ pending: false }), "dom-1")).toBe(true);
 	});
 });
 

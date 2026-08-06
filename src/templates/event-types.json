@@ -1,5 +1,5 @@
 {
-	"version": 11,
+	"version": 12,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -175,6 +175,13 @@
 					"label": "Finish type",
 					"required": false,
 					"set_permission": ["dom", "sub", "switch"]
+				},
+				"session_id": {
+					"kind": "ref",
+					"ref_kind": "session",
+					"label": "Session",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
 				}
 			},
 			"awaiting": [{ "key": "permitted", "subject_role": "sub" }],
@@ -187,7 +194,79 @@
 			"valence": "neutral",
 			"log_permission": ["dom", "sub", "switch"],
 			"subject_required": true,
-			"metadata": {},
+			"metadata": {
+				"session_id": {
+					"kind": "ref",
+					"ref_kind": "session",
+					"label": "Session",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
+			"awaiting": [],
+			"note_prompt": "Anything you want to say about this?"
+		},
+		{
+			"id": "act",
+			"label": "Act",
+			"icon": "hand",
+			"valence": "neutral",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"act": {
+					"kind": "enum",
+					"options": [
+						"impact",
+						"sensation",
+						"marking",
+						"bondage",
+						"oral",
+						"vaginal",
+						"anal",
+						"manual",
+						"toy",
+						"worship",
+						"humiliation",
+						"discipline",
+						"praise",
+						"aftercare"
+					],
+					"option_labels": {
+						"impact": "Impact",
+						"sensation": "Sensation play",
+						"marking": "Marking",
+						"bondage": "Bondage",
+						"oral": "Oral",
+						"vaginal": "Vaginal",
+						"anal": "Anal",
+						"manual": "Manual",
+						"toy": "Toy",
+						"worship": "Worship",
+						"humiliation": "Humiliation",
+						"discipline": "Discipline",
+						"praise": "Praise",
+						"aftercare": "Aftercare"
+					},
+					"label": "Act",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"detail": {
+					"kind": "text",
+					"max_length": 80,
+					"label": "Detail",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"session_id": {
+					"kind": "ref",
+					"ref_kind": "session",
+					"label": "Session",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"]
+				}
+			},
 			"awaiting": [],
 			"note_prompt": "Anything you want to say about this?"
 		},

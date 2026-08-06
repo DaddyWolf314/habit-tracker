@@ -13,8 +13,8 @@ import {
 	ruleChangeAction,
 	ruleChangeKindFromAction,
 	ruleChangeNotice,
-	rulingsReceivedSince,
 	unreadCount,
+	updatesReceivedSince,
 } from "./notifications.ts";
 import { deriveEventView } from "./projections.ts";
 import type { Role } from "./roles.ts";
@@ -25,7 +25,7 @@ function signals(
 ): NotificationSignals {
 	return {
 		pending_events: 0,
-		rulings_received: 0,
+		updates_received: 0,
 		recovery_pending: false,
 		rule_changes: 0,
 		agreement_changes: 0,
@@ -333,6 +333,19 @@ function ruling(over: Partial<Amendment> = {}): Amendment {
 	} as Amendment;
 }
 
+/** The partner's warm reaction to the entry — ADR 0001's `response` (#183). */
+function response(over: Partial<Amendment> = {}): Amendment {
+	return {
+		id: "a1",
+		target_event_id: "e1",
+		kind: "response",
+		actor: "dom1",
+		created_at: 6_000,
+		note: "proud of you",
+		...over,
+	} as Amendment;
+}
+
 describe("awaitingMyRuling (#136, §8.1)", () => {
 	const args = (role: Role | null) => ({
 		events: [pendingEvent()],
@@ -395,7 +408,7 @@ describe("awaitingMyRuling (#136, §8.1)", () => {
 	});
 });
 
-describe("rulingsReceivedSince (#136, §8.3)", () => {
+describe("updatesReceivedSince (#136, §8.3; responses #183)", () => {
 	const ruled = pendingEvent({
 		pending: false,
 		composite_metadata: { severity: "minor" },
@@ -406,13 +419,13 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 		// The half that never existed: "receiving the ruling is emotionally
 		// load-bearing in LDR play", and nothing told them.
 		expect(
-			rulingsReceivedSince({ events: [ruled], memberId: "sub1", seenAt: 0 }),
+			updatesReceivedSince({ events: [ruled], memberId: "sub1", seenAt: 0 }),
 		).toBe(1);
 	});
 
 	it("counts nothing once seen", () => {
 		expect(
-			rulingsReceivedSince({
+			updatesReceivedSince({
 				events: [ruled],
 				memberId: "sub1",
 				seenAt: 9_000,
@@ -423,7 +436,7 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 	it("does not count a ruling I made myself", () => {
 		// A ruling is news to the person it lands on, not the one who made it.
 		expect(
-			rulingsReceivedSince({ events: [ruled], memberId: "dom1", seenAt: 0 }),
+			updatesReceivedSince({ events: [ruled], memberId: "dom1", seenAt: 0 }),
 		).toBe(0);
 	});
 
@@ -433,19 +446,87 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 			amendments: [ruling({ actor: "sub1" })],
 		});
 		expect(
-			rulingsReceivedSince({ events: [theirs], memberId: "sub1", seenAt: 0 }),
+			updatesReceivedSince({ events: [theirs], memberId: "sub1", seenAt: 0 }),
 		).toBe(0);
 	});
 
-	it("ignores amendments that are not rulings", () => {
-		// A note the author appended to their own event is not an update to hear.
+	it("ignores the author's own note on their own event", () => {
+		// A note is author-only by `validateAmendment`, so on this member's own
+		// event it is always theirs — which is why dropping the `kind` filter for
+		// #183 needed no replacement filter. Their own writing is not news to them.
 		const noted = pendingEvent({
 			amendments: [
-				{ ...ruling(), kind: "note_appended", note: "context" } as Amendment,
+				{
+					...ruling(),
+					kind: "note_appended",
+					actor: "sub1",
+					note: "context",
+				} as Amendment,
 			],
 		});
 		expect(
-			rulingsReceivedSince({ events: [noted], memberId: "sub1", seenAt: 0 }),
+			updatesReceivedSince({ events: [noted], memberId: "sub1", seenAt: 0 }),
+		).toBe(0);
+	});
+
+	it("counts a partner's response on my entry (#183)", () => {
+		// The dom writes "proud of you" on the sub's act and, until #183, the sub
+		// was never told — verbatim the failure this function was written to fix.
+		const responded = pendingEvent({
+			pending: false,
+			amendments: [response()],
+		});
+		expect(
+			updatesReceivedSince({
+				events: [responded],
+				memberId: "sub1",
+				seenAt: 0,
+			}),
+		).toBe(1);
+	});
+
+	it("counts two responses on one entry once", () => {
+		// One thing happened — the partner said something back about this entry.
+		// Two responses is not two new items, for the same reason a corrected
+		// ruling was never two.
+		const responded = pendingEvent({
+			pending: false,
+			amendments: [
+				response(),
+				response({ id: "a2", created_at: 7_000, note: "and again" }),
+			],
+		});
+		expect(
+			updatesReceivedSince({
+				events: [responded],
+				memberId: "sub1",
+				seenAt: 0,
+			}),
+		).toBe(1);
+	});
+
+	it("does not count a response I wrote on my partner's entry", () => {
+		// Responding is not receiving. The count belongs to the entry's author.
+		const theirs = pendingEvent({
+			actor: "dom1",
+			amendments: [response({ actor: "sub1" })],
+		});
+		expect(
+			updatesReceivedSince({ events: [theirs], memberId: "sub1", seenAt: 0 }),
+		).toBe(0);
+	});
+
+	it("counts nothing for a bare event nobody has amended (#183)", () => {
+		// Logging an act notifies no one. The badge is things addressed *to* you,
+		// and an act is a record, not an approach (#182) — six acts in one scene
+		// must not spike the dom to "6 new items" on a badge that, by #42, cannot
+		// say which or that any of them wanted anything.
+		const act = pendingEvent({ actor: "sub1", pending: false, amendments: [] });
+		expect(
+			updatesReceivedSince({ events: [act], memberId: "dom1", seenAt: 0 }),
+		).toBe(0);
+		expect(
+			updatesReceivedSince({ events: [act], memberId: "sub1", seenAt: 0 }),
 		).toBe(0);
 	});
 
@@ -460,7 +541,7 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 			],
 		});
 		expect(
-			rulingsReceivedSince({
+			updatesReceivedSince({
 				events: [corrected],
 				memberId: "sub1",
 				seenAt: 0,
@@ -478,7 +559,7 @@ describe("rulingsReceivedSince (#136, §8.3)", () => {
 			],
 		});
 		expect(
-			rulingsReceivedSince({
+			updatesReceivedSince({
 				events: [corrected],
 				memberId: "sub1",
 				seenAt: 5_500,

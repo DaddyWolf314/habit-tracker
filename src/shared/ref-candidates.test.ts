@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { VersionedAgreement } from "./agreements.ts";
 import type { MetadataField } from "./event-types.ts";
-import { refCandidates } from "./ref-candidates.ts";
+import { RECENT_ECHO_CANDIDATES, refCandidates } from "./ref-candidates.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
 
@@ -388,6 +388,145 @@ describe("refCandidates", () => {
 		expect(candidates).toEqual([
 			{ value: "sess-aaaa", label: "kneeling — 1m 0s · …aaaa" },
 			{ value: "sess-bbbb", label: "kneeling — 1m 0s · …bbbb" },
+		]);
+	});
+});
+
+/**
+ * A ref that *echoes* an id without closing anything (#182) — an `act` scoped to
+ * the session it happened in. Nothing in the pack conditions on `act`, so under
+ * the old same-type derivation these all fell back to a free-text box for a ULID.
+ */
+describe("refCandidates — a non-closing echo", () => {
+	it("offers a session even though no rule on this type closes one", () => {
+		// The widening: a rule matching a timer on `session_id` proves the key names
+		// an existing row, and that stays true on a type that never discharges it.
+		expect(
+			offer({
+				rules: RULES,
+				timers: [timer({ tag: "scene", match: { session_id: "s1" } })],
+				typeId: "act",
+				key: "session_id",
+				now: NOW,
+			}),
+		).toEqual([{ value: "s1", label: "scene — 1m 0s" }]);
+	});
+
+	it("offers a session that already ended, which a closer would not", () => {
+		// "We did impact during last night's scene", logged the next morning. The
+		// act is not discharging the session, so `completed` is no disqualifier —
+		// and the same row stays hidden from `session_ended`, which could only
+		// close it a second time.
+		const timers = [
+			timer({
+				tag: "scene",
+				match: { session_id: "s1" },
+				status: "completed",
+				opened_at: NOW - 3_600_000,
+				closed_at: NOW - 3_000_000,
+			}),
+		];
+		const args = { rules: RULES, timers, key: "session_id", now: NOW };
+
+		expect(offer({ ...args, typeId: "act" })).toEqual([
+			{ value: "s1", label: "scene — 10m 0s · 50m 0s ago" },
+		]);
+		expect(offer({ ...args, typeId: "session_ended" })).toEqual([]);
+	});
+
+	it("labels a resolved row by how long it ran, not how long since it opened", () => {
+		// The running-stopwatch phrasing would read `now - opened_at` and call an
+		// hour-long scene from last night "19h", describing a session that is not
+		// running as though it were.
+		const [candidate] = offer({
+			rules: RULES,
+			timers: [
+				timer({
+					tag: "scene",
+					match: { session_id: "s1" },
+					status: "completed",
+					opened_at: NOW - 19 * 3_600_000,
+					closed_at: NOW - 18 * 3_600_000,
+				}),
+			],
+			typeId: "act",
+			key: "session_id",
+			now: NOW,
+		});
+
+		expect(candidate?.label).toBe("scene — 1h 0m · 18h 0m ago");
+	});
+
+	it("bounds the list to the most recent, so it is never empty and never endless", () => {
+		// Bounded by count rather than by a time window: a window can go empty on a
+		// quiet couple, and an empty list degrades right back to free text. The
+		// caller supplies newest-first, so the head is what survives.
+		const timers = Array.from({ length: 14 }, (_, i) =>
+			timer({
+				id: `t${i}`,
+				tag: "scene",
+				match: { session_id: `s${i}` },
+				status: "completed",
+				opened_at: NOW - (i + 1) * 3_600_000,
+				closed_at: NOW - (i + 1) * 3_000_000,
+			}),
+		);
+
+		const candidates = offer({
+			rules: RULES,
+			timers,
+			typeId: "act",
+			key: "session_id",
+			now: NOW,
+		});
+
+		expect(candidates).toHaveLength(RECENT_ECHO_CANDIDATES);
+		expect(candidates.map((c) => c.value)).toEqual(
+			Array.from({ length: RECENT_ECHO_CANDIDATES }, (_, i) => `s${i}`),
+		);
+	});
+
+	it("stays a closer when another type also closes the same timer on the key", () => {
+		// `closes` is a property of the asking type, not of whichever rule happened
+		// to be read last. Two rules closing one timer on one key from different
+		// types is legal; the shipped pack has no such pair, so only a couple-added
+		// rule reaches this. Read per rule, the sibling's `closes: false` would
+		// answer for `session_ended` and hand a closer the resolved rows an echo
+		// gets — offering to close a session that already ended.
+		const ABANDON_SESSION: Rule = {
+			id: "R16b",
+			enabled: true,
+			condition: { type: "session_abandoned", metadata: {} },
+			effects: [
+				{
+					verb: "close_timer",
+					timer: "session_stopwatch",
+					match_on: { session_id: "session_id" },
+					status: "failed",
+				},
+			],
+		};
+		const timers = [
+			timer({
+				tag: "scene",
+				match: { session_id: "s1" },
+				status: "completed",
+				opened_at: NOW - 3_600_000,
+				closed_at: NOW - 3_000_000,
+			}),
+		];
+		const args = {
+			rules: [...RULES, ABANDON_SESSION],
+			timers,
+			key: "session_id",
+			now: NOW,
+		};
+
+		expect(offer({ ...args, typeId: "session_ended" })).toEqual([]);
+		// The sibling rule cuts the other way too: a type that closes nothing here
+		// is still a pure echo, and still sees the resolved row.
+		expect(offer({ ...args, typeId: "act" })).toEqual([
+			{ value: "s1", label: "scene — 10m 0s · 50m 0s ago" },
 		]);
 	});
 });
