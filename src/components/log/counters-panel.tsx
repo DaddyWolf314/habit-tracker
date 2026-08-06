@@ -357,6 +357,14 @@ export function CountersPanel({
 				</Button>
 			</div>
 
+			{/* Every picker in this form sits at the `h-11` tap-target floor (#147),
+			    the same height as the `Input`s beside them — which is what CLAUDE.md
+			    means by a field and the control next to it lining up "by
+			    construction". They were `size="sm"` until #193: not because any row
+			    here cannot spare the height, which is the only reason to go under the
+			    floor, but because the first one was written that way and each new one
+			    copied it. The row buttons below keep `sm`, deliberately — a dense
+			    list row of secondary actions is exactly what that size is for. */}
 			{creating && (
 				<div className="mt-3 space-y-2">
 					<Input
@@ -373,7 +381,6 @@ export function CountersPanel({
 								onValueChange={(v) => setKind(v as CounterKind)}
 							>
 								<SelectTrigger
-									size="sm"
 									id={`${ids}-kind`}
 									aria-labelledby={`${ids}-kind-label ${ids}-kind`}
 									className="w-44"
@@ -393,7 +400,6 @@ export function CountersPanel({
 								onValueChange={(v) => setValence(v as Valence)}
 							>
 								<SelectTrigger
-									size="sm"
 									id={`${ids}-valence`}
 									aria-labelledby={`${ids}-valence-label ${ids}-valence`}
 									className="w-44"
@@ -420,7 +426,6 @@ export function CountersPanel({
 									onValueChange={(v) => setReset(v as CounterReset)}
 								>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-reset`}
 										aria-labelledby={`${ids}-reset-label ${ids}-reset`}
 										className="w-44"
@@ -470,7 +475,6 @@ export function CountersPanel({
 									onValueChange={(v) => setDirection(v as TargetDirection)}
 								>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-direction`}
 										aria-labelledby={`${ids}-direction-label ${ids}-direction`}
 										className="w-44"
@@ -493,7 +497,6 @@ export function CountersPanel({
 								<span id={`${ids}-tracks-label`}>Tracks</span>
 								<Select value={streakCounter} onValueChange={setStreakCounter}>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-tracks`}
 										aria-labelledby={`${ids}-tracks-label ${ids}-tracks`}
 										className="w-56"
@@ -525,7 +528,6 @@ export function CountersPanel({
 									}}
 								>
 									<SelectTrigger
-										size="sm"
 										id={`${ids}-period`}
 										aria-labelledby={`${ids}-period-label ${ids}-period`}
 										className="w-32"
@@ -790,7 +792,6 @@ function RungEditor({
 							onValueChange={(v) => update(index, { agreement_ref: v })}
 						>
 							<SelectTrigger
-								size="sm"
 								id={`${idPrefix}-rung-${index}-term`}
 								aria-labelledby={`${idPrefix}-rung-${index}-term-label ${idPrefix}-rung-${index}-term`}
 								className="w-56"
