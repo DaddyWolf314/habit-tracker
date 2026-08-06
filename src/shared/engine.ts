@@ -3,6 +3,7 @@ import type { MetadataValue, Role } from "./roles.ts";
 import {
 	ambientClauses,
 	type ComparisonClause,
+	counterClauses,
 	isComparisonClause,
 	type Rule,
 	type RuleCondition,
@@ -26,9 +27,11 @@ import {
  * pending orgasm's `permitted` is unset, so R11/R12 wait rather than fire), and
  * every such skip surfaces as a near-miss.
  *
- * The one state query, `timer_active`, does not breach the no-storage rule: the
- * *caller* resolves which timer definitions are open and passes them in
- * ({@link RuleEventContext.active_timers}), exactly as it resolves `subject_role`.
+ * The two state queries, `timer_active` and `counter_value`, do not breach the
+ * no-storage rule: the *caller* resolves which timer definitions are open and
+ * what each counter holds and passes them in
+ * ({@link RuleEventContext.active_timers}, {@link RuleEventContext.counter_values}),
+ * exactly as it resolves `subject_role`.
  */
 
 /**
@@ -71,6 +74,18 @@ export function rulesEffectiveAt(
  */
 export const NO_ACTIVE_TIMERS: ReadonlySet<string> = new Set<string>();
 
+/**
+ * No counter has a resolved value — the score for an evaluation that has none to
+ * speak of, and the {@link NO_ACTIVE_TIMERS} counterpart for `counter_value`
+ * (ADR 0015). A rule carrying no score clause is unaffected either way; one that
+ * does will read every clause as unmet, which is the honest answer when nobody
+ * has said what the counters hold.
+ */
+export const NO_COUNTER_VALUES: ReadonlyMap<string, number> = new Map<
+	string,
+	number
+>();
+
 /** The slice of an event the engine reasons over: its type and composite state. */
 export interface RuleEventContext {
 	type: string;
@@ -102,6 +117,33 @@ export interface RuleEventContext {
 	 */
 	active_timers: ReadonlySet<string>;
 	/**
+	 * What each counter held **when the engine acted**, for the score predicate
+	 * (ADR 0015). Resolved by the caller — the DO from its counter cache, the
+	 * client's confirm sheet from the counters it is shipped — so the engine reads
+	 * no storage and the preview and the DO agree by construction.
+	 *
+	 * Two things this is *not*, both load-bearing:
+	 *
+	 * It is not a value as of `occurred_at`. Counter trace rows are stamped at
+	 * `logged_at`, so an `occurred_at` reading would let a backfill change what an
+	 * already-processed event saw and a rebuild would silently diverge from live
+	 * (ADR 0012). The clock is log-time on append, ruling-time on re-evaluation.
+	 *
+	 * It is not a snapshot taken after this event's own effects. The caller builds
+	 * this before applying anything the event causes, so a rule that both reads and
+	 * increments `demerits` sees the value the act happened against — the same
+	 * reading `timer_active` gives a denial period that the rule beside it is about
+	 * to close.
+	 *
+	 * Required rather than optional, for the reason `active_timers` is: an omitted
+	 * map would read as "no counter has a value" and quietly hold every score-gated
+	 * rule shut. Pass {@link NO_COUNTER_VALUES} when a caller genuinely has none.
+	 * A counter absent from the map is *unknown*, never zero — asserting a value
+	 * for a counter nobody resolved is how a rule fires on a number that was never
+	 * true.
+	 */
+	counter_values: ReadonlyMap<string, number>;
+	/**
 	 * The event type's `awaiting` keys (handoff §5). When provided, only near-
 	 * misses that are *pending* on one of these keys are surfaced — a rule waiting
 	 * on `permitted` is genuine pending-adjudication signal ("R11/R12 waiting on:
@@ -122,8 +164,11 @@ export interface RuleEventContext {
  *    anything. `subject_mismatch` marks a near-miss on the subject-role
  *    qualifier (ADR 0003): structural — the subject is fixed at logging, so the
  *    rule can never fire on this event, and no adjudication is awaited.
- *    `state_mismatch` marks one on the ambient-state predicate (ADR 0011): no
- *    ruling on any key resolves it either, so it is never `awaiting`.
+ *    `state_mismatch` marks one on the ambient-state predicate (ADR 0011) or the
+ *    score predicate (ADR 0015): no ruling on any key resolves either, so
+ *    neither is ever `awaiting`. One flag for both, because it names *why* the
+ *    near-miss is unresolvable rather than which clause raised it — a rule that
+ *    misses on both files one row saying both things.
  */
 export type MatchResult =
 	| { status: "irrelevant" }
@@ -160,31 +205,52 @@ export function matchRule(rule: Rule, ctx: RuleEventContext): MatchResult {
 			subject_mismatch: true,
 		};
 	}
-	// Metadata first, ambient state second — the order the near-miss depends on.
-	// An ambient-state miss is only worth a trace row when it was the *sole*
-	// reason (ADR 0011), so a rule that also missed on metadata reports the
-	// metadata: that is the part a reader can act on. The converse would file
+	// Metadata first, state second — the order the near-miss depends on. A state
+	// miss is only worth a trace row when it was the *sole* reason (ADR 0011,
+	// carried forward by ADR 0015), so a rule that also missed on metadata reports
+	// the metadata: that is the part a reader can act on. The converse would file
 	// "no denial period was active" against every routine event of the type.
 	const metadata = classifyMetadata(rule.id, rule.condition, ctx.metadata);
 	if (metadata.status !== "fired") return metadata;
-	return classifyAmbientState(rule.id, rule.condition, ctx.active_timers);
+	return classifyState(rule.id, rule.condition, ctx);
 }
 
 /**
- * Tests the ambient-state predicate (ADR 0011) — `timer_active` — against the
- * timer definitions the caller resolved as open. A miss is never `awaiting`: no
- * ruling on any metadata key will make a denial period have been running, so
- * promising the adjudication queue a resolution would be a lie.
+ * Tests the two predicates over state the caller resolved — `timer_active`
+ * (ADR 0011) and `counter_value` (ADR 0015) — against the open timer definitions
+ * and the counter values it passed in.
+ *
+ * One function rather than two chained, because the near-miss they raise is the
+ * same fact ("this rule would have fired, but the world wasn't in the shape it
+ * asked for") and a rule missing on both should say so in one row rather than
+ * report the timer and go quiet about the score. A miss on either is never
+ * `awaiting`: no ruling on any metadata key will make a denial period have been
+ * running or make the score have been 10, so promising the adjudication queue a
+ * resolution would be a lie.
  */
-function classifyAmbientState(
+function classifyState(
 	ruleId: string,
 	condition: RuleCondition,
-	active: ReadonlySet<string>,
+	ctx: RuleEventContext,
 ): MatchResult {
 	const unmet: string[] = [];
 	for (const [timer, wanted] of ambientClauses(condition)) {
-		if (active.has(timer) === wanted) continue;
+		if (ctx.active_timers.has(timer) === wanted) continue;
 		unmet.push(wanted ? `${timer} not active` : `${timer} active`);
+	}
+	for (const [counter, clause] of counterClauses(condition)) {
+		const value = ctx.counter_values.get(counter);
+		// Unknown, not zero. A counter the caller didn't resolve — deleted since the
+		// rule was authored, or simply not shipped to this surface — has no value to
+		// compare, and inventing 0 would fire "while demerits are under 5" on a
+		// counter nobody read. Reported in the same shape as a value that missed, so
+		// the trace row distinguishes the two without a second grammar.
+		if (value === undefined) {
+			unmet.push(`${counter} is unknown, needs ${describeComparison(clause)}`);
+			continue;
+		}
+		if (satisfies(value, clause)) continue;
+		unmet.push(`${counter} is ${value}, needs ${describeComparison(clause)}`);
 	}
 	if (unmet.length === 0) return { status: "fired" };
 	return {
@@ -428,7 +494,27 @@ export type EffectOp =
 			/** Whether the (optional) routing gate held for this event. */
 			route_when_met?: boolean;
 	  }
-	| { kind: "notify"; target: string };
+	| { kind: "notify"; target: string }
+	/**
+	 * An effect that resolved to **nothing** (ADR 0015): a `by_from` whose key was
+	 * absent from the event, or carried a value that is not a whole number. The
+	 * projection is untouched and a trace note is filed, the shape the amendment
+	 * path already writes for a timer op whose instance has ended.
+	 *
+	 * A distinct `kind` rather than a flag on the counter op, because that is what
+	 * makes the compiler ask every consumer what it does with one. It deliberately
+	 * does *not* fall back to `by` — which would print `+1` for a rule its author
+	 * believed was proportional — and it does not round, which would invent a
+	 * number nobody wrote in a layer whose whole job is to be a truthful record.
+	 */
+	| {
+			kind: "skipped";
+			/** The counter that would have moved — where the note lands. */
+			counter: string;
+			op: "increment" | "decrement";
+			/** The `by_from` key that routed nothing usable. */
+			key: string;
+	  };
 
 /** A rule-driven counter op (narrowed helper below). */
 type CounterOp = Extract<EffectOp, { kind: "counter" }>;
@@ -456,19 +542,9 @@ export function resolveEffect(
 ): EffectOp {
 	switch (effect.verb) {
 		case "increment_counter":
-			return {
-				kind: "counter",
-				counter: effect.counter,
-				op: "increment",
-				by: effect.by,
-			};
+			return resolveCounterDelta(effect, "increment", ctx);
 		case "decrement_counter":
-			return {
-				kind: "counter",
-				counter: effect.counter,
-				op: "decrement",
-				by: effect.by,
-			};
+			return resolveCounterDelta(effect, "decrement", ctx);
 		case "reset_counter":
 			return { kind: "counter", counter: effect.counter, op: "reset" };
 		case "reset_anchor":
@@ -500,6 +576,45 @@ export function resolveEffect(
 		case "notify":
 			return { kind: "notify", target: effect.target };
 	}
+}
+
+/**
+ * Resolves a counter delta, routing its magnitude off the event when the effect
+ * asks for one (`by_from`, ADR 0015). Shared by the two delta verbs so increment
+ * and decrement can never diverge on what a missing routed value means.
+ *
+ * `by_from` **replaces** `by`; it never seeds it. Three cases, one of which is
+ * the whole reason this function exists:
+ *
+ *  - no `by_from` — the literal `by`, exactly as before.
+ *  - a whole number at the key — that number is the magnitude.
+ *  - anything else (key absent, blank, a string, a fraction, a NaN) — a
+ *    {@link EffectOp} of kind `skipped`. The absent case is the one that cannot
+ *    move to authoring time, because a validly-declared integer field may be
+ *    optional and simply left blank; the rest are unreachable through
+ *    `validateRule` and refused here anyway rather than trusted.
+ */
+function resolveCounterDelta(
+	effect: Extract<
+		Rule["effects"][number],
+		{ verb: "increment_counter" | "decrement_counter" }
+	>,
+	op: "increment" | "decrement",
+	ctx: RuleEventContext,
+): EffectOp {
+	if (effect.by_from === undefined) {
+		return { kind: "counter", counter: effect.counter, op, by: effect.by };
+	}
+	const routed = asNumber(ctx.metadata[effect.by_from]);
+	if (routed === undefined || !Number.isInteger(routed)) {
+		return {
+			kind: "skipped",
+			counter: effect.counter,
+			op,
+			key: effect.by_from,
+		};
+	}
+	return { kind: "counter", counter: effect.counter, op, by: routed };
 }
 
 /**

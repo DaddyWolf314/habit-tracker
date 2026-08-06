@@ -99,6 +99,7 @@ function renderQueue(events: EventView[] = [PENDING]) {
 			members={MEMBERS}
 			anchors={ANCHORS}
 			timers={[]}
+			counters={[]}
 			selfRole="dom"
 			onAmended={() => {}}
 		/>,
@@ -177,6 +178,7 @@ describe("waiving an effect on the confirm sheet", () => {
 				members={MEMBERS}
 				anchors={ANCHORS}
 				timers={[]}
+				counters={[]}
 				selfRole="dom"
 				onAmended={() => {}}
 			/>,

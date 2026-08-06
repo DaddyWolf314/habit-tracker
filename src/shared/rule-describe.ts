@@ -1,10 +1,15 @@
-import { NO_ACTIVE_TIMERS, resolveEffect } from "./engine.ts";
+import {
+	NO_ACTIVE_TIMERS,
+	NO_COUNTER_VALUES,
+	resolveEffect,
+} from "./engine.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
 import { optionLabel } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
 import {
 	ambientClauses,
 	type ComparisonClause,
+	counterClauses,
 	type Effect,
 	isComparisonClause,
 	type Rule,
@@ -77,11 +82,23 @@ function comparisonText(clause: ComparisonClause): string {
  * should not blur the two.
  */
 function ambientText(condition: RuleCondition): string {
-	const clauses = ambientClauses(condition).map(([timer, wanted]) =>
-		wanted
-			? `a ${humanize(timer)} is running`
-			: `no ${humanize(timer)} is running`,
-	);
+	const clauses = [
+		...ambientClauses(condition).map(([timer, wanted]) =>
+			wanted
+				? `a ${humanize(timer)} is running`
+				: `no ${humanize(timer)} is running`,
+		),
+		// The score predicate joins the same trailing clause (ADR 0015) rather than
+		// getting one of its own: it is a fact about the moment, exactly as a running
+		// timer is, and a sentence that said "while a denial period is running, while
+		// demerits are 10 or more" would invent a distinction the language does not
+		// make. "are" rather than "is" because a counter is a tally, and the ADR's own
+		// wording for this clause is "while demerits are 10 or more".
+		...counterClauses(condition).map(
+			([counter, clause]) =>
+				`${humanize(counter)} are ${comparisonText(clause)}`,
+		),
+	];
 	return clauses.length ? `, while ${clauses.join(" and ")}` : "";
 }
 
@@ -120,13 +137,32 @@ export function describeCondition(
  * the confirm/trace surfaces. The effect is resolved against an empty event
  * context (description needs no event); a timer close's duration routing, which
  * only the rules screen states up front, is appended to the shared phrase.
+ *
+ * A **routed magnitude** is the one effect this cannot borrow the shared phrase
+ * for (ADR 0015), and deliberately so: `resolveEffect` against an empty context
+ * resolves a `by_from` to a *skip*, which is the truth about that context and a
+ * lie about the rule. A description has no event, so it names the key instead of
+ * a number — the same move the timer-close line below makes when it states a
+ * routing the shared phrase has no room for.
  */
-export function describeEffect(effect: Effect): string {
+export function describeEffect(effect: Effect, type?: EventType): string {
+	if (
+		(effect.verb === "increment_counter" ||
+			effect.verb === "decrement_counter") &&
+		effect.by_from !== undefined
+	) {
+		const label =
+			type?.metadata[effect.by_from]?.label ?? humanize(effect.by_from);
+		const verb = effect.verb === "increment_counter" ? "add" : "subtract";
+		const preposition = effect.verb === "increment_counter" ? "to" : "from";
+		return `${verb} ${label} ${preposition} ${humanize(effect.counter)}`;
+	}
 	const op = resolveEffect(effect, {
 		type: "",
 		metadata: {},
 		occurred_at: 0,
 		active_timers: NO_ACTIVE_TIMERS,
+		counter_values: NO_COUNTER_VALUES,
 	});
 	const phrase = summarizeEffectOp(op);
 	return effect.verb === "close_timer" && effect.route_duration_to
@@ -141,7 +177,7 @@ export function describeRule(
 ): { when: string; effects: string[] } {
 	return {
 		when: describeCondition(rule.condition, type),
-		effects: rule.effects.map(describeEffect),
+		effects: rule.effects.map((effect) => describeEffect(effect, type)),
 	};
 }
 

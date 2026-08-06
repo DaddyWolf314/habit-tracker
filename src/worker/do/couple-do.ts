@@ -207,6 +207,7 @@ import {
 	traceAnchor,
 	traceAutoClose,
 	traceCounter,
+	traceCounterSkipped,
 	traceExpire,
 	traceNearMiss,
 	traceNotify,
@@ -2806,16 +2807,12 @@ export class CoupleDO extends DurableObject<Env> {
 			);
 		}
 		const id = this.uniqueCounterId(input.id ?? slugify(input.name));
-		const definition: CounterDefinition = {
-			id,
-			name: input.name,
-			valence: input.valence,
-			daily_target: input.daily_target,
-			weekly_target: input.weekly_target,
-			reset: input.reset,
-			streak: input.streak,
-			modify_permission: input.modify_permission,
-		};
+		// Spread rather than field-by-field: the input has already been parsed
+		// through the definition schema (minus its id), so listing the fields here
+		// only creates a second place to forget one — which is how `target_direction`
+		// would have shipped silently defaulted on every counter a couple created.
+		const { id: _supplied, ...policy } = input;
+		const definition: CounterDefinition = { id, ...policy };
 		// Effective from now: a counter created today governs the periods folded
 		// after it and none before, so a rebuild folds nothing for it in a rollover
 		// that predates its existence (ADR 0013).
@@ -2856,16 +2853,9 @@ export class CoupleDO extends DurableObject<Env> {
 				);
 			}
 		}
-		const definition: CounterDefinition = {
-			id: counterId,
-			name: input.name,
-			valence: input.valence,
-			daily_target: input.daily_target,
-			weekly_target: input.weekly_target,
-			reset: input.reset,
-			streak: input.streak,
-			modify_permission: input.modify_permission,
-		};
+		// The id is fixed by the path and never taken from the body; everything else
+		// is policy and travels whole (see {@link createCounter}).
+		const definition: CounterDefinition = { id: counterId, ...input };
 		// Forward-only: the edit appends a version rather than rewriting the policy,
 		// so periods already folded keep the target they were folded against and a
 		// rebuild reproduces them instead of re-scoring under the new one (ADR 0013).
@@ -3412,6 +3402,20 @@ export class CoupleDO extends DurableObject<Env> {
 				return;
 			case "notify":
 				this.writeTrace(traceNotify(cause, at, op.target));
+				return;
+			case "skipped":
+				// A routed magnitude that routed nothing (ADR 0015). The counter is not
+				// touched — not by `by`, which would print `+1` for a rule its author
+				// believed was proportional, and not by a rounded value, which would
+				// invent a number nobody wrote. The note is the whole effect, and it is
+				// phrased like the timer skip above so the two read as one habit.
+				this.writeTrace(
+					traceCounterSkipped(cause, at, op.counter, {
+						reason: `${ruleId} skipped: no whole number at '${op.key}'`,
+						op: op.op,
+						key: op.key,
+					}),
+				);
 				return;
 		}
 	}
@@ -5197,8 +5201,33 @@ export class CoupleDO extends DurableObject<Env> {
 			// for why the span rather than the status, and why an amendment is asked
 			// what was running *then*.
 			active_timers: this.activeTimersAt(event.occurred_at),
+			// As of *now* in the sequence, which is the opposite clock and is the
+			// point (ADR 0015). A timer is asked what was running at `occurred_at`
+			// because a span records when it ran; a counter has no such record — its
+			// trace rows are stamped at `logged_at` — so the only value it can honestly
+			// answer with is the one it holds at the moment the engine is acting. That
+			// is log-time on an append and ruling-time on a re-evaluation, and it is
+			// what makes a rebuild reproduce live instead of re-deriving it.
+			counter_values: this.counterValues(),
 			awaiting: awaitingKeysFor(awaiting, subjectRole),
 		};
+	}
+
+	/**
+	 * The score a rule's `counter_value` clause reads (ADR 0015) — the resolution
+	 * seam beside `activeTimersAt`, and read the same way: fresh per call, never
+	 * cached for the request.
+	 *
+	 * Freshness is load-bearing in one direction and not the other. Within a single
+	 * event, `ruleContext` is built *once, before any effect is applied*, so every
+	 * rule firing on that event reads the same pre-event score — the infraction that
+	 * crosses 10 does not escalate itself, and rule order within the event cannot
+	 * change the outcome. Across events, each append and each ruling builds a new
+	 * context and sees what the previous ones left behind, which is exactly what a
+	 * replay walking the same sequence reproduces.
+	 */
+	private counterValues(): ReadonlyMap<string, number> {
+		return new Map(this.counterRows().map((row) => [row.id, row.value]));
 	}
 
 	/**
@@ -5397,7 +5426,14 @@ export class CoupleDO extends DurableObject<Env> {
 			if (!targetDef) continue;
 			const target =
 				period === "daily" ? targetDef.daily_target : targetDef.weekly_target;
-			const met = targetMet(valueById.get(streak.counter) ?? 0, target);
+			// The direction comes off the *target* counter's policy, resolved on the
+			// same clock the target is (ADR 0013, ADR 0015): a cap of 0 folds "+1 for a
+			// clean day" and breaks on the first infraction of the period.
+			const met = targetMet(
+				valueById.get(streak.counter) ?? 0,
+				target,
+				targetDef.target_direction,
+			);
 			const from = valueById.get(def.id) ?? 0;
 			const to = nextStreak(from, met);
 			// A dormant streak (target unmet, already 0) folds 0 -> 0. Skip the no-op so

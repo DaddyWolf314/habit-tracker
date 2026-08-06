@@ -3,6 +3,7 @@ import type { EventType } from "./event-types.ts";
 import { isCitingRef } from "./refs.ts";
 import type { MetadataValue } from "./roles.ts";
 import { isComparisonClause, type Rule } from "./rules.ts";
+import { targetMet } from "./streaks.ts";
 
 /**
  * What Today shows you are aiming at (#135, handoff §9.2 — "today's counter
@@ -64,7 +65,10 @@ export function targetRows({
 			target,
 			period: daily !== undefined ? "daily" : "weekly",
 			streak: streakOf(counter.id, byStreakTarget),
-			met: counter.value >= target,
+			// Through the rollover's own predicate, not a local `>=` (ADR 0015): a cap
+			// target is met by staying *under* it, and Today saying "met" where the
+			// fold will say "broken" is the drift a shared function exists to prevent.
+			met: targetMet(counter.value, target, counter.target_direction),
 			tickLogs: tickFor(counter.id, rules, types),
 		});
 	}

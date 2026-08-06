@@ -59,6 +59,10 @@ export function scaffoldPlan({
 			name,
 			valence: "positive",
 			daily_target: 1,
+			// A scaffolded ritual counter is a floor — "did it at least once today"
+			// (ADR 0015). A cap is the mercy shape, and it belongs to a counter the
+			// couple defines deliberately, not to one a citation scaffolds for them.
+			target_direction: "floor",
 			reset: "daily",
 			modify_permission: ["dom", "sub", "switch"],
 		},
@@ -66,6 +70,7 @@ export function scaffoldPlan({
 			id: `${agreementId}_streak`,
 			name: `${name} streak`,
 			valence: "positive",
+			target_direction: "floor",
 			reset: "never",
 			// A streak is a property of its target counter (CONTEXT §Target counter),
 			// expressed here as the fold the DO's rollover alarm reads — never a rule.

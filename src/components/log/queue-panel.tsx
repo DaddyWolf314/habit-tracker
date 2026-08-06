@@ -6,6 +6,7 @@ import { amendEvent } from "#/lib/api.ts";
 import { type AwaitedRuling, queueFor } from "#/shared/adjudication.ts";
 import { type WaivedEffect, waivedEffectKey } from "#/shared/amendments.ts";
 import { type AnchorView, elapsedDaysText } from "#/shared/anchors.ts";
+import type { Counter } from "#/shared/counters.ts";
 import { reevaluate, rulesEffectiveAt } from "#/shared/engine.ts";
 import {
 	awaitingKeysFor,
@@ -53,6 +54,7 @@ export function QueuePanel({
 	members,
 	anchors,
 	timers,
+	counters,
 	selfRole,
 	onAmended,
 }: {
@@ -62,6 +64,7 @@ export function QueuePanel({
 	members: RoleMember[];
 	anchors: AnchorView[];
 	timers: TimerView[];
+	counters: Counter[];
 	selfRole: Role | null;
 	onAmended: () => void;
 }) {
@@ -73,6 +76,16 @@ export function QueuePanel({
 	// once here rather than per card: each card asks the shared predicate for its
 	// own event's moment, which is the same question the DO will ask on commit.
 	const spans = useMemo(() => spansOf(timers), [timers]);
+
+	// The score the preview resolves `counter_value` from (ADR 0015). Every card
+	// reads the same map because every card's ruling would be committed against the
+	// same live counters — a `counter_value` clause is evaluated at *ruling* time,
+	// not at the target event's moment, so unlike the spans above there is nothing
+	// per-event to ask.
+	const counterValues = useMemo(
+		() => new Map(counters.map((c) => [c.id, c.value] as const)),
+		[counters],
+	);
 
 	if (queue.length === 0) return null;
 
@@ -95,6 +108,7 @@ export function QueuePanel({
 						members={members}
 						anchors={anchors}
 						spans={spans}
+						counterValues={counterValues}
 						onAmended={onAmended}
 					/>
 				))}
@@ -111,6 +125,7 @@ function QueueItem({
 	members,
 	anchors,
 	spans,
+	counterValues,
 	onAmended,
 }: {
 	event: EventView;
@@ -120,6 +135,7 @@ function QueueItem({
 	members: RoleMember[];
 	anchors: AnchorView[];
 	spans: TimerSpan[];
+	counterValues: ReadonlyMap<string, number>;
 	onAmended: () => void;
 }) {
 	// Effective-dating keys off the target event's log-time, never the viewing
@@ -182,6 +198,12 @@ function QueueItem({
 			// denial *was* on — the same `occurred_at` clock the anchor resets below
 			// already use. The same shared predicate the DO applies on commit.
 			active_timers: activeTimerDefinitionsAt(spans, event.occurred_at),
+			// The score *now*, not as of the event (ADR 0015). A `counter_value` clause
+			// reads what the engine sees when it acts, and for a ruling that is the
+			// moment of the ruling — so the sheet and the DO's commit read the same
+			// number, which is the whole reason the counters are shipped to this
+			// surface at all.
+			counter_values: counterValues,
 			awaiting: awaitingKeysFor(type.awaiting, subjectRole),
 		};
 		const after = {
@@ -189,11 +211,26 @@ function QueueItem({
 			metadata: { ...event.composite_metadata, ...patch },
 		};
 		return reevaluate(rulesInForce, before, after).flatMap((fired) =>
-			fired.ops.map((op, index) => ({
-				rule_id: fired.rule_id,
-				effect_index: index,
-				phrase: summarizeEffectOp(op),
-			})),
+			fired.ops
+				.map((op, index) => ({
+					rule_id: fired.rule_id,
+					effect_index: index,
+					// Kept so the filter below can drop skips *after* the index is
+					// assigned: the index is the effect's position in the rule's own list
+					// (ADR 0016), and re-numbering it around a skipped effect would have a
+					// waiver name the wrong one.
+					op,
+				}))
+				// An effect that routed no magnitude resolves to nothing (ADR 0015), so
+				// there is nothing to offer a waiver on — a checkbox here would let the
+				// dom overrule a change that was never going to happen. The DO still
+				// files its trace note, which is where the fact belongs.
+				.filter(({ op }) => op.kind !== "skipped")
+				.map(({ rule_id, effect_index, op }) => ({
+					rule_id,
+					effect_index,
+					phrase: summarizeEffectOp(op),
+				})),
 		);
 	}
 

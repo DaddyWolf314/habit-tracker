@@ -53,6 +53,22 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("number"),
 		min: z.number().optional(),
 		max: z.number().optional(),
+		/**
+		 * Declares the field whole (ADR 0015). Until `by_from` existed, a number
+		 * field's range was all a rule could care about; a routed *magnitude* also
+		 * cares whether the number divides. `increment_counter.by` is
+		 * `z.number().int()` and its comment gives the reason — a fractional `by`
+		 * drives the counter cache non-integer and breaks reads and export — so
+		 * without this flag `by_from` could route `2.5` into an integer counter and
+		 * nothing could see it coming.
+		 *
+		 * {@link validateRule} refuses a `by_from` naming a field that does not carry
+		 * it, which puts the failure at authoring time, where this repo has
+		 * consistently put routing failures. Optional, because it constrains only the
+		 * one routing that needs it: a field is not wrong for being fractional, it is
+		 * merely not a magnitude.
+		 */
+		integer: z.boolean().optional(),
 		...metadataFieldBase,
 	}),
 	/**

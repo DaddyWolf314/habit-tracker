@@ -33,6 +33,7 @@ function counter(over: Partial<Counter> = {}): Counter {
 		id: "chores",
 		name: "Chores",
 		valence: "neutral",
+		target_direction: "floor",
 		reset: "never",
 		modify_permission: ["dom", "sub", "switch"],
 		value: 42,

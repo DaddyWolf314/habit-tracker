@@ -1,3 +1,5 @@
+import type { TargetDirection } from "./counters.ts";
+
 /**
  * Streak rollover + scheduled resets (handoff §4.4, §3.2) — pure, dependency-free
  * decisions the DO alarm applies at a day/week rollover. Streaks are built into
@@ -17,12 +19,19 @@ const MONDAY_EPOCH_MS = 4 * DAY_MS;
  * Whether a target-counter met its target for the period just closed (handoff
  * §4.4). A counter with no target never streaks — the gate is simply unmet — so a
  * plain tally can share the rollover machinery without accidentally counting.
+ *
+ * `direction` is the counter's own (ADR 0015): a **floor** is met by reaching the
+ * target and a **cap** by staying under it, which is what makes a target of `0`
+ * fold "a day with no infractions" into a streak. Defaulted to `floor` so a
+ * caller holding a bare number — a preview, a test — reads as it always did.
  */
 export function targetMet(
 	value: number,
 	target: number | null | undefined,
+	direction: TargetDirection = "floor",
 ): boolean {
-	return typeof target === "number" && value >= target;
+	if (typeof target !== "number") return false;
+	return direction === "cap" ? value <= target : value >= target;
 }
 
 /** The streak after a rollover: continued (+1) on a met period, broken (0) otherwise. */

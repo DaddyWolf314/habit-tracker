@@ -2,6 +2,7 @@ import type { EventType, MetadataField } from "./event-types.ts";
 import type { MetadataValue } from "./roles.ts";
 import {
 	ambientClauses,
+	counterClauses,
 	isComparisonClause,
 	type Rule,
 	type RuleVersion,
@@ -66,6 +67,19 @@ export function validateRule(
 		}
 	}
 
+	// The score predicate (ADR 0015) names counter *definitions*, checked against
+	// the same set an effect's counter target is — and refused for the same
+	// reason. An unknown counter never resolves to a value, so the clause would
+	// read as permanently unmet and hold the rule shut for ever, invisibly. The
+	// clause shape itself needs no check: `comparisonClauseSchema` already
+	// constrains it to a numeric comparison, and a counter is always a number, so
+	// there is no field-kind mismatch to catch the way metadata has.
+	for (const [counter] of counterClauses(rule.condition)) {
+		if (!ctx.counters.has(counter)) {
+			return fail(`condition references unknown counter '${counter}'`);
+		}
+	}
+
 	// Effect targets must be known projections, and every routed event key
 	// (`duration_from`, `tag_from`, `match_on`, `route_when`) must exist on the
 	// triggering type — at runtime an absent key routes `undefined`, which would
@@ -103,6 +117,16 @@ function checkEffectTarget(
 	switch (effect.verb) {
 		case "increment_counter":
 		case "decrement_counter":
+			if (!ctx.counters.has(effect.counter)) {
+				return `effect targets unknown counter '${effect.counter}'`;
+			}
+			// A routed magnitude must name a field declared whole (ADR 0015). Beside
+			// the other routed keys because it is one: at runtime an absent key routes
+			// `undefined`, and a fractional one would drive the counter cache
+			// non-integer and break reads and export somewhere nobody is looking.
+			return checkRoutedKey("by_from", effect.by_from, type, ["number"], {
+				integer: true,
+			});
 		case "reset_counter":
 			return ctx.counters.has(effect.counter)
 				? null
@@ -147,14 +171,21 @@ function checkEffectTarget(
 }
 
 /**
- * Ensures a routed event key (`tag_from`, `duration_from`) exists on the
- * triggering type and is a field kind the routing can actually use.
+ * Ensures a routed event key (`tag_from`, `duration_from`, `by_from`) exists on
+ * the triggering type and is a field kind the routing can actually use.
+ *
+ * `require.integer` is the extra demand a routed *magnitude* makes (ADR 0015):
+ * the field must not merely be a number but be declared whole, because the
+ * counter it lands in is. Expressed as an option rather than a separate check so
+ * the two failures read as one family — a routing that cannot work is refused
+ * here, at creation, whichever way it cannot work.
  */
 function checkRoutedKey(
 	label: string,
 	key: string | undefined,
 	type: EventType,
 	kinds: MetadataField["kind"][],
+	require?: { integer: boolean },
 ): string | null {
 	if (key === undefined) return null;
 	const field = type.metadata[key];
@@ -163,6 +194,9 @@ function checkRoutedKey(
 	}
 	if (!kinds.includes(field.kind)) {
 		return `effect ${label} key '${key}' on ${type.id} must be a ${kinds.join(" or ")} field`;
+	}
+	if (require?.integer && !(field.kind === "number" && field.integer)) {
+		return `effect ${label} key '${key}' on ${type.id} must be declared integer — a counter cannot hold a fraction`;
 	}
 	return null;
 }

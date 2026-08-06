@@ -6,6 +6,7 @@ import {
 	DEFAULT_TIMERS,
 	STARTER_EVENT_TYPES,
 } from "#/templates/index.ts";
+import { eventTypeSchema } from "./event-types.ts";
 import {
 	type RuleValidationContext,
 	validateRule,
@@ -394,5 +395,132 @@ describe("ambient-state and comparison clauses (ADR 0011)", () => {
 		expect(result.ok).toBe(false);
 		if (result.ok) throw new Error("unreachable");
 		expect(result.error).toContain("unknown key 'moood'");
+	});
+});
+
+/** The score predicate and the routed magnitude (ADR 0015). */
+describe("counter_value and by_from", () => {
+	function failure(r: Rule): string {
+		const result = validateRule(r, ctx);
+		if (result.ok) throw new Error("expected a validation failure");
+		return result.error;
+	}
+
+	it("accepts a score clause on a known counter", () => {
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "infraction",
+				metadata: {},
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			},
+		});
+		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+
+	it("refuses a score clause naming a counter that does not exist", () => {
+		// An unknown counter never resolves to a value, so the clause would read as
+		// permanently unmet and hold the rule shut for ever, invisibly — the same
+		// failure an unknown timer or metadata key would cause.
+		const r = rule({
+			id: "X",
+			condition: {
+				type: "infraction",
+				metadata: {},
+				counter_value: { demeritz: { op: "gte", value: 10 } },
+			},
+		});
+		expect(failure(r)).toContain("unknown counter 'demeritz'");
+	});
+
+	it("accepts a by_from naming a field declared integer", () => {
+		// `mood` is a 1–5 scale and the pack declares it whole.
+		const r = rule({
+			id: "X",
+			condition: { type: "check_in", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "mood",
+				},
+			],
+		});
+		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+
+	it("refuses a by_from on a number field not declared integer", () => {
+		// The whole point of the flag: without it, `by_from` could route 2.5 into
+		// an integer counter and nothing could see it coming. Refused at creation,
+		// beside the other routed-key errors — never at runtime.
+		const weighed = eventTypeSchema.parse({
+			id: "weighed",
+			label: "Weighed",
+			icon: "scale",
+			valence: "neutral",
+			log_permission: ["dom", "sub", "switch"],
+			subject_required: false,
+			metadata: {
+				kilograms: {
+					kind: "number",
+					label: "Kilograms",
+					set_permission: ["dom", "sub", "switch"],
+				},
+			},
+			awaiting: [],
+		});
+		const looseCtx: RuleValidationContext = {
+			...ctx,
+			eventTypes: new Map([...ctx.eventTypes, [weighed.id, weighed]]),
+		};
+		const r = rule({
+			id: "X",
+			condition: { type: "weighed", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "kilograms",
+				},
+			],
+		});
+		const result = validateRule(r, looseCtx);
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).toContain("must be declared integer");
+	});
+
+	it("refuses a by_from on a non-number field", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "infraction", metadata: {} },
+			effects: [
+				{
+					verb: "decrement_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "severity",
+				},
+			],
+		});
+		expect(failure(r)).toContain("must be a number field");
+	});
+
+	it("refuses a by_from naming a key the type does not have", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "infraction", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "weight",
+				},
+			],
+		});
+		expect(failure(r)).toContain("unknown key 'weight'");
 	});
 });

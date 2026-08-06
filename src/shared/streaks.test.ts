@@ -22,6 +22,32 @@ describe("target met (handoff §4.4 — streaks built into target-counters)", ()
 		expect(targetMet(5, undefined)).toBe(false);
 		expect(targetMet(5, null)).toBe(false);
 	});
+
+	it("defaults to a floor, so a bare call reads as it always did", () => {
+		expect(targetMet(1, 1)).toBe(targetMet(1, 1, "floor"));
+	});
+
+	/**
+	 * A cap is the mercy shape (ADR 0015): met by staying *under* the target, which
+	 * is what makes a target of 0 mean "a period with none of these" and turns a
+	 * clean streak into an ordinary counter a `counter_value` clause can read.
+	 */
+	it("is met by staying under a cap", () => {
+		expect(targetMet(0, 0, "cap")).toBe(true);
+		expect(targetMet(1, 2, "cap")).toBe(true);
+		expect(targetMet(2, 2, "cap")).toBe(true);
+	});
+
+	it("breaks a cap the moment the value exceeds it", () => {
+		expect(targetMet(1, 0, "cap")).toBe(false);
+		expect(targetMet(3, 2, "cap")).toBe(false);
+	});
+
+	it("still never streaks a capped counter with no target", () => {
+		// The absent-target gate comes first, whichever direction is asked for —
+		// otherwise every plain tally would fold a streak by accident.
+		expect(targetMet(0, undefined, "cap")).toBe(false);
+	});
 });
 
 describe("streak rollover (handoff §4.4 — target met? +1 : 0)", () => {
