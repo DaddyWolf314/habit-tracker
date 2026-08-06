@@ -223,6 +223,13 @@ export function planReversal(
 			reason: "a notification has already been delivered",
 		};
 	}
+	if (effect.kind === "skipped") {
+		// Unreachable in practice — a skipped effect writes a `counter_skipped` row,
+		// which `effectOpOf` reads as no effect at all, so `standingEffects` never
+		// offers one. Null rather than a declined plan for the reason above: there is
+		// nothing to decline, because nothing landed.
+		return null;
+	}
 	if (effect.op === "reset") {
 		return {
 			reversible: false,

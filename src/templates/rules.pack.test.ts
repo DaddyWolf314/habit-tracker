@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { agreementRefKeys } from "#/shared/agreements.ts";
-import { evaluateRules, rulesEffectiveAt } from "#/shared/engine.ts";
+import {
+	evaluateRules,
+	NO_COUNTER_VALUES,
+	rulesEffectiveAt,
+} from "#/shared/engine.ts";
 import { awaitingKeysFor } from "#/shared/event-types.ts";
 import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
@@ -76,6 +80,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { severity: "minor", self_reported: true },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "sub",
 		});
 		const demeritEffects = fired.flatMap((f) =>
@@ -92,6 +97,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { severity: "major", self_reported: true },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id)).toContain("R8");
@@ -103,6 +109,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: {},
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fired).toEqual([]);
 		expect(nearMisses).toEqual([]);
@@ -121,6 +128,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			},
 			occurred_at: 1000,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R22"]);
 		expect(fired[0]?.ops).toEqual([
@@ -141,12 +149,14 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { task_id: "t7", duration_ms: 60_000 },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		const completed = evaluateRules(DEFAULT_RULES, {
 			type: "task_completed",
 			metadata: { task_id: "t7" },
 			occurred_at: 2,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		const openMatch = assigned.fired[0]?.ops.find(
 			(op) => op.kind === "timer" && op.op === "open",
@@ -175,6 +185,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 				metadata: { task_id: taskId, task_name: "dishes", duration_ms: 60_000 },
 				occurred_at: at,
 				active_timers: new Set<string>(),
+				counter_values: NO_COUNTER_VALUES,
 			});
 			const op = fired
 				.flatMap((f) => f.ops)
@@ -204,6 +215,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 				metadata: { task_id: row.match.task_id },
 				occurred_at: 3,
 				active_timers: new Set<string>(),
+				counter_values: NO_COUNTER_VALUES,
 			});
 			const closeOp = fired
 				.flatMap((f) => f.ops)
@@ -219,6 +231,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { duration_ms: 86_400_000 },
 			occurred_at: 500,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R23"]);
 		expect(fired[0]?.ops).toEqual([
@@ -239,6 +252,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { permitted: false, outcome: "full" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id).sort()).toEqual(["R10", "R12", "R14"]);
@@ -252,6 +266,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { outcome: "full" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "dom",
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R21"]);
@@ -287,6 +302,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { permitted: true, outcome: "full" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id)).not.toContain("R21");
@@ -299,6 +315,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { permitted: false, outcome: "full" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "switch",
 		});
 		expect(fired).toEqual([]);
@@ -317,6 +334,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { severity: "major", self_reported: false },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "dom",
 		});
 		expect(fired).toEqual([]);
@@ -335,6 +353,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { severity: "major", self_reported: false },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "sub",
 		});
 		expect(fired.map((f) => f.rule_id).sort()).toEqual(["R6", "R7", "R8"]);
@@ -406,6 +425,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: {},
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "dom" as const,
 		};
 		// Logged before the bump: the unqualified R10 was in force — it fired on
@@ -461,6 +481,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { severity: "major", self_reported: false },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 			subject_role: "dom" as const,
 		};
 		const before = evaluateRules(
@@ -485,6 +506,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { prompt_id: "p1", floor: "shared" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R19"]);
 		const op = fired[0]?.ops[0];
@@ -503,6 +525,7 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 			metadata: { prompt_id: "p1" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fired.map((f) => f.rule_id)).toEqual(["R20"]);
 		expect(fired[0]?.ops[0]).toMatchObject({
@@ -722,6 +745,7 @@ describe("R26/R27 — the ADR 0011 pair", () => {
 			occurred_at: 1,
 			subject_role: "sub" as const,
 			active_timers: new Set(active),
+			counter_values: NO_COUNTER_VALUES,
 		});
 	}
 
@@ -777,6 +801,7 @@ describe("R26/R27 — the ADR 0011 pair", () => {
 			metadata: { mood: 2 },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(low.fired.map((f) => f.rule_id)).toContain("R27");
 
@@ -785,6 +810,7 @@ describe("R26/R27 — the ADR 0011 pair", () => {
 			metadata: { mood: 4 },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fine.fired.map((f) => f.rule_id)).not.toContain("R27");
 	});
@@ -796,6 +822,7 @@ describe("R26/R27 — the ADR 0011 pair", () => {
 			metadata: { flag: "wants_conversation" },
 			occurred_at: 1,
 			active_timers: new Set<string>(),
+			counter_values: NO_COUNTER_VALUES,
 		});
 		expect(fired.map((f) => f.rule_id)).not.toContain("R27");
 	});

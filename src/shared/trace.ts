@@ -58,6 +58,13 @@ const effectOpSchema = z.discriminatedUnion("kind", [
 		route_when_met: z.boolean().optional(),
 	}),
 	z.object({ kind: z.literal("notify"), target: z.string() }),
+	/** An effect that resolved to nothing — a `by_from` that routed no whole number. */
+	z.object({
+		kind: z.literal("skipped"),
+		counter: z.string(),
+		op: z.enum(["increment", "decrement"]),
+		key: z.string(),
+	}),
 ]);
 
 /**
@@ -103,6 +110,23 @@ export const traceDetailSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("timer_skipped"),
 		reason: z.string(),
 		op: z.enum(["open", "close"]),
+	}),
+	/**
+	 * A counter effect that routed no magnitude (ADR 0015) — its `by_from` key was
+	 * absent from the event, or carried something that is not a whole number.
+	 *
+	 * Its own kind rather than a `counter` row with a zero delta, and not a
+	 * near-miss either: the rule *did* fire, and this says one of its effects had
+	 * nothing to move. A zero-delta counter row would claim the counter was
+	 * written; a near-miss would claim the rule never applied. Both are false, and
+	 * the second is the one CONTEXT's **Effect** entry warns about.
+	 */
+	z.object({
+		kind: z.literal("counter_skipped"),
+		reason: z.string(),
+		op: z.enum(["increment", "decrement"]),
+		/** The `by_from` key that routed nothing usable — the actionable half. */
+		key: z.string(),
 	}),
 	z.object({ kind: z.literal("notify"), target: z.string() }),
 	/** A rule matched on type but didn't fire; drives the "waiting on: …" hint. */
@@ -488,6 +512,26 @@ export function traceTimerSkipped(
 	};
 }
 
+/**
+ * A counter effect that routed no magnitude (ADR 0015). Lands on the counter's
+ * own chain, exactly as a suppressed effect does, because "why is this not 12" is
+ * asked of the counter — a note filed anywhere else would be unfindable from the
+ * number that failed to move.
+ */
+export function traceCounterSkipped(
+	cause: TraceCause,
+	at: number,
+	counterId: string,
+	info: { reason: string; op: "increment" | "decrement"; key: string },
+): TraceEntry {
+	return {
+		cause,
+		at,
+		projection: `counter:${counterId}`,
+		detail: { kind: "counter_skipped", ...info },
+	};
+}
+
 export function traceNotify(
 	cause: TraceCause,
 	at: number,
@@ -668,6 +712,10 @@ export function projectionOf(op: EffectOp): string {
 			return `timer:${op.timer}`;
 		case "notify":
 			return `notify:${op.target}`;
+		case "skipped":
+			// The counter it would have moved, so the note sits on the chain of the
+			// number a reader is asking about (ADR 0015).
+			return `counter:${op.counter}`;
 	}
 }
 
@@ -691,6 +739,13 @@ export function summarizeEffectOp(op: EffectOp): string {
 				: `mark ${humanize(op.timer)} ${op.status ?? "closed"}`;
 		case "notify":
 			return `notify ${humanize(op.target)}`;
+		case "skipped":
+			// Says what did *not* happen and why, in the same breath. The confirm
+			// sheet drops these lines rather than offering a checkbox — waiving an
+			// effect that resolves to nothing is a control with nothing behind it —
+			// so in practice this is read on the chain, beside the counter that
+			// stayed put.
+			return `${humanize(op.counter)} unchanged — no whole number at ${humanize(op.key)}`;
 	}
 }
 
@@ -768,6 +823,10 @@ export function describeTraceRow(row: TraceRow): TraceLine {
 				summary: `${prefix}${humanize(name)} ${detail.status ?? "closed"}`,
 			};
 		case "timer_skipped":
+			return { tone: "effect", summary: detail.reason };
+		case "counter_skipped":
+			// `effect` rather than `near_miss`: the rule fired and this effect had
+			// nothing to move, which is a different fact from the rule not applying.
 			return { tone: "effect", summary: detail.reason };
 		case "notify":
 			return { tone: "effect", summary: `${prefix}notify ${humanize(name)}` };

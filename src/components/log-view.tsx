@@ -188,9 +188,10 @@ export function LogView() {
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
 			{/* Queue stays top-of-page: for the dom it is the actionable part (#91). */}
-			{/* Timers reach the queue for the ambient-state predicate (ADR 0011): the
-			    confirm sheet must resolve `timer_active` the same way the DO will,
-			    or it under-reports a ruling's effects. They refresh with the log. */}
+			{/* Timers and counters reach the queue for the two state predicates
+			    (ADR 0011, ADR 0015): the confirm sheet must resolve `timer_active` and
+			    `counter_value` the same way the DO will, or it under-reports a
+			    ruling's effects. Both refresh with the log. */}
 			<QueuePanel
 				events={events}
 				types={types}
@@ -198,6 +199,7 @@ export function LogView() {
 				members={members}
 				anchors={anchors}
 				timers={timers}
+				counters={counters}
 				selfRole={selfRole}
 				onAmended={refreshLog}
 			/>

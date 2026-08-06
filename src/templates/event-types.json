@@ -1,5 +1,5 @@
 {
-	"version": 12,
+	"version": 13,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -85,6 +85,7 @@
 				"duration_ms": {
 					"kind": "number",
 					"min": 1,
+					"integer": true,
 					"label": "Time allowed (ms)",
 					"required": true,
 					"set_permission": ["dom", "switch"]
@@ -281,6 +282,7 @@
 				"duration_ms": {
 					"kind": "number",
 					"min": 1,
+					"integer": true,
 					"label": "Denial length (ms)",
 					"required": true,
 					"set_permission": ["dom", "switch"]
@@ -364,6 +366,7 @@
 					"kind": "number",
 					"min": 1,
 					"max": 5,
+					"integer": true,
 					"label": "Mood (1–5)",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]

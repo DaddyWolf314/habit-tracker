@@ -28,13 +28,45 @@ export const counterResetSchema = z.enum([
 ]);
 export type CounterReset = z.infer<typeof counterResetSchema>;
 
+/**
+ * Which way a target is met (ADR 0015):
+ *  - `floor` — met by *reaching* it (`value >= target`). The original reading,
+ *    and what every counter written before this flag existed meant.
+ *  - `cap`   — met by *staying under* it (`value <= target`), which is what makes
+ *    a target of `0` mean something: "a day with no infractions".
+ *
+ * The direction is what turns a streak into a mercy path rather than a ratchet.
+ * ADR 0015 refused an `elapsed_since` clause — it computes a quantity that goes
+ * negative under backfill and changes continuously — on the grounds that "the
+ * first infraction in thirty days" is expressible as a counter a `counter_value`
+ * clause reads. It was not, while a target could only be a floor: a streak folds
+ * *target met → +1*, so counters could say "did at least N" and never "stayed at
+ * zero". One enum, and the clean streak is an ordinary integer counter.
+ */
+export const targetDirectionSchema = z.enum(["floor", "cap"]);
+export type TargetDirection = z.infer<typeof targetDirectionSchema>;
+
 /** The stored definition of a counter (its identity and policy, not its value). */
 export const counterDefinitionSchema = z.object({
 	id: z.string(),
 	name: z.string().min(1),
 	valence: valenceSchema.default("neutral"),
-	daily_target: z.number().int().positive().optional(),
-	weekly_target: z.number().int().positive().optional(),
+	// Non-negative rather than positive (ADR 0015): a cap of `0` is the whole
+	// point of the direction below, and refusing it here would leave the mercy
+	// path unexpressible. A *floor* of 0 is legal and trivially always met, which
+	// is meaningless rather than dangerous — the same nothing an absent target is.
+	daily_target: z.number().int().nonnegative().optional(),
+	weekly_target: z.number().int().nonnegative().optional(),
+	/**
+	 * Which way this counter's targets are met (ADR 0015). Applies to both
+	 * targets — a counter is one kind of thing, and a daily floor beside a weekly
+	 * cap describes no counter anybody wants.
+	 *
+	 * Defaulted rather than optional so `targetMet` reads one shape: every counter
+	 * written before the flag existed meant `floor`, and a default states that
+	 * once here rather than at each of the three call sites that fold a target.
+	 */
+	target_direction: targetDirectionSchema.default("floor"),
 	reset: counterResetSchema.default("never"),
 	/**
 	 * Marks this counter as a streak of another target-counter (handoff §4.4 —
@@ -175,6 +207,27 @@ export function countersEffectiveAt(
 		resolved.push(counterFromVersion(counter.id, version));
 	}
 	return resolved;
+}
+
+/**
+ * The counter values a rule's `counter_value` clause reads (ADR 0015), keyed by
+ * id — the resolution seam for the counter-value predicate, and the counterpart
+ * to `activeTimerDefinitionsAt` for the ambient-state one.
+ *
+ * Shared for the reason the ADR gives: the dom's confirm-sheet preview and the DO
+ * must agree "by construction". They read from different shapes — the client from
+ * a `Counter`, the DO from its `counters` row — so the parameter is the pair both
+ * carry rather than either whole type, and neither surface gets to build the map
+ * its own way.
+ *
+ * The *clock* is still the caller's: this folds whatever values it is handed, and
+ * it is the caller's job to hand over the ones in force when the engine acts (see
+ * {@link RuleEventContext.counter_values}).
+ */
+export function counterValuesOf(
+	counters: readonly { id: string; value: number }[],
+): ReadonlyMap<string, number> {
+	return new Map(counters.map((counter) => [counter.id, counter.value]));
 }
 
 /** Payload for a direct +N / −N adjustment (the "+1 tap" sugar). */

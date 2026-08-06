@@ -31,13 +31,18 @@ in and should not.
   as a **near-miss**; the rule fired and was overruled.
 - **Routed magnitude** — `by_from`, naming the metadata key whose number becomes a
   counter op's amount ("+= the severity the dom ruled"). Routing, not computation,
-  and the same shape `duration_from` already uses. Legal only on a `number` field
-  declared `integer: true`, refused at creation otherwise, because a fractional
-  amount would drive the counter cache non-integer. An absent value at runtime
-  **skips** the effect with a trace note rather than falling back to `by` (which
-  would print `+1` for a rule its author believed was proportional) or rounding.
-  _Avoid_: "weight" — `by` is already the weight; this is where the weight is read
-  from.
+  and the same shape `duration_from` already uses. An **amount, and only an
+  amount**: legal only on a `number` field declared `integer: true` *and* `min` at
+  0 or above, refused at creation otherwise. Whole because a fraction would drive
+  the counter cache non-integer; non-negative because the **Effect**'s verb carries
+  the direction, and a routed `-3` on an increment would subtract — the rule's verb
+  and the counter disagreeing, with the person who *logs* the event overriding the
+  one who authored the rule. An absent value at runtime **skips** the effect with a
+  trace note rather than falling back to `by` (which would print `+1` for a rule
+  its author believed was proportional) or rounding. _Avoid_: "weight" — `by` is
+  already the weight; this is where the weight is read from. Also avoid clamping a
+  negative at runtime: the refusal belongs at authoring time, and a clamp invents a
+  number nobody wrote.
 - **Ambient-state predicate** — the condition clause matching on what was
   *running* when an event happened: `timer_active`, a map of timer definition to
   expected activity (`{ denial_period: true }`, `{ session_stopwatch: false }`).
@@ -612,10 +617,14 @@ consent-record view and the debugging view are the same screen. Lives in the dee
   `dom_command` (a dom-issued countdown assign/pause/resume/extend). _Avoid_:
   reading `caused_by_rule` as a string sentinel — the cause is column-derived.
 - **Detail** — *what* changed, as a typed `TraceDetail` discriminated union (one
-  `kind` per change: counter, anchor, timer_open/close/skipped, notify, near_miss,
-  auto_close, expire, streak_rollover, scheduled_reset, timer_command, crossing,
-  waived, reversal_declined). Stored as a JSON string in the `trace.detail` column;
-  typed at the read model.
+  `kind` per change: counter, counter_skipped, anchor, timer_open/close/skipped,
+  notify, near_miss, auto_close, expire, streak_rollover, scheduled_reset,
+  timer_command, crossing, waived, reversal_declined). Stored as a JSON string in
+  the `trace.detail` column; typed at the read model. `counter_skipped` is a
+  counter effect that routed no magnitude (ADR 0015) — its **routed magnitude**
+  key was absent or not whole. Neither a counter row with a zero delta (which
+  would claim the counter was written) nor a **near-miss** (which would claim the
+  rule never applied): the rule fired and one of its effects had nothing to move.
 - **Near-miss** — a rule that matched on type but did not fire because a condition
   key was unset or wrong. Recorded so pending-adjudication state is legible
   ("R12 didn't fire: permitted not set"). Surfaced only when waiting on a key the
@@ -624,7 +633,12 @@ consent-record view and the debugging view are the same screen. Lives in the dee
   enters `awaiting` and is surfaced only when it was the *sole* miss ("R26 didn't
   fire: no denial period was active"). Otherwise every act outside a mode would
   file a row nobody asked for. A **counter-value predicate** misses on the same
-  footing and follows the same rule. A **Waiver** is never a near-miss: the rule
+  footing and follows the same rule. *Sole* scopes over the **kind** of miss, not
+  the count of clauses: the row is filed when nothing in the metadata missed, and
+  it then names every unmet ambient and counter clause together, comma-joined.
+  Suppressing one because another also missed would leave a rule that failed on
+  two grounds recording nothing at all — which is the silence the near-miss exists
+  to prevent, not an instance of the rule. A **Waiver** is never a near-miss: the rule
   matched and was overruled, and blurring the two would leave the ledger unable to
   tell "this never applied to you" from "this applied and I let it go".
 

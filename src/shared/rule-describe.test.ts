@@ -218,3 +218,83 @@ describe("ambient-state and comparison clauses (ADR 0011)", () => {
 		);
 	});
 });
+
+/**
+ * The counter-value predicate in the couple's voice (ADR 0015). The confirm sheet and
+ * the chain view share this phrasing, so the words here are the words a sub
+ * reads when a rule fires on the strength of their score.
+ */
+describe("describeCondition — counter_value", () => {
+	it("renders a score clause as a trailing 'while' clause", () => {
+		expect(
+			describeCondition({
+				type: "infraction",
+				metadata: {},
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			}),
+		).toBe("when infraction is logged, while demerits are 10 or more");
+	});
+
+	it("shares the trailing clause with the ambient predicate", () => {
+		// One "while", not two: both constrain the moment, and the language makes
+		// no distinction between them for a reader to have explained.
+		expect(
+			describeCondition({
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: true },
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			}),
+		).toBe(
+			"when orgasm is logged, while a denial period is running and demerits are 10 or more",
+		);
+	});
+
+	it("uses the same operator vocabulary the editor offers", () => {
+		expect(
+			describeCondition({
+				type: "check_in",
+				metadata: {},
+				counter_value: { rituals_completed_today: { op: "lt", value: 1 } },
+			}),
+		).toContain("while rituals completed today are under 1");
+	});
+});
+
+/** A routed magnitude, described without an event to route from (ADR 0015). */
+describe("describeEffect — by_from", () => {
+	it("names the key rather than resolving it to a skip", () => {
+		// `resolveEffect` against an empty context resolves a `by_from` to a skip,
+		// which is the truth about that context and a lie about the rule. A rules
+		// screen that read "demerits unchanged" for a proportional rule would be
+		// describing the describer, not the rule.
+		expect(
+			describeEffect(
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "mood",
+				},
+				types.get("check_in"),
+			),
+		).toBe("add Mood (1–5) to demerits");
+	});
+
+	it("de-slugs the key when there is no type to label it", () => {
+		expect(
+			describeEffect({
+				verb: "decrement_counter",
+				counter: "demerits",
+				by: 1,
+				by_from: "severity_weight",
+			}),
+		).toBe("subtract severity weight from demerits");
+	});
+
+	it("leaves a literal `by` on the shared phrase", () => {
+		expect(
+			describeEffect({ verb: "increment_counter", counter: "demerits", by: 2 }),
+		).toBe(phraseCounter("demerits", "increment", 2));
+	});
+});

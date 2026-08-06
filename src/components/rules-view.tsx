@@ -472,6 +472,25 @@ interface TimerDraft {
 	wanted: boolean;
 }
 
+/** One score clause being authored (ADR 0015) — `demerits >= 10`. */
+interface CounterDraft {
+	counter: string;
+	op: ComparisonClause["op"];
+	/** Kept as text so a half-typed bound doesn't coerce to a real one. */
+	value: string;
+}
+
+/**
+ * The operators a score clause may take (ADR 0015) — every comparison and no
+ * equality, because `comparisonClauseSchema` is what the clause holds. Read from
+ * {@link COMPARISON_COPY} for the same reason {@link COMPARISON_OPS} is: the word
+ * in the picker and the word in the preview sentence under it have to be the same
+ * vocabulary.
+ */
+const COUNTER_OPS: { op: ComparisonClause["op"]; label: string }[] = (
+	Object.keys(COMPARISON_COPY) as ComparisonClause["op"][]
+).map((op) => ({ op, label: COMPARISON_COPY[op].operator }));
+
 /**
  * The operators offered beside a number field: plain equality, then each
  * comparison in `rule-describe`'s own words (ADR 0011). Read from
@@ -549,6 +568,20 @@ function RuleEditor({
 			([timer, wanted]) => ({ timer, wanted }),
 		),
 	);
+	// Score clauses (ADR 0015). Beside the timer clauses rather than among the
+	// metadata ones, for the reason the preview sentence gives: both constrain the
+	// moment, and only the metadata rows constrain the event.
+	const [counterClauseDrafts, setCounterClauseDrafts] = useState<
+		CounterDraft[]
+	>(
+		Object.entries(seed?.condition.counter_value ?? {}).map(
+			([counter, clause]) => ({
+				counter,
+				op: clause.op,
+				value: String(clause.value),
+			}),
+		),
+	);
 	const [effects, setEffects] = useState<EffectDraft[]>(
 		seed ? seed.effects.map(effectToDraft) : [blankEffect()],
 	);
@@ -584,11 +617,17 @@ function RuleEditor({
 		() =>
 			type
 				? describeCondition(
-						draftCondition(type, subjectRole, conditions, timerClauses),
+						draftCondition(
+							type,
+							subjectRole,
+							conditions,
+							timerClauses,
+							counterClauseDrafts,
+						),
 						type,
 					)
 				: null,
-		[type, subjectRole, conditions, timerClauses],
+		[type, subjectRole, conditions, timerClauses, counterClauseDrafts],
 	);
 
 	const build = (): { id: string; def: RuleDefinition } | null => {
@@ -621,7 +660,13 @@ function RuleEditor({
 			name: trimmed,
 			// The same builder the live preview reads, so what gets saved is exactly
 			// the sentence the author was shown.
-			condition: draftCondition(type, subjectRole, conditions, timerClauses),
+			condition: draftCondition(
+				type,
+				subjectRole,
+				conditions,
+				timerClauses,
+				counterClauseDrafts,
+			),
 			effects: built,
 			enabled: seed?.enabled ?? true,
 		};
@@ -967,6 +1012,97 @@ function RuleEditor({
 				</fieldset>
 			)}
 
+			{/* The counter-value predicate (ADR 0015), beside the timers because it is the
+			    same kind of clause — a fact about the moment, not about the event —
+			    and renders into the same trailing "while …" sentence. Offered only
+			    once counters exist, so the group cannot be opened onto an empty
+			    picker. */}
+			{type && counters.length > 0 && (
+				<fieldset className="mt-3 space-y-2">
+					<legend className="text-xs text-muted-foreground">
+						Only while… (optional counters)
+					</legend>
+					{counterClauseDrafts.map((clause, i) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: draft rows are positional
+						<div key={i} className="flex items-center gap-2">
+							<select
+								aria-label={`Counter ${i + 1}`}
+								className={fieldClass}
+								value={clause.counter}
+								onChange={(e) =>
+									setCounterClauseDrafts((cs) =>
+										cs.map((c, j) =>
+											j === i ? { ...c, counter: e.target.value } : c,
+										),
+									)
+								}
+							>
+								<option value="">counter…</option>
+								{counters.map((c) => (
+									<option key={c.id} value={c.id}>
+										{c.name}
+									</option>
+								))}
+							</select>
+							<select
+								aria-label={`Counter ${i + 1} comparison`}
+								className={fieldClass}
+								value={clause.op}
+								onChange={(e) =>
+									setCounterClauseDrafts((cs) =>
+										cs.map((c, j) =>
+											j === i
+												? { ...c, op: e.target.value as ComparisonClause["op"] }
+												: c,
+										),
+									)
+								}
+							>
+								{COUNTER_OPS.map((o) => (
+									<option key={o.op} value={o.op}>
+										{o.label}
+									</option>
+								))}
+							</select>
+							<input
+								aria-label={`Counter ${i + 1} value`}
+								type="number"
+								className="w-24 rounded-md border border-input bg-transparent px-2 py-1.5 text-sm"
+								value={clause.value}
+								onChange={(e) =>
+									setCounterClauseDrafts((cs) =>
+										cs.map((c, j) =>
+											j === i ? { ...c, value: e.target.value } : c,
+										),
+									)
+								}
+							/>
+							<Button
+								size="xs"
+								variant="ghost"
+								onClick={() =>
+									setCounterClauseDrafts((cs) => cs.filter((_, j) => j !== i))
+								}
+							>
+								×
+							</Button>
+						</div>
+					))}
+					<Button
+						size="xs"
+						variant="outline"
+						onClick={() =>
+							setCounterClauseDrafts((cs) => [
+								...cs,
+								{ counter: "", op: "gte", value: "" },
+							])
+						}
+					>
+						Add counter condition
+					</Button>
+				</fieldset>
+			)}
+
 			<fieldset className="mt-4 space-y-2">
 				<legend className="text-xs text-muted-foreground">Then do this</legend>
 				{effects.map((eff, i) => (
@@ -1260,6 +1396,7 @@ function draftCondition(
 	subjectRole: Role | "",
 	conditions: ConditionDraft[],
 	timerClauses: TimerDraft[],
+	counterDrafts: CounterDraft[],
 ): RuleCondition {
 	const metadata: RuleCondition["metadata"] = {};
 	for (const c of conditions) {
@@ -1276,6 +1413,16 @@ function draftCondition(
 	for (const t of timerClauses) {
 		if (t.timer) timerActive[t.timer] = t.wanted;
 	}
+	const counterValue: Record<string, ComparisonClause> = {};
+	for (const c of counterDrafts) {
+		// An incomplete row is not a clause, exactly as above: a blank bound would
+		// coerce to `Number("") === 0` and quietly author "while demerits are 0 or
+		// more", which matches for ever.
+		if (!c.counter) continue;
+		const value = Number(c.value);
+		if (c.value.trim() === "" || !Number.isFinite(value)) continue;
+		counterValue[c.counter] = { op: c.op, value };
+	}
 	return {
 		type: type.id,
 		...(subjectRole ? { subject_role: subjectRole } : {}),
@@ -1283,6 +1430,9 @@ function draftCondition(
 		// Omitted rather than empty when unused, matching how the pack's rules and
 		// every rule authored before ADR 0011 are shaped.
 		...(Object.keys(timerActive).length ? { timer_active: timerActive } : {}),
+		...(Object.keys(counterValue).length
+			? { counter_value: counterValue }
+			: {}),
 	};
 }
 

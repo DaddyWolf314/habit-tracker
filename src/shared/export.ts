@@ -47,6 +47,10 @@ export function counterToExportRow(counter: Counter): ExportRow {
 		valence: counter.valence,
 		daily_target: counter.daily_target ?? null,
 		weekly_target: counter.weekly_target ?? null,
+		// Which way those targets are met (ADR 0015). Serialized for the same reason
+		// `streak` below is: dropping it would export a cap as a floor, which turns
+		// "stayed at zero" into "reached zero" — met on every row, for ever.
+		target_direction: counter.target_direction,
 		reset: counter.reset,
 		streak: counter.streak ? JSON.stringify(counter.streak) : null,
 		modify_permission: JSON.stringify(counter.modify_permission),

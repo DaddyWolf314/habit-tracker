@@ -959,6 +959,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 		await couple.do.updateCounter(DOM, "rituals_completed_today", {
 			name: "Rituals completed today",
 			valence: "positive",
+			target_direction: "floor",
 			daily_target: 5,
 			reset: "daily",
 			modify_permission: ["dom", "sub", "switch"],
@@ -981,6 +982,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 		await couple.do.updateCounter(DOM, "rituals_completed_today", {
 			name: "Rituals completed today",
 			valence: "positive",
+			target_direction: "floor",
 			daily_target: 5,
 			reset: "daily",
 			modify_permission: ["dom", "sub", "switch"],
@@ -1004,6 +1006,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 		await couple.do.createCounter(DOM, {
 			name: "Late arrival",
 			valence: "positive",
+			target_direction: "floor",
 			daily_target: 1,
 			reset: "daily",
 			modify_permission: ["dom", "sub", "switch"],
@@ -1011,6 +1014,7 @@ describe("rebuildCounters — streaks (ADR 0013)", () => {
 		const streak = await couple.do.createCounter(DOM, {
 			name: "Late arrival streak",
 			valence: "positive",
+			target_direction: "floor",
 			reset: "never",
 			streak: { counter: "late_arrival", period: "daily" },
 			modify_permission: ["dom", "sub", "switch"],
@@ -1992,5 +1996,398 @@ describe("waiving an effect (ADR 0016)", () => {
 			// inverse, which is why it reaches effects reversal never can.
 			expect(anchor?.since).toBeNull();
 		});
+	});
+});
+
+/**
+ * The counter-value predicate and the routed magnitude at the DO boundary (ADR 0015).
+ *
+ * The engine tests pin the fold; these pin the two things only the DO can be
+ * wrong about — *which* value it hands the engine, and whether a rebuild hands
+ * it the same one. Both were the failure mode ADR 0015 wrote the clock rule to
+ * avoid: silent, rebuild-only, and in the scoring direction.
+ */
+describe("counter_value at the DO boundary (ADR 0015)", () => {
+	/** The rows of an event's trace, decoded — for asserting on skip notes. */
+	async function eventTrace(couple: ActiveCouple, eventId: string) {
+		return (await couple.do.getEventTrace(DOM, eventId)).map(
+			(row) => row.detail,
+		);
+	}
+
+	/**
+	 * A couple whose infractions both escalate at ten and count toward ten — one
+	 * rule reading `demerits` and one writing it, on the same event type.
+	 */
+	async function ladder(): Promise<ActiveCouple> {
+		const couple = await activeCouple();
+		await couple.do.createCounter(DOM, {
+			name: "Escalations",
+			valence: "negative",
+			target_direction: "floor",
+			reset: "never",
+			modify_permission: ["dom", "sub", "switch"],
+		});
+		await couple.do.createRule(DOM, {
+			id: "custom-tally",
+			name: "Every infraction counts",
+			condition: { type: "infraction", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "demerits", by: 1 }],
+		});
+		await couple.do.createRule(DOM, {
+			id: "custom-escalate",
+			name: "Escalate at ten",
+			condition: {
+				type: "infraction",
+				metadata: {},
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			},
+			effects: [{ verb: "increment_counter", counter: "escalations", by: 1 }],
+		});
+		return couple;
+	}
+
+	async function logInfraction(
+		couple: ActiveCouple,
+		occurredAt: number = Date.now(),
+	) {
+		return couple.do.logEvent(SUB, {
+			type: "infraction",
+			metadata: { severity: "minor", self_reported: true },
+			subject: couple.subId,
+			occurred_at: occurredAt,
+			visibility: "shared",
+		});
+	}
+
+	it("reads the score before the event's own effects", async () => {
+		const couple = await ladder();
+		// Nine infractions: `demerits` reaches 9 and nothing has escalated.
+		for (let i = 0; i < 9; i += 1) {
+			advance(HOUR);
+			await logInfraction(couple);
+		}
+		expect(await counters(couple)).toMatchObject({
+			demerits: 9,
+			escalations: 0,
+		});
+
+		// The tenth *crosses* ten. It does not escalate itself: the rule reads the
+		// score the act happened against, exactly as `timer_active` reads a denial
+		// period the rule beside it is about to close.
+		advance(HOUR);
+		await logInfraction(couple);
+		expect(await counters(couple)).toMatchObject({
+			demerits: 10,
+			escalations: 0,
+		});
+
+		// The next one does.
+		advance(HOUR);
+		await logInfraction(couple);
+		expect(await counters(couple)).toMatchObject({
+			demerits: 11,
+			escalations: 1,
+		});
+	});
+
+	it("rebuilds to the same score a backfilled event produced live", async () => {
+		// The case the `occurred_at` reading would have broken. The last event is
+		// *backfilled* — logged now, but for a moment before every counter move
+		// already in the log. Reading the counter as of `occurred_at` would score it
+		// against a value the engine never saw, and a replay walking log-time order
+		// would then compute something different from live.
+		const couple = await ladder();
+		const backdated = Date.now();
+		for (let i = 0; i < 10; i += 1) {
+			advance(HOUR);
+			await logInfraction(couple);
+		}
+		advance(HOUR);
+		await logInfraction(couple, backdated - DAY);
+
+		const live = await counters(couple);
+		expect(live).toMatchObject({ demerits: 11, escalations: 1 });
+
+		await couple.do.rebuildCounters(DOM);
+		expect(await counters(couple)).toEqual(live);
+	});
+
+	it("stays stable across repeated rebuilds", async () => {
+		const couple = await ladder();
+		for (let i = 0; i < 12; i += 1) {
+			advance(HOUR);
+			await logInfraction(couple);
+		}
+		await couple.do.rebuildCounters(DOM);
+		const once = await counters(couple);
+		await couple.do.rebuildCounters(DOM);
+		expect(await counters(couple)).toEqual(once);
+	});
+
+	it("does not change its answer when the rules are declared the other way round", async () => {
+		// Rule order within an event is an authoring accident, and it must not be a
+		// semantic one. The context is built once, before any effect lands, so both
+		// orders read the same pre-event score.
+		async function outcome(escalateFirst: boolean) {
+			const couple = await activeCouple();
+			await couple.do.createCounter(DOM, {
+				name: "Escalations",
+				valence: "negative",
+				target_direction: "floor",
+				reset: "never",
+				modify_permission: ["dom", "sub", "switch"],
+			});
+			const tally = {
+				id: "custom-tally",
+				name: "Every infraction counts",
+				condition: { type: "infraction", metadata: {} },
+				effects: [{ verb: "increment_counter", counter: "demerits", by: 1 }],
+			} as const;
+			const escalate = {
+				id: "custom-escalate",
+				name: "Escalate at three",
+				condition: {
+					type: "infraction",
+					metadata: {},
+					counter_value: { demerits: { op: "gte", value: 3 } },
+				},
+				effects: [{ verb: "increment_counter", counter: "escalations", by: 1 }],
+			} as const;
+			for (const rule of escalateFirst
+				? [escalate, tally]
+				: [tally, escalate]) {
+				await couple.do.createRule(DOM, rule);
+			}
+			for (let i = 0; i < 4; i += 1) {
+				advance(HOUR);
+				await logInfraction(couple);
+			}
+			return counters(couple);
+		}
+		const tallyFirst = await outcome(false);
+		const escalateFirst = await outcome(true);
+		expect(escalateFirst).toEqual(tallyFirst);
+		expect(tallyFirst).toMatchObject({ demerits: 4, escalations: 1 });
+	});
+
+	it("skips a routed magnitude with nothing to route, and says so", async () => {
+		const couple = await activeCouple();
+		await couple.do.createEventType(DOM, {
+			id: "penalty",
+			label: "Penalty",
+			valence: "negative",
+			log_permission: ["dom", "switch"],
+			subject_required: true,
+			metadata: {
+				// Whole and floored at zero — the two things a routed magnitude's
+				// field must declare (ADR 0015). Optional, which is what makes the
+				// skip below reachable at all.
+				weight: {
+					kind: "number",
+					integer: true,
+					min: 0,
+					label: "Weight",
+					required: false,
+					set_permission: ["dom", "switch"],
+				},
+			},
+			awaiting: [],
+		});
+		await couple.do.createRule(DOM, {
+			id: "custom-weighted",
+			name: "Weighted penalty",
+			condition: { type: "penalty", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "weight",
+				},
+			],
+		});
+
+		advance(HOUR);
+		const routed = await couple.do.logEvent(DOM, {
+			type: "penalty",
+			metadata: { weight: 3 },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		expect((await counters(couple)).demerits).toBe(3);
+		expect(await eventTrace(couple, routed.id)).toContainEqual(
+			expect.objectContaining({ kind: "counter", by: 3, from: 0, to: 3 }),
+		);
+
+		// The optional field left blank — the case that cannot move to authoring
+		// time. The counter does not move at all: not by `by`, which would print
+		// `+1` for a rule its author believed was proportional.
+		advance(HOUR);
+		const blank = await couple.do.logEvent(DOM, {
+			type: "penalty",
+			metadata: {},
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		expect((await counters(couple)).demerits).toBe(3);
+		expect(await eventTrace(couple, blank.id)).toContainEqual({
+			kind: "counter_skipped",
+			reason: "custom-weighted skipped: no whole number at 'weight'",
+			op: "increment",
+			key: "weight",
+		});
+
+		// And the skip replays: a rebuild files the same note and moves nothing.
+		await couple.do.rebuildCounters(DOM);
+		expect((await counters(couple)).demerits).toBe(3);
+		expect(await eventTrace(couple, blank.id)).toContainEqual(
+			expect.objectContaining({ kind: "counter_skipped" }),
+		);
+	});
+
+	/**
+	 * Both ways a field can fail to be a magnitude, refused at the DO boundary
+	 * rather than at runtime (ADR 0015) — so the refusal is proven to reach
+	 * `createRule` and not merely to exist in `validateRule`.
+	 */
+	async function coupleWithMeasured(
+		declared: Record<string, unknown>,
+	): Promise<ActiveCouple> {
+		const couple = await activeCouple();
+		await couple.do.createEventType(DOM, {
+			id: "measured",
+			label: "Measured",
+			valence: "neutral",
+			log_permission: ["dom", "switch"],
+			subject_required: false,
+			metadata: {
+				amount: {
+					kind: "number",
+					label: "Amount",
+					required: false,
+					set_permission: ["dom", "switch"],
+					...declared,
+				},
+			},
+			awaiting: [],
+		});
+		return couple;
+	}
+
+	function measuredRule(couple: ActiveCouple) {
+		return couple.do.createRule(DOM, {
+			id: "custom-measured",
+			name: "Measured penalty",
+			condition: { type: "measured", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "demerits",
+					by: 1,
+					by_from: "amount",
+				},
+			],
+		});
+	}
+
+	it("refuses a fractional routed magnitude at rule creation, not at runtime", async () => {
+		const couple = await coupleWithMeasured({ min: 0 });
+		await expect(measuredRule(couple)).rejects.toThrow(/declared integer/);
+	});
+
+	it("refuses a routed magnitude whose field permits a negative", async () => {
+		// The verb carries the direction. Without a declared floor, `amount: -3`
+		// would make this `increment_counter` subtract — the rule's own verb and
+		// the counter disagreeing, with the logger overriding the rule's author.
+		const couple = await coupleWithMeasured({ integer: true });
+		await expect(measuredRule(couple)).rejects.toThrow(/min 0 or higher/);
+	});
+
+	it("accepts one whose field is whole and floored at zero", async () => {
+		const couple = await coupleWithMeasured({ integer: true, min: 0 });
+		await expect(measuredRule(couple)).resolves.toBeDefined();
+	});
+});
+
+/**
+ * A cap target (ADR 0015) — the mercy counterpart, and the reason the ADR could
+ * refuse an anchor clause. Without it there is no clean-streak counter for a
+ * `counter_value` clause to read.
+ */
+describe("a cap target folds a clean streak", () => {
+	async function cleanStreak(): Promise<ActiveCouple> {
+		const couple = await activeCouple();
+		// "Infractions today", capped at zero and cleared each day: met by a day
+		// with none, which a floor target could never express.
+		await couple.do.createCounter(DOM, {
+			name: "Infractions today",
+			valence: "negative",
+			daily_target: 0,
+			target_direction: "cap",
+			reset: "daily",
+			modify_permission: ["dom", "sub", "switch"],
+		});
+		await couple.do.createCounter(DOM, {
+			name: "Clean days",
+			valence: "positive",
+			target_direction: "floor",
+			reset: "never",
+			streak: { counter: "infractions_today", period: "daily" },
+			modify_permission: ["dom", "sub", "switch"],
+		});
+		await couple.do.createRule(DOM, {
+			id: "custom-count-infractions",
+			name: "Count today's infractions",
+			condition: { type: "infraction", metadata: {} },
+			effects: [
+				{ verb: "increment_counter", counter: "infractions_today", by: 1 },
+			],
+		});
+		return couple;
+	}
+
+	it("grows across a quiet week and breaks on the first infraction", async () => {
+		const couple = await cleanStreak();
+
+		// Seven quiet days. A floor target of 0 would be trivially met and so would
+		// look identical here — the next assertion is what separates them.
+		await advanceFiringAlarms(couple, 7 * DAY);
+		expect((await counters(couple)).clean_days).toBe(7);
+
+		// One infraction, then the boundary: the cap is exceeded, so the fold
+		// breaks the streak rather than continuing it.
+		await couple.do.logEvent(SUB, {
+			type: "infraction",
+			metadata: { severity: "minor", self_reported: true },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		expect((await counters(couple)).infractions_today).toBe(1);
+		await advanceFiringAlarms(couple, DAY);
+		expect((await counters(couple)).clean_days).toBe(0);
+
+		// And it starts over from the next quiet day, so the mercy path is a path.
+		await advanceFiringAlarms(couple, DAY);
+		expect((await counters(couple)).clean_days).toBe(1);
+	});
+
+	it("rebuilds the same streak it folded live", async () => {
+		const couple = await cleanStreak();
+		await advanceFiringAlarms(couple, 3 * DAY);
+		await couple.do.logEvent(SUB, {
+			type: "infraction",
+			metadata: { severity: "minor", self_reported: true },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		await advanceFiringAlarms(couple, 2 * DAY);
+		const live = await counters(couple);
+
+		await couple.do.rebuildCounters(DOM);
+		// The fold resolves the direction off the counter version in force for each
+		// boundary (ADR 0013), so a replay scores each past day the way the couple
+		// actually lived it.
+		expect(await counters(couple)).toEqual(live);
 	});
 });

@@ -85,6 +85,9 @@ export const BUILTIN_EVENT_TYPES: EventType[] = [
 			},
 			delta: {
 				kind: "number",
+				// A counter delta is whole by construction (`adjustCounterInputSchema`
+				// is `z.number().int()`), so the field says so (ADR 0015).
+				integer: true,
 				label: "Delta",
 				required: true,
 				set_permission: ["dom", "sub", "switch"],

@@ -3,6 +3,7 @@ import {
 	evaluateRules,
 	matchRule,
 	NO_ACTIVE_TIMERS,
+	NO_COUNTER_VALUES,
 	type RuleEventContext,
 	reevaluate,
 	unfired,
@@ -22,7 +23,13 @@ function ctx(
 	type: string,
 	metadata: RuleEventContext["metadata"] = {},
 ): RuleEventContext {
-	return { type, metadata, occurred_at: 1000, active_timers: NO_ACTIVE_TIMERS };
+	return {
+		type,
+		metadata,
+		occurred_at: 1000,
+		active_timers: NO_ACTIVE_TIMERS,
+		counter_values: NO_COUNTER_VALUES,
+	};
 }
 
 describe("condition matching (handoff §4.3)", () => {
@@ -162,6 +169,7 @@ describe("evaluateRules", () => {
 			metadata: { outcome: "full" },
 			occurred_at: 1,
 			active_timers: NO_ACTIVE_TIMERS,
+			counter_values: NO_COUNTER_VALUES,
 			awaiting: ["permitted"],
 		});
 		// RN is a wrong-value miss on `outcome` (set, not awaiting) — dropped.
@@ -348,6 +356,7 @@ describe("subject-role qualifier (ADR 0003)", () => {
 			occurred_at: 1000,
 			subject_role: subjectRole,
 			active_timers: NO_ACTIVE_TIMERS,
+			counter_values: NO_COUNTER_VALUES,
 		};
 	}
 
@@ -457,6 +466,7 @@ describe("ambient-state predicate (ADR 0011)", () => {
 			metadata,
 			occurred_at: 1000,
 			active_timers: new Set(active),
+			counter_values: NO_COUNTER_VALUES,
 		};
 	}
 
@@ -517,6 +527,32 @@ describe("ambient-state predicate (ADR 0011)", () => {
 			matchRule(both, ambientCtx(["denial_period", "session_stopwatch"]))
 				.status,
 		).toBe("near_miss");
+	});
+
+	it("names every unmet clause in one row rather than picking one", () => {
+		// What "sole miss" scopes over: the *kind* of miss, not the count of
+		// clauses. Two unmet ambient clauses have always been comma-joined into a
+		// single reason, and this pins it — the behaviour predates the counter-value
+		// predicate and is what licenses that clause joining the same row (ADR 0015).
+		//
+		// The alternative reading, suppressing each miss because another also
+		// missed, would leave this rule filing nothing at all: it would fail to fire
+		// and record no reason, which is the silence a near-miss exists to prevent.
+		const both = rule({
+			id: "Rpair",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: true, session_stopwatch: true },
+			},
+		});
+		expect(matchRule(both, ambientCtx([]))).toEqual({
+			status: "near_miss",
+			reason:
+				"Rpair didn't fire: denial_period not active, session_stopwatch not active",
+			awaiting: [],
+			state_mismatch: true,
+		});
 	});
 
 	it("a rule with no clause is unaffected by ambient state", () => {
@@ -619,5 +655,208 @@ describe("comparison clauses (ADR 0011)", () => {
 		expect(matchRule(lowMood, ctx("check_in", { mood: "low" })).status).toBe(
 			"near_miss",
 		);
+	});
+});
+
+/**
+ * The counter-value predicate (ADR 0015). The clause mirrors `timer_active` down to the
+ * resolution seam, so these mirror the ambient-state cases above — with one
+ * addition the timer has no counterpart for: a counter the caller did not
+ * resolve is *unknown*, and unknown is not zero.
+ */
+describe("the counter-value predicate (ADR 0015)", () => {
+	const escalate = rule({
+		id: "R30",
+		condition: {
+			type: "infraction",
+			metadata: {},
+			counter_value: { demerits: { op: "gte", value: 10 } },
+		},
+	});
+
+	function scored(values: Record<string, number>): RuleEventContext {
+		return {
+			...ctx("infraction"),
+			counter_values: new Map(Object.entries(values)),
+		};
+	}
+
+	it("fires when the counter satisfies the comparison", () => {
+		expect(matchRule(escalate, scored({ demerits: 10 }))).toEqual({
+			status: "fired",
+		});
+	});
+
+	it("near-misses with the value, and never awaits a ruling", () => {
+		// No ruling on any metadata key makes the score have been 10, so promising
+		// the adjudication queue a resolution would be a lie — the same reasoning
+		// that keeps an ambient-state miss out of `awaiting`.
+		expect(matchRule(escalate, scored({ demerits: 9 }))).toEqual({
+			status: "near_miss",
+			reason: "R30 didn't fire: demerits is 9, needs >= 10",
+			awaiting: [],
+			state_mismatch: true,
+		});
+	});
+
+	it("treats a counter nobody resolved as unknown, not as zero", () => {
+		// Zero would let "while demerits are under 5" fire on a counter no caller
+		// read — a rule scoring on a number that was never true.
+		const lenient = rule({
+			id: "R31",
+			condition: {
+				type: "infraction",
+				metadata: {},
+				counter_value: { demerits: { op: "lt", value: 5 } },
+			},
+		});
+		expect(matchRule(lenient, ctx("infraction"))).toEqual({
+			status: "near_miss",
+			reason: "R31 didn't fire: demerits is unknown, needs < 5",
+			awaiting: [],
+			state_mismatch: true,
+		});
+	});
+
+	it("reports a metadata miss over a score miss", () => {
+		// A state miss is only worth a row when it was the sole reason: the
+		// metadata is the part a reader can act on, and the converse would file
+		// "demerits is 0" against every routine event of the type.
+		const both = rule({
+			id: "R32",
+			condition: {
+				type: "infraction",
+				metadata: { severity: "major" },
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			},
+		});
+		expect(matchRule(both, scored({ demerits: 0 }))).toEqual({
+			status: "near_miss",
+			reason: "R32 didn't fire: severity not set",
+			awaiting: ["severity"],
+		});
+	});
+
+	it("says both things in one row when only state missed", () => {
+		// The same shape two unmet *ambient* clauses have always taken (see "names
+		// every unmet clause in one row"), extended to the pair. "Sole miss" is
+		// about metadata-vs-state, and the metadata held here.
+		const both = rule({
+			id: "R33",
+			condition: {
+				type: "orgasm",
+				metadata: {},
+				timer_active: { denial_period: true },
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			},
+		});
+		expect(
+			matchRule(both, {
+				...ctx("orgasm"),
+				counter_values: new Map([["demerits", 2]]),
+			}),
+		).toEqual({
+			status: "near_miss",
+			reason:
+				"R33 didn't fire: denial_period not active, demerits is 2, needs >= 10",
+			awaiting: [],
+			state_mismatch: true,
+		});
+	});
+
+	it("reads one score for every rule on the event, whatever the order", () => {
+		// The context is built once, before any effect lands, so a rule that reads
+		// `demerits` and a rule that increments it cannot see each other — and the
+		// answer does not depend on which is listed first.
+		const reader = rule({
+			id: "R-read",
+			condition: {
+				type: "infraction",
+				metadata: {},
+				counter_value: { demerits: { op: "gte", value: 10 } },
+			},
+			effects: [{ verb: "increment_counter", counter: "escalations", by: 1 }],
+		});
+		const writer = rule({
+			id: "R-write",
+			condition: { type: "infraction", metadata: {} },
+			effects: [{ verb: "increment_counter", counter: "demerits", by: 1 }],
+		});
+		const at9 = scored({ demerits: 9 });
+		// The infraction that crosses 10 does not escalate itself, in either order.
+		expect(
+			evaluateRules([reader, writer], at9).fired.map((f) => f.rule_id),
+		).toEqual(["R-write"]);
+		expect(
+			evaluateRules([writer, reader], at9).fired.map((f) => f.rule_id),
+		).toEqual(["R-write"]);
+	});
+});
+
+/** A routed magnitude (ADR 0015) — `by_from`, and what it does with nothing. */
+describe("by_from — a routed magnitude", () => {
+	const weighted = rule({
+		id: "R34",
+		condition: { type: "infraction", metadata: {} },
+		effects: [
+			{
+				verb: "increment_counter",
+				counter: "demerits",
+				by: 1,
+				by_from: "weight",
+			},
+		],
+	});
+
+	it("routes the event's number as the amount", () => {
+		expect(
+			evaluateRules([weighted], ctx("infraction", { weight: 3 })).fired,
+		).toEqual([
+			{
+				rule_id: "R34",
+				ops: [{ kind: "counter", counter: "demerits", op: "increment", by: 3 }],
+			},
+		]);
+	});
+
+	it("skips rather than falling back to `by` when the key is absent", () => {
+		// Falling back would make the trace read `+1` for a rule its author
+		// believed was proportional — the failure ADR 0015 declined by name.
+		expect(evaluateRules([weighted], ctx("infraction")).fired).toEqual([
+			{
+				rule_id: "R34",
+				ops: [
+					{
+						kind: "skipped",
+						counter: "demerits",
+						op: "increment",
+						key: "weight",
+					},
+				],
+			},
+		]);
+	});
+
+	it("skips a fraction rather than rounding it", () => {
+		// Unreachable through `validateRule`, which refuses a `by_from` on a field
+		// not declared integer. Refused here anyway rather than trusted: rounding
+		// would invent a number nobody wrote.
+		expect(
+			evaluateRules([weighted], ctx("infraction", { weight: 2.5 })).fired[0]
+				?.ops,
+		).toEqual([
+			{ kind: "skipped", counter: "demerits", op: "increment", key: "weight" },
+		]);
+	});
+
+	it("leaves an effect without `by_from` on its literal", () => {
+		const plain = rule({
+			id: "R35",
+			condition: { type: "infraction", metadata: {} },
+			effects: [{ verb: "decrement_counter", counter: "demerits", by: 2 }],
+		});
+		expect(evaluateRules([plain], ctx("infraction")).fired[0]?.ops).toEqual([
+			{ kind: "counter", counter: "demerits", op: "decrement", by: 2 },
+		]);
 	});
 });

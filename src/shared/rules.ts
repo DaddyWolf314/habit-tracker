@@ -60,8 +60,11 @@ export const ruleConditionSchema = z.object({
 	/** Constraints on composite metadata. Empty ⇒ matches on type alone. */
 	metadata: z.record(z.string(), conditionClauseSchema).default({}),
 	/**
-	 * Ambient-state predicate (ADR 0011) — the one state query the language
-	 * admits, and the extension #48 reserved. Maps a **timer definition** to
+	 * Ambient-state predicate (ADR 0011) — the first of the two state queries the
+	 * language admits, and the extension #48 reserved. (The second is
+	 * {@link ruleConditionSchema.counter_value}, admitted by ADR 0015; ADR 0011's
+	 * other refusals — elapsed time, log lookback, a timer's remaining time — all
+	 * stand.) Maps a **timer definition** to
 	 * whether an instance of it must be open: `{ denial_period: true }` matches
 	 * while a denial is running, `{ session_stopwatch: false }` only outside a
 	 * session. Empty ⇒ matches regardless of ambient state.
@@ -82,6 +85,41 @@ export const ruleConditionSchema = z.object({
 	 * {@link ambientClauses} so the three consumers agree on that.
 	 */
 	timer_active: z.record(z.string(), z.boolean()).optional(),
+	/**
+	 * The counter-value predicate (ADR 0015) — `{ demerits: { op: "gte", value: 10 } }`.
+	 * Maps a **counter definition** to a {@link comparisonClauseSchema} over its
+	 * value, so the language gains a map rather than an expression grammar: the
+	 * same clause ADR 0011 admitted for metadata, pointed at a projection.
+	 *
+	 * ADR 0011 refused counter thresholds *pending #47* rather than on principle,
+	 * on the grounds that an escalation ladder was the scoring layer wearing a
+	 * condition-language costume. #47 decided that a ladder splits in two — a
+	 * crossing is surfaced to people, and escalation is ordinary rules that read
+	 * the score — so the costume comes off and the clause is admitted on its own
+	 * terms. Nothing else on that refusal list moves.
+	 *
+	 * Two semantics are load-bearing, and both are the engine's, not the caller's
+	 * to reinterpret:
+	 *
+	 * **The clock is evaluation-time** — log-time on append, ruling-time on
+	 * re-evaluation. A counter's past value *is* reconstructible (every move
+	 * traces `from`/`to`), but those rows are stamped at `logged_at`, never at
+	 * `occurred_at`, and deliberately: an `occurred_at` reading would let a
+	 * backfill change what a rule saw for an already-processed event, so a rebuild
+	 * would diverge from live and ADR 0012's invariant would break silently.
+	 *
+	 * **It reads the score before this event's own effects.** One pass, over the
+	 * state as it stood before the event landed — exactly as `timer_active` sees a
+	 * denial period as active while the rule beside it closes that very denial as
+	 * failed. So the infraction that crosses 10 does not escalate itself; the next
+	 * one does.
+	 *
+	 * Resolved by the *caller* into `RuleEventContext.counter_values`, like
+	 * `timer_active` and `subject_role`, so the engine stays storage-free and the
+	 * dom's confirm-sheet preview and the DO agree by construction. Read it
+	 * through {@link counterClauses}.
+	 */
+	counter_value: z.record(z.string(), comparisonClauseSchema).optional(),
 });
 export type RuleCondition = z.infer<typeof ruleConditionSchema>;
 
@@ -92,6 +130,18 @@ export type RuleCondition = z.infer<typeof ruleConditionSchema>;
  */
 export function ambientClauses(condition: RuleCondition): [string, boolean][] {
 	return Object.entries(condition.timer_active ?? {});
+}
+
+/**
+ * A condition's counter-value clauses, as entries (ADR 0015) — the
+ * counterpart to {@link ambientClauses}, and here for the same reason: the
+ * engine, the validator, and the describer must not drift on what an absent map
+ * means.
+ */
+export function counterClauses(
+	condition: RuleCondition,
+): [string, ComparisonClause][] {
+	return Object.entries(condition.counter_value ?? {});
 }
 
 /** A ref match, e.g. `timer.task_id = event.task_id`, expressed as timer→event keys. */
@@ -116,6 +166,29 @@ export const TIMER_CLOSE_STATUSES: readonly TimerCloseStatus[] =
 	timerCloseStatusSchema.options;
 
 /**
+ * A **routed magnitude** (ADR 0015): the metadata key whose number becomes a
+ * counter effect's amount, so "+2 for a major infraction" is one rule rather than
+ * one rule per severity. Routing, not computation — the same shape `open_timer`'s
+ * `duration_from` already uses, and the rule still never calculates anything.
+ *
+ * Present ⇒ it **replaces** `by` rather than seeding it. `by` carries a schema
+ * default of 1, so there is no post-parse way to tell "author wrote by: 1" from
+ * "author wrote nothing", and falling back to it when the routed value is missing
+ * would make the trace read `+1` for a rule its author believed was proportional.
+ * The effect skips instead (see `resolveEffect`).
+ *
+ * The key must name a field that can hold a magnitude ({@link validateRule}):
+ * declared `integer: true`, so a `2.5` can never reach an integer counter, and
+ * declared `min` at 0 or above, so a routed `-3` cannot make an
+ * `increment_counter` subtract. The verb carries the direction; this carries only
+ * the amount.
+ *
+ * The *absent* case cannot move to authoring time — a validly-declared field may
+ * be optional and left blank — and is handled at runtime, once, in the engine.
+ */
+const byFromSchema = z.string().optional();
+
+/**
  * Effect verbs — the complete v1 set. Rules route values; they never compute
  * them. Multiple effects per rule (effects is a list).
  */
@@ -126,11 +199,13 @@ export const effectSchema = z.discriminatedUnion("verb", [
 		// Integer only — counter values are integers (counterSchema.value.int()); a
 		// fractional `by` would drive the cache non-integer and break reads/export.
 		by: z.number().int().default(1),
+		by_from: byFromSchema,
 	}),
 	z.object({
 		verb: z.literal("decrement_counter"),
 		counter: z.string(),
 		by: z.number().int().default(1),
+		by_from: byFromSchema,
 	}),
 	z.object({ verb: z.literal("reset_counter"), counter: z.string() }),
 	z.object({ verb: z.literal("reset_anchor"), anchor: z.string() }),

@@ -21,6 +21,7 @@ import type {
 	Counter,
 	CounterReset,
 	CreateCounterBody,
+	TargetDirection,
 } from "#/shared/counters.ts";
 import type { Valence } from "#/shared/roles.ts";
 import type { CounterTrace } from "#/shared/trace.ts";
@@ -47,12 +48,30 @@ const STREAK_PERIOD_OPTIONS: { value: "daily" | "weekly"; label: string }[] = [
 	{ value: "weekly", label: "Weekly" },
 ];
 
+/**
+ * Which way a target is met (ADR 0015). Worded as the question the couple is
+ * actually answering rather than as the enum — "at least" and "at most" are the
+ * words the rules editor's comparison picker already uses for the same idea.
+ */
+const DIRECTION_OPTIONS: { value: TargetDirection; label: string }[] = [
+	{ value: "floor", label: "At least the target" },
+	{ value: "cap", label: "At most the target" },
+];
+
 type CounterKind = "tally" | "streak";
 
-/** Parses a target field: a positive integer, or undefined when blank/invalid. */
+/**
+ * Parses a target field: a non-negative integer, or undefined when blank/invalid.
+ *
+ * Zero is admitted (ADR 0015) because a **cap** of 0 is the mercy path — "a day
+ * with no infractions" — and refusing it here would have quietly dropped the
+ * field and saved a counter with no target at all. A floor of 0 is legal and
+ * trivially met, which is meaningless rather than harmful; the form does not
+ * police it, and the direction picker beside it is what makes the intent legible.
+ */
 function parseTarget(raw: string): number | undefined {
 	const n = Number(raw);
-	return raw.trim() !== "" && Number.isInteger(n) && n > 0 ? n : undefined;
+	return raw.trim() !== "" && Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
 /** The one-line policy summary under a counter's name — its cadence, any targets,
@@ -69,10 +88,14 @@ function describeCounter(
 	const parts = [
 		counter.reset === "never" ? "lifetime" : `resets ${counter.reset}`,
 	];
+	// The direction rides *inside* the target phrase rather than as a fourth part
+	// (ADR 0015): "daily target 0" alone reads as a counter nobody finished
+	// configuring, and the whole point of a cap is that 0 is the goal.
+	const aim = counter.target_direction === "cap" ? "at most" : "at least";
 	if (counter.daily_target != null)
-		parts.push(`daily target ${counter.daily_target}`);
+		parts.push(`daily target ${aim} ${counter.daily_target}`);
 	if (counter.weekly_target != null)
-		parts.push(`weekly target ${counter.weekly_target}`);
+		parts.push(`weekly target ${aim} ${counter.weekly_target}`);
 	return parts.join(" · ");
 }
 
@@ -118,6 +141,7 @@ export function CountersPanel({
 	const [valence, setValence] = useState<Valence>("neutral");
 	const [dailyTarget, setDailyTarget] = useState("");
 	const [weeklyTarget, setWeeklyTarget] = useState("");
+	const [direction, setDirection] = useState<TargetDirection>("floor");
 	const [streakCounter, setStreakCounter] = useState("");
 	const [streakPeriod, setStreakPeriod] = useState<"daily" | "weekly">("daily");
 
@@ -141,6 +165,7 @@ export function CountersPanel({
 		setValence("neutral");
 		setDailyTarget("");
 		setWeeklyTarget("");
+		setDirection("floor");
 		setStreakCounter("");
 		setStreakPeriod("daily");
 		setCreating(false);
@@ -159,6 +184,7 @@ export function CountersPanel({
 			setReset("never");
 			setDailyTarget("");
 			setWeeklyTarget("");
+			setDirection("floor");
 		} else {
 			setKind("tally");
 			setReset(counter.reset);
@@ -168,6 +194,7 @@ export function CountersPanel({
 			setWeeklyTarget(
 				counter.weekly_target != null ? String(counter.weekly_target) : "",
 			);
+			setDirection(counter.target_direction);
 			setStreakCounter("");
 			setStreakPeriod("daily");
 		}
@@ -191,6 +218,7 @@ export function CountersPanel({
 			body.reset = reset;
 			body.daily_target = parseTarget(dailyTarget);
 			body.weekly_target = parseTarget(weeklyTarget);
+			body.target_direction = direction;
 		}
 		const id = editing;
 		await run(id ?? "__new__", async () => {
@@ -336,7 +364,7 @@ export function CountersPanel({
 								<Input
 									id={`${ids}-daily`}
 									type="number"
-									min="1"
+									min="0"
 									placeholder="none"
 									className="w-24"
 									value={dailyTarget}
@@ -348,12 +376,38 @@ export function CountersPanel({
 								<Input
 									id={`${ids}-weekly`}
 									type="number"
-									min="1"
+									min="0"
 									placeholder="none"
 									className="w-24"
 									value={weeklyTarget}
 									onChange={(e) => setWeeklyTarget(e.target.value)}
 								/>
+							</div>
+							{/* One direction for both targets (ADR 0015) — a counter is one
+							    kind of thing, and a daily floor beside a weekly cap describes
+							    no counter anyone wants. */}
+							<div className="flex flex-col gap-1 text-xs text-muted-foreground">
+								<span id={`${ids}-direction-label`}>Met by</span>
+								<Select
+									value={direction}
+									onValueChange={(v) => setDirection(v as TargetDirection)}
+								>
+									<SelectTrigger
+										size="sm"
+										id={`${ids}-direction`}
+										aria-labelledby={`${ids}-direction-label ${ids}-direction`}
+										className="w-44"
+									>
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										{DIRECTION_OPTIONS.map((o) => (
+											<SelectItem key={o.value} value={o.value}>
+												{o.label}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
 							</div>
 						</div>
 					) : (
@@ -416,8 +470,10 @@ export function CountersPanel({
 					{kind === "streak" && (
 						<p className="text-xs text-muted-foreground">
 							Each {streakPeriod === "daily" ? "day" : "week"} the streak grows
-							by 1 if the tracked counter hit its {streakPeriod} target, or
-							resets to 0 if it didn't.
+							by 1 if the tracked counter met its {streakPeriod} target, or
+							resets to 0 if it didn't. A counter whose target is a cap is met
+							by staying under it, which is how a streak counts clean{" "}
+							{streakPeriod === "daily" ? "days" : "weeks"}.
 						</p>
 					)}
 
