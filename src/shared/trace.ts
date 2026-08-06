@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { describeCitation, type VersionedAgreement } from "./agreements.ts";
 import type { EffectOp } from "./engine.ts";
+import { describeRewardCitation, type VersionedRewardItem } from "./rewards.ts";
 import { type MetadataValue, metadataValueSchema } from "./roles.ts";
 
 /**
@@ -155,6 +156,31 @@ export const traceDetailSchema = z.discriminatedUnion("kind", [
 		 * person was bound — and stored rather than left to the reader because the
 		 * counter's own chain view renders these rows without the events beside them.
 		 */
+		occurred_at: z.number().int(),
+		from: z.number(),
+		to: z.number(),
+	}),
+	/**
+	 * A currency crossed a **Price** going up (ADR 0017) — affordability, said in
+	 * the one vocabulary the app already has for passing a line.
+	 *
+	 * Its own `kind` beside `crossing` rather than a variant of it, because what it
+	 * cites differs: a rung names an **Agreement**, this names a **Reward item**,
+	 * and they resolve through different definitions. Everything else about it is
+	 * deliberately identical — upward only, one row per line passed, no effects, no
+	 * debt — because ADR 0017 asks affordability to *be* a crossing rather than a
+	 * second pressure surface, and a shape that drifted would make that untrue.
+	 *
+	 * The price is stored rather than re-read, exactly as the rung is: a later
+	 * reprice must not rewrite what a past announcement said the item cost.
+	 */
+	z.object({
+		kind: z.literal("price_crossing"),
+		/** What the item cost when the currency passed it. */
+		price: z.number().int(),
+		/** The item now affordable — its *name*, never a copy, resolves from this. */
+		reward_ref: z.string(),
+		/** The moment the cited item resolves against (the causing event's). */
 		occurred_at: z.number().int(),
 		from: z.number(),
 		to: z.number(),
@@ -589,6 +615,32 @@ export function traceCrossing(
 	};
 }
 
+/**
+ * A currency crossed a price (ADR 0017). Lands on the counter's own chain beside
+ * the move that crossed it and takes that move's cause, for the reason
+ * {@link traceCrossing} gives: it is the same fact about the same move, said in
+ * the store's terms rather than the ladder's.
+ */
+export function tracePriceCrossing(
+	cause: TraceCause,
+	at: number,
+	counterId: string,
+	info: {
+		price: number;
+		reward_ref: string;
+		occurred_at: number;
+		from: number;
+		to: number;
+	},
+): TraceEntry {
+	return {
+		cause,
+		at,
+		projection: `counter:${counterId}`,
+		detail: { kind: "price_crossing", ...info },
+	};
+}
+
 export function traceNotify(
 	cause: TraceCause,
 	at: number,
@@ -849,6 +901,8 @@ export function projectionName(projection: string | null): string {
  */
 export interface TraceContext {
 	agreements?: VersionedAgreement[];
+	/** The store a **price crossing** names its item through (ADR 0017). */
+	rewards?: VersionedRewardItem[];
 	/**
 	 * "Now", for the `(now: …)` half a renamed term renders. Defaults to the
 	 * crossing's own moment, which reads as "nothing has been renamed since".
@@ -927,6 +981,25 @@ export function describeTraceRow(
 				tone: "effect",
 				summary: `${prefix}${humanize(name)} crossed ${detail.rung}`,
 				note: cited,
+			};
+		}
+		case "price_crossing": {
+			// The item as it read **when the currency passed its price**, resolved the
+			// way a rung resolves its term. A later reprice writes a new version this
+			// reading never reaches, so a past announcement keeps announcing what it
+			// announced — which is the whole of ADR 0017's trust argument, in the one
+			// place a sub goes looking for it afterwards.
+			const cited =
+				describeRewardCitation(
+					context.rewards ?? [],
+					detail.reward_ref,
+					detail.occurred_at,
+					context.now ?? detail.occurred_at,
+				) ?? detail.reward_ref;
+			return {
+				tone: "effect",
+				summary: `${prefix}${humanize(name)} reached ${detail.price}`,
+				note: `${cited} — affordable`,
 			};
 		}
 		case "notify":

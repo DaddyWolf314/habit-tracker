@@ -15,6 +15,7 @@ import {
 	listEvents,
 	listEventTypes,
 	listOpenPrompts,
+	listRewardItems,
 	listRuleHistory,
 	listTimers,
 } from "#/lib/api.ts";
@@ -27,6 +28,7 @@ import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
+import type { VersionedRewardItem } from "#/shared/rewards.ts";
 import type { Role } from "#/shared/roles.ts";
 import { currentRule, type VersionedRule } from "#/shared/rules.ts";
 import type { TimerView } from "#/shared/timers.ts";
@@ -60,6 +62,9 @@ export function LogView() {
 	// `session_ended`/`task_completed` can name — so they refresh with the log.
 	const [timers, setTimers] = useState<TimerView[]>([]);
 	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
+	// The store feeds the composer's `reward_ref` picker and the chain view's
+	// price-crossing lines (#194, ADR 0017), so it refreshes with the log.
+	const [rewards, setRewards] = useState<VersionedRewardItem[]>([]);
 	const [error, setError] = useState<string | null>(null);
 	const [composerOpen, setComposerOpen] = useState(false);
 
@@ -74,6 +79,7 @@ export function LogView() {
 			{ prompts },
 			{ timers },
 			{ agreements },
+			{ rewards },
 		] = await Promise.all([
 			listEvents(),
 			listCounters(),
@@ -81,6 +87,7 @@ export function LogView() {
 			listOpenPrompts(),
 			listTimers(),
 			listAgreements(),
+			listRewardItems(),
 		]);
 		setEvents(events);
 		setCounters(counters);
@@ -88,6 +95,7 @@ export function LogView() {
 		setOpenPrompts(prompts);
 		setTimers(timers);
 		setAgreements(agreements);
+		setRewards(rewards);
 	}, []);
 
 	// Children fire this un-awaited after a mutation commits, so it must never
@@ -126,6 +134,7 @@ export function LogView() {
 				promptRes,
 				timerRes,
 				agreementRes,
+				rewardRes,
 			] = await Promise.all([
 				listEventTypes(),
 				listRuleHistory(),
@@ -136,6 +145,7 @@ export function LogView() {
 				listOpenPrompts(),
 				listTimers(),
 				listAgreements(),
+				listRewardItems(),
 			]);
 			setTypes(typeRes.types);
 			setRules(ruleRes.rules);
@@ -146,6 +156,7 @@ export function LogView() {
 			setOpenPrompts(promptRes.prompts);
 			setTimers(timerRes.timers);
 			setAgreements(agreementRes.agreements);
+			setRewards(rewardRes.rewards);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the log.");
 		}
@@ -210,6 +221,7 @@ export function LogView() {
 			<CountersSummary
 				counters={counters}
 				agreements={agreements}
+				rewards={rewards}
 				selfRole={selfRole}
 				onChange={refreshLog}
 			/>
@@ -218,6 +230,7 @@ export function LogView() {
 				events={events}
 				types={types}
 				agreements={agreements}
+				rewards={rewards}
 				members={members}
 				selfId={self?.member_id ?? null}
 				selfRole={selfRole}
@@ -243,6 +256,7 @@ export function LogView() {
 						rules={liveRules}
 						timers={timers}
 						agreements={agreements}
+						rewards={rewards}
 						onLogged={() => {
 							refreshLog();
 							setComposerOpen(false);
@@ -263,12 +277,15 @@ export function LogView() {
 function CountersSummary({
 	counters,
 	agreements,
+	rewards,
 	selfRole,
 	onChange,
 }: {
 	counters: Counter[];
 	/** Passed through for the rung editor's term picker (#193, ADR 0015). */
 	agreements: VersionedAgreement[];
+	/** Passed through so a price crossing on a chain names its item (#194). */
+	rewards: VersionedRewardItem[];
 	selfRole: Role | null;
 	onChange: () => void;
 }) {
@@ -297,6 +314,7 @@ function CountersSummary({
 					<CountersPanel
 						counters={counters}
 						agreements={agreements}
+						rewards={rewards}
 						selfRole={selfRole}
 						onChange={onChange}
 					/>

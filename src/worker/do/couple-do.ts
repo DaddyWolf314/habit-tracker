@@ -83,6 +83,7 @@ import {
 	anchorToExportRow,
 	counterToExportRow,
 	eventToExportRow,
+	rewardItemVersionToExportRow,
 	ruleToExportRow,
 	timerToExportRow,
 } from "#/shared/export.ts";
@@ -110,9 +111,11 @@ import {
 	AGREEMENT_CHANGE_ACTION_PREFIX,
 	agreementChangeAction,
 	awaitingMyRuling,
+	REWARD_CHANGE_ACTION_PREFIX,
 	RULE_CHANGE_ACTION_PREFIX,
 	type RuleChangeKind,
 	type RuleChangeNotice,
+	rewardChangeAction,
 	ruleChangeAction,
 	ruleChangeKindFromAction,
 	unreadCount,
@@ -135,6 +138,24 @@ import {
 	standingEffects,
 	waivedEffectOf,
 } from "#/shared/reversal.ts";
+import type {
+	CreateRewardItemInput,
+	ReviseRewardItemInput,
+	RewardItemVersion,
+	RewardWrite,
+	VersionedRewardItem,
+} from "#/shared/rewards.ts";
+import {
+	latestRewardItemVersion,
+	pricesCrossed,
+	REDEMPTION_REWARD_KEY,
+	rewardChangeKind,
+	rewardItemEffectiveAt,
+	rewardItemsInForce,
+	rewardRefKeys,
+	stampRedemption,
+	validateRewardWrite,
+} from "#/shared/rewards.ts";
 import {
 	type MetadataValue,
 	type Role,
@@ -217,6 +238,7 @@ import {
 	traceExpire,
 	traceNearMiss,
 	traceNotify,
+	tracePriceCrossing,
 	traceReversalDeclined,
 	traceScheduledReset,
 	traceStreakRollover,
@@ -1104,6 +1126,7 @@ export class CoupleDO extends DurableObject<Env> {
 				recovery_pending: recovery !== null && recovery.member_id === me.id,
 				rule_changes: this.ruleChangesUnseen(me.id),
 				agreement_changes: this.agreementChangesUnseen(me.id),
+				reward_changes: this.rewardChangesUnseen(me.id),
 				crossings: this.crossingsUnseen(me.id),
 			}),
 		};
@@ -1177,6 +1200,14 @@ export class CoupleDO extends DurableObject<Env> {
 				),
 			),
 			agreement_kinds: this.agreementKinds().map(agreementKindToExportRow),
+			// Flattened per version for the corpus's reason and one of its own: a
+			// redemption resolves to the price in force when it happened, so an export
+			// carrying only today's price could not explain what was already paid.
+			rewards: this.rewardItems().flatMap((item) =>
+				item.versions.map((version) =>
+					rewardItemVersionToExportRow(item.id, version, item.subject),
+				),
+			),
 			events,
 			amendments,
 			rules: this.currentRules().map(ruleToExportRow),
@@ -1858,6 +1889,177 @@ export class CoupleDO extends DurableObject<Env> {
 		return kind;
 	}
 
+	// ── The reward store (#194, ADR 0017) ─────────────────────────────────────
+
+	/**
+	 * The whole store with every version. Readable by both members
+	 * unconditionally, for the reason the corpus is: a price binds the person
+	 * saving toward it, and a store the sub cannot read is not one. There is no
+	 * visibility axis here either.
+	 */
+	async listRewardItems(identityHash: string): Promise<VersionedRewardItem[]> {
+		this.requireMember(identityHash);
+		return this.rewardItems();
+	}
+
+	/**
+	 * Adds a reward item. Authorship is `counterpart`-scoped (ADR 0010, ADR 0017):
+	 * about the sub, authored by the dom — so this goes through
+	 * {@link validateRewardWrite} rather than `requireAuthor`, which would ask the
+	 * wrong question (rule authoring is a role gate; this is a per-member one).
+	 */
+	async createRewardItem(
+		identityHash: string,
+		input: CreateRewardItemInput,
+	): Promise<VersionedRewardItem> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertRewardWrite(
+			{
+				op: "create",
+				name: input.name,
+				currency: input.currency,
+				price: input.price,
+				effective_from: input.effective_from,
+			},
+			me,
+		);
+		const id = ulid();
+		const at = Date.now();
+		// Derived, never supplied (ADR 0010), and frozen from here: a couple has
+		// exactly two members and the scope is `counterpart`, so the item is about
+		// the other one. There is no "who is this for?" question to ask.
+		const subject = subjectForNewAgreement(
+			"counterpart",
+			me.id,
+			this.members().map((member) => member.id),
+		);
+		this.sql.exec(
+			`INSERT INTO reward_items (id, subject, created_at) VALUES (?, ?, ?)`,
+			id,
+			subject ?? null,
+			at,
+		);
+		this.writeRewardItemVersion(id, {
+			effective_from: input.effective_from ?? at,
+			name: input.name,
+			terms: input.terms,
+			currency: input.currency,
+			price: input.price,
+			requires_grant: input.requires_grant,
+			retired: false,
+		});
+		this.recordRewardChange("create", me, id, at, {
+			name: input.name,
+			currency: input.currency,
+			price: input.price,
+		});
+		return this.requireRewardItem(id);
+	}
+
+	/**
+	 * Appends a version — a reprice, a rewording, or a change of grant policy.
+	 *
+	 * **This is the act ADR 0017 spends its trust argument on.** Never overwrites:
+	 * a redemption already made keeps the price stamped on it, and the version in
+	 * force when it happened stays resolvable. And it is never silent — see
+	 * {@link recordRewardChange}, which raises the partner's count and lands the
+	 * change in consent history, because a sub banking 80 toward a 50-point item is
+	 * relying on the price holding.
+	 */
+	async reviseRewardItem(
+		identityHash: string,
+		id: string,
+		input: ReviseRewardItemInput,
+	): Promise<VersionedRewardItem> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertRewardWrite(
+			{
+				op: "revise",
+				id,
+				name: input.name,
+				currency: input.currency,
+				price: input.price,
+				effective_from: input.effective_from,
+			},
+			me,
+		);
+		const at = Date.now();
+		this.writeRewardItemVersion(id, {
+			effective_from: input.effective_from ?? at,
+			name: input.name,
+			terms: input.terms,
+			currency: input.currency,
+			price: input.price,
+			requires_grant: input.requires_grant,
+			retired: false,
+		});
+		this.recordRewardChange("revise", me, id, at, {
+			name: input.name,
+			currency: input.currency,
+			price: input.price,
+		});
+		return this.requireRewardItem(id);
+	}
+
+	/**
+	 * Retires an item — the real "remove", effective-dated like every other change,
+	 * so a retired item leaves the picker and the store while staying readable and
+	 * resolvable for every redemption already made against it.
+	 */
+	async retireRewardItem(
+		identityHash: string,
+		id: string,
+		effectiveFrom?: number,
+	): Promise<VersionedRewardItem> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertRewardWrite({ op: "retire", id }, me);
+		const at = Date.now();
+		const last = latestRewardItemVersion(this.requireRewardItem(id));
+		this.writeRewardItemVersion(id, {
+			// After *every* existing version, not merely after now — an announced
+			// reprice dated ahead would otherwise resolve past the retirement and
+			// quietly put the item back on the shelf.
+			effective_from: Math.max(effectiveFrom ?? at, last.effective_from + 1),
+			// Carry the last terms forward: retiring ends an offer, it does not blank
+			// what the offer was.
+			name: last.name,
+			terms: last.terms,
+			currency: last.currency,
+			price: last.price,
+			requires_grant: last.requires_grant,
+			retired: true,
+		});
+		this.recordRewardChange("retire", me, id, at, null);
+		return this.requireRewardItem(id);
+	}
+
+	/**
+	 * Hard-deletes an item nothing has ever redeemed. The validator refuses any
+	 * that has been: what a redemption bought must not be able to leave the record,
+	 * so a redeemed item can only ever be retired.
+	 */
+	async deleteRewardItem(
+		identityHash: string,
+		id: string,
+	): Promise<{ id: string }> {
+		const me = this.requireLiveMember(identityHash);
+		this.assertRewardWrite({ op: "delete", id }, me);
+		const at = Date.now();
+		this.sql.exec(`DELETE FROM reward_item_versions WHERE reward_id = ?`, id);
+		this.sql.exec(`DELETE FROM reward_items WHERE id = ?`, id);
+		this.recordRewardChange("delete", me, id, at, null);
+		return { id };
+	}
+
+	/**
+	 * Marks the caller's store notices seen (#194) — the explicit acknowledgement
+	 * the store screen sends, kept out of the read so a GET never mutates.
+	 */
+	async ackRewardChanges(identityHash: string): Promise<void> {
+		const me = this.requireMember(identityHash);
+		this.setSetting(`rewards_seen_at_${me.id}`, String(Date.now()));
+	}
+
 	/**
 	 * Tracks a ritual Agreement (#121, stories 34–37): creates its target counter,
 	 * the streak folding it, and the rule pointing its citation at the counter.
@@ -2188,7 +2390,11 @@ export class CoupleDO extends DurableObject<Env> {
 			ulid(loggedAt),
 		);
 		if (!minted.ok) throw coupleError("BAD_REQUEST", minted.error);
-		const metadata = minted.metadata;
+		const metadata = this.stampRedemptionMetadata(
+			type,
+			minted.metadata,
+			input.occurred_at ?? loggedAt,
+		);
 		this.validateMetadata(
 			type,
 			metadata,
@@ -2260,6 +2466,77 @@ export class CoupleDO extends DurableObject<Env> {
 		// A freshly-appended event has no amendments yet, so composite == its own
 		// metadata; the shape is built the same way it is read back (handoff §4.2).
 		return deriveEventView(event, [], type, this.subjectRole(event.subject));
+	}
+
+	/**
+	 * Stamps a redemption's price, currency, and — for a self-serve item — its
+	 * grant, from the item version in force at the event's `occurred_at`
+	 * (ADR 0017). Every other type passes through untouched.
+	 *
+	 * **Before `validateMetadata`, deliberately**, which is the same position
+	 * `mintOriginatingRefs` occupies and for the same two reasons: the stamped keys
+	 * are `required` on the type, so validating first would refuse an event for
+	 * missing what the server is about to supply; and the values then go through
+	 * the ordinary value check rather than around it. The `set_permission` these
+	 * three fields declare is correspondingly wide — a sub logs their own
+	 * redemption — and it is not the guard. {@link stampRedemption} is: it refuses
+	 * a client-supplied price outright rather than overwriting it, exactly as
+	 * minting refuses a client-supplied ref, so a wide `set_permission` on a
+	 * server-owned key cannot become a way to set it.
+	 *
+	 * The `occurred_at` clock is the citing-ref clock (ADR 0006), not the log's:
+	 * backdating a redemption to last week quotes last week's price, because that
+	 * is what the item cost when the thing happened.
+	 *
+	 * The affordability refusal is the one rule here with no direct ADR line.
+	 * `applyCounterOp` has no floor, so without it a sub could redeem a 100-point
+	 * item holding 10 and drive the currency to −90 — a store that sells what you
+	 * cannot buy, and a balance the ladder would then announce crossings out of.
+	 * It is checked **only at append**: whether the dom grants a request later is
+	 * the dom's call, and re-checking at the ruling would put the spend back on a
+	 * path that can fail after the fact, which is precisely what riding the
+	 * `unset → set` transition exists to avoid.
+	 */
+	private stampRedemptionMetadata(
+		type: EventType,
+		metadata: Record<string, MetadataValue>,
+		occurredAt: number,
+	): Record<string, MetadataValue> {
+		const keys = rewardRefKeys(type);
+		if (keys.length === 0) return metadata;
+		// The pack declares exactly one, and a couple's own type citing the store
+		// gets the picker without the stamp — the stamped keys are pack vocabulary
+		// (see `REDEMPTION_PRICE_KEY`), so a second citing key has nothing to say
+		// about which of them it prices.
+		const id = metadata[REDEMPTION_REWARD_KEY];
+		if (keys[0] !== REDEMPTION_REWARD_KEY || typeof id !== "string") {
+			return metadata;
+		}
+		const item = this.rewardItems().find((i) => i.id === id);
+		if (!item) throw coupleError("BAD_REQUEST", "no such reward");
+		const version = rewardItemEffectiveAt(item, occurredAt);
+		if (!version) {
+			throw coupleError(
+				"BAD_REQUEST",
+				"that reward wasn't on offer when this happened",
+			);
+		}
+		if (version.retired) {
+			throw coupleError("BAD_REQUEST", "that reward has been retired");
+		}
+		const balance = this.counterById(version.currency)?.value ?? 0;
+		if (balance < version.price) {
+			throw coupleError(
+				"BAD_REQUEST",
+				`that costs ${version.price} and you have ${balance}`,
+			);
+		}
+		const stamped = stampRedemption(
+			metadata as Record<string, string | number | boolean>,
+			version,
+		);
+		if (!stamped.ok) throw coupleError("BAD_REQUEST", stamped.error);
+		return stamped.metadata;
 	}
 
 	/**
@@ -3232,10 +3509,12 @@ export class CoupleDO extends DurableObject<Env> {
 			)
 			.toArray()
 			.map(decodeTraceRow);
-		// The corpus, so a crossing on this chain names the term rather than its ref
-		// (ADR 0015). The support surface is the last place an opaque id belongs.
+		// The corpus and the store, so a crossing on this chain names the term (ADR
+		// 0015) and a price crossing names the item (ADR 0017) rather than either
+		// ref. The support surface is the last place an opaque id belongs.
 		const explanation = explainProjection(projection, rows, {
 			agreements: this.agreements(),
+			rewards: this.rewardItems(),
 			now: Date.now(),
 		});
 
@@ -3382,12 +3661,57 @@ export class CoupleDO extends DurableObject<Env> {
 		rungs?: CounterRung[],
 	): void {
 		const ladder = rungs ?? this.rungsAt(counterId, at);
-		if (ladder.length === 0) return;
 		for (const rung of rungsCrossed(ladder, move.from, move.to)) {
 			this.writeTrace(
 				traceCrossing(cause, at, counterId, {
 					rung: rung.at,
 					agreement_ref: rung.agreement_ref,
+					occurred_at: move.occurred_at,
+					from: move.from,
+					to: move.to,
+				}),
+			);
+		}
+		this.announcePriceCrossings(cause, at, counterId, move);
+	}
+
+	/**
+	 * Files a `price_crossing` row for every reward item this move made affordable
+	 * (ADR 0017) — the store's half of the announcement, beside the ladder's.
+	 *
+	 * It rides {@link announceCrossings} rather than sitting anywhere else, and
+	 * that placement *is* the ADR's "affordability is a price crossing, so it needs
+	 * no separate mechanism". Every clock, every exclusion and every caller is
+	 * inherited: resets never reach here, a rebuild replays it, and the row lands
+	 * on the counter's own chain with the cause of the move that caused it.
+	 *
+	 * The items are the ones in force at the move's log-time — the same second
+	 * reader ADR 0015 established for rungs, not the `occurred_at` clock the
+	 * redeeming event will later resolve on. A price added today announces nothing
+	 * about a move logged last week, exactly as a rung added today does not.
+	 *
+	 * A **retired** item announces nothing, which is the one place this and the
+	 * ladder differ, and only because a rung has no retired state to have: an item
+	 * that is no longer on offer becoming "affordable" would be an announcement
+	 * about something nobody can buy.
+	 */
+	private announcePriceCrossings(
+		cause: TraceCause,
+		at: number,
+		counterId: string,
+		move: { from: number; to: number; occurred_at: number },
+	): void {
+		const priced: { id: string; price: number }[] = [];
+		for (const item of rewardItemsInForce(this.rewardItems(), at)) {
+			const version = rewardItemEffectiveAt(item, at);
+			if (!version || version.currency !== counterId) continue;
+			priced.push({ id: item.id, price: version.price });
+		}
+		for (const item of pricesCrossed(priced, move.from, move.to)) {
+			this.writeTrace(
+				tracePriceCrossing(cause, at, counterId, {
+					price: item.price,
+					reward_ref: item.id,
 					occurred_at: move.occurred_at,
 					from: move.from,
 					to: move.to,
@@ -4966,6 +5290,175 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	/**
+	 * Builds the reward context and maps a refusal to the right status, the way
+	 * {@link assertAgreementWrite} does for the corpus. The DO holds no
+	 * authorization logic of its own here either.
+	 */
+	private assertRewardWrite(write: RewardWrite, me: MemberRow): void {
+		const result = validateRewardWrite(write, {
+			role: me.role as Role | null,
+			memberId: me.id,
+			memberIds: this.members().map((member) => member.id),
+			now: Date.now(),
+			items: this.rewardItems(),
+			// The couple's counters *now*, which is the right clock for an authoring
+			// check: the question is whether the price they are writing today lands in
+			// a pile that exists today.
+			currencies: new Set(this.counterRows().map((row) => row.id)),
+			cited: this.citedRewardIds(),
+		});
+		if (result.ok) return;
+		if (result.forbidden) throw coupleError("FORBIDDEN", result.error);
+		if (result.not_found) throw coupleError("NOT_FOUND", result.error);
+		throw coupleError("BAD_REQUEST", result.error);
+	}
+
+	private rewardItems(): VersionedRewardItem[] {
+		const rows = this.sql
+			.exec<{ id: string; subject: string | null }>(
+				`SELECT id, subject FROM reward_items ORDER BY created_at`,
+			)
+			.toArray();
+		return rows.map((row) => ({
+			id: row.id,
+			// One representation of absence, as the corpus does: a null column reads
+			// as undefined rather than leaving two ways to be unset.
+			subject: row.subject ?? undefined,
+			versions: this.rewardItemVersions(row.id),
+		}));
+	}
+
+	private rewardItemVersions(id: string): RewardItemVersion[] {
+		return this.sql
+			.exec<{
+				effective_from: number;
+				name: string;
+				terms: string;
+				currency: string;
+				price: number;
+				requires_grant: number;
+				retired: number;
+			}>(
+				`SELECT effective_from, name, terms, currency, price, requires_grant, retired
+					FROM reward_item_versions WHERE reward_id = ? ORDER BY effective_from`,
+				id,
+			)
+			.toArray()
+			.map((row) => ({
+				effective_from: row.effective_from,
+				name: row.name,
+				terms: row.terms,
+				currency: row.currency,
+				price: row.price,
+				requires_grant: row.requires_grant === 1,
+				retired: row.retired === 1,
+			}));
+	}
+
+	private requireRewardItem(id: string): VersionedRewardItem {
+		const found = this.rewardItems().find((i) => i.id === id);
+		if (!found) throw coupleError("NOT_FOUND", "no such reward");
+		return found;
+	}
+
+	private writeRewardItemVersion(id: string, version: RewardItemVersion): void {
+		// Append-only, enforced rather than asserted, exactly as
+		// `writeAgreementVersion` is: `effective_from` is client-suppliable, so an
+		// upsert would let a second write at the same timestamp silently rewrite the
+		// first — and a redemption already resolved to that moment would
+		// retroactively read a different price, which is the one thing the whole
+		// stamped-price design exists to prevent.
+		const clash = this.sql
+			.exec<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM reward_item_versions
+					WHERE reward_id = ? AND effective_from = ?`,
+				id,
+				version.effective_from,
+			)
+			.toArray()[0];
+		if ((clash?.n ?? 0) > 0) {
+			throw coupleError(
+				"CONFLICT",
+				"a version already takes force at that moment",
+			);
+		}
+		this.sql.exec(
+			`INSERT INTO reward_item_versions
+				(reward_id, effective_from, name, terms, currency, price, requires_grant, retired)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id,
+			version.effective_from,
+			version.name,
+			version.terms,
+			version.currency,
+			version.price,
+			version.requires_grant ? 1 : 0,
+			version.retired ? 1 : 0,
+		);
+	}
+
+	/**
+	 * Every reward id an event has ever cited — the gate on hard delete, derived
+	 * from the schema through {@link rewardRefKeys} for the reason
+	 * {@link citedAgreementIds} is derived through `agreementRefKeys`.
+	 */
+	private citedRewardIds(): Set<string> {
+		return this.citedDefinitionIds(rewardRefKeys);
+	}
+
+	/**
+	 * Records a store change in the consent history *and* the audit log (ADR
+	 * 0017), the pairing {@link recordAgreementChange} established.
+	 *
+	 * Both writes are load-bearing and they answer different questions. The
+	 * consent-history row is the couple's record of what a reward costs and when
+	 * that changed — which is what makes a reprice reviewable rather than merely
+	 * survivable. The audit row carries an actor, and "the price moved and it
+	 * wasn't me" is the whole question the partner's notice answers.
+	 */
+	private recordRewardChange(
+		op: RewardWrite["op"],
+		actor: MemberRow,
+		id: string,
+		at: number,
+		detail: Record<string, unknown> | null,
+	): void {
+		this.sql.exec(
+			`INSERT INTO consent_history (id, at, kind, detail) VALUES (?, ?, ?, ?)`,
+			crypto.randomUUID(),
+			at,
+			rewardChangeKind(op),
+			JSON.stringify({ reward_id: id, ...(detail ?? {}) }),
+		);
+		this.sql.exec(
+			`INSERT INTO audit_log (at, actor, action, target) VALUES (?, ?, ?, ?)`,
+			at,
+			actor.id,
+			rewardChangeAction(op),
+			id,
+		);
+	}
+
+	/**
+	 * Store changes made by the *other* member since this one last acknowledged —
+	 * the same shape as {@link agreementChangesUnseen}, reading the
+	 * `reward.`-namespaced audit rows a write leaves behind.
+	 */
+	private rewardChangesUnseen(memberId: string): number {
+		const seen = Number(this.getSetting(`rewards_seen_at_${memberId}`) ?? "0");
+		const row = this.sql
+			.exec<{ n: number }>(
+				`SELECT COUNT(*) AS n FROM audit_log
+					WHERE action LIKE ? AND actor != ? AND at > ?`,
+				`${REWARD_CHANGE_ACTION_PREFIX}%`,
+				memberId,
+				seen,
+			)
+			.toArray()[0];
+		return row?.n ?? 0;
+	}
+
+	/**
 	 * Every Agreement id an event has ever cited — the gate on hard delete.
 	 *
 	 * Derived from the schema rather than a hardcoded key list: a metadata field
@@ -4975,9 +5468,26 @@ export class CoupleDO extends DurableObject<Env> {
 	 * correct, not a stub: nothing can have cited a corpus that nothing points at.
 	 */
 	private citedAgreementIds(): Set<string> {
+		return this.citedDefinitionIds(agreementRefKeys);
+	}
+
+	/**
+	 * The ids any event has cited through the keys `keysOf` derives from a type —
+	 * the shared body behind {@link citedAgreementIds} and {@link citedRewardIds}.
+	 *
+	 * One scan of the log, parameterised by which fields count, rather than two
+	 * copies differing in a single predicate: the delete gate is the same question
+	 * for both definition kinds ("has anything ever named this"), and two copies is
+	 * how a third kind ends up with a gate that quietly lets a cited row be deleted.
+	 * Returns empty when nothing declares the ref kind — correct, not a stub:
+	 * nothing can have cited a definition set that nothing points at.
+	 */
+	private citedDefinitionIds(
+		keysOf: (type: EventType) => string[],
+	): Set<string> {
 		const keys = new Set<string>();
 		for (const type of this.eventTypes()) {
-			for (const key of agreementRefKeys(type)) keys.add(key);
+			for (const key of keysOf(type)) keys.add(key);
 		}
 		const cited = new Set<string>();
 		if (keys.size === 0) return cited;
@@ -5204,6 +5714,12 @@ export class CoupleDO extends DurableObject<Env> {
 	 * could put out of step with the ledger it rebuilt. The `LIKE` is a prefilter
 	 * over the encoded blob so the scan stays cheap; the codec makes the decision,
 	 * so a row that merely mentions the word cannot be counted.
+	 *
+	 * A **price** crossing counts here too (ADR 0017): affordability is the same
+	 * kind of moment, and a signal of its own would be the second pressure surface
+	 * the ADR declines. The prefilter is widened rather than doubled — `crossing"`
+	 * catches both `"crossing"` and `"price_crossing"` — so the two can never end up
+	 * scanned by different predicates.
 	 */
 	private crossingsUnseen(memberId: string): number {
 		const seen = Number(
@@ -5212,11 +5728,12 @@ export class CoupleDO extends DurableObject<Env> {
 		let count = 0;
 		for (const row of this.sql
 			.exec<{ detail: string | null }>(
-				`SELECT detail FROM trace WHERE at > ? AND detail LIKE '%"crossing"%'`,
+				`SELECT detail FROM trace WHERE at > ? AND detail LIKE '%crossing"%'`,
 				seen,
 			)
 			.toArray()) {
-			if (decodeDetail(row.detail).kind === "crossing") count++;
+			const kind = decodeDetail(row.detail).kind;
+			if (kind === "crossing" || kind === "price_crossing") count++;
 		}
 		return count;
 	}

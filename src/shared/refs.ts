@@ -1,5 +1,6 @@
 import { AGREEMENT_REF_KIND } from "./agreements.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
+import { REWARD_REF_KIND } from "./rewards.ts";
 import type { MetadataValue } from "./roles.ts";
 
 /**
@@ -29,6 +30,19 @@ export function isOriginatingRef(field: MetadataField): boolean {
 }
 
 /**
+ * The ref kinds that name a **definition** — the corpus (ADR 0006) and, since
+ * ADR 0017, the reward store. A *set* rather than a second equality test, because
+ * what makes a ref citing is that the app holds a versioned row for what it
+ * names, and that is a growing list: each entry here is one more definition kind
+ * whose candidates come from "the ones in force" and whose value resolves at the
+ * citing event's `occurred_at`.
+ */
+export const CITING_REF_KINDS: ReadonlySet<string> = new Set([
+	AGREEMENT_REF_KIND,
+	REWARD_REF_KIND,
+]);
+
+/**
  * Whether a field is a **citing** ref — the third flavor (ADR 0006): it names a
  * definition the app holds a row for, rather than an id some event minted.
  *
@@ -41,7 +55,8 @@ export function isCitingRef(field: MetadataField): boolean {
 	return (
 		field.kind === "ref" &&
 		field.minted !== true &&
-		field.ref_kind === AGREEMENT_REF_KIND
+		field.ref_kind !== undefined &&
+		CITING_REF_KINDS.has(field.ref_kind)
 	);
 }
 

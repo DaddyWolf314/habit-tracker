@@ -571,4 +571,102 @@ describe("counter_value and by_from", () => {
 		});
 		expect(failure(r)).toContain("unknown key 'weight'");
 	});
+
+	/**
+	 * A **routed target** (ADR 0017) — the counter a delta effect moves, read off
+	 * the event rather than named in the rule.
+	 *
+	 * It exists because the reward path has no other way to reach the right
+	 * counter: a rule can no more read a reward item's *currency* off the
+	 * definition than it can read its price, and each score dimension is already
+	 * its own counter (ADR 0015).
+	 */
+	it("accepts a counter_from naming a required ref field", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "redemption", metadata: { granted: true } },
+			effects: [
+				{
+					verb: "decrement_counter",
+					counter_from: "currency",
+					by: 1,
+					by_from: "price",
+				},
+			],
+		});
+		expect(validateRule(r, ctx)).toEqual({ ok: true });
+	});
+
+	// Two answers to one question, and the loser would lose silently: the author
+	// would read the literal in the editor and watch a different counter move.
+	it("refuses an effect naming both a counter and a counter_from", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "redemption", metadata: {} },
+			effects: [
+				{
+					verb: "decrement_counter",
+					counter: "demerits",
+					counter_from: "currency",
+					by: 1,
+				},
+			],
+		});
+		expect(failure(r)).toContain("pick one");
+	});
+
+	it("refuses an effect naming neither", () => {
+		const r = rule({
+			id: "X",
+			condition: { type: "redemption", metadata: {} },
+			effects: [{ verb: "decrement_counter", by: 1 }],
+		});
+		expect(failure(r)).toContain("needs a counter");
+	});
+
+	it("refuses a counter_from on a field that isn't a ref", () => {
+		// A counter id is an identity, not a label — the same distinction that
+		// separates a **Ref** from a `text` field.
+		const r = rule({
+			id: "X",
+			condition: { type: "redemption", metadata: {} },
+			effects: [{ verb: "decrement_counter", counter_from: "price", by: 1 }],
+		});
+		expect(failure(r)).toContain("must be a ref field");
+	});
+
+	// The demand a routed *magnitude* deliberately does not make. A magnitude
+	// field may legitimately be optional and left blank; a target that is absent
+	// names no projection at all, so the refusal belongs at authoring time and the
+	// runtime skip stays a can't-happen guard.
+	it("refuses a counter_from on an optional field", () => {
+		const optional = eventTypeSchema.parse({
+			id: "loose",
+			label: "Loose",
+			valence: "neutral",
+			log_permission: ["dom", "sub", "switch"],
+			subject_required: false,
+			metadata: {
+				currency: {
+					kind: "ref",
+					ref_kind: "counter",
+					label: "Currency",
+					required: false,
+					set_permission: ["dom", "sub", "switch"],
+				},
+			},
+			awaiting: [],
+		});
+		const r = rule({
+			id: "X",
+			condition: { type: "loose", metadata: {} },
+			effects: [{ verb: "decrement_counter", counter_from: "currency", by: 1 }],
+		});
+		const result = validateRule(r, {
+			...ctx,
+			eventTypes: new Map([...ctx.eventTypes, [optional.id, optional]]),
+		});
+		expect(result.ok).toBe(false);
+		expect(result.ok === false && result.error).toContain("must be a required");
+	});
 });

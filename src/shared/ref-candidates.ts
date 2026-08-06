@@ -6,6 +6,12 @@ import {
 } from "./agreements.ts";
 import type { MetadataField } from "./event-types.ts";
 import { isCitingRef, isOriginatingRef } from "./refs.ts";
+import {
+	REWARD_REF_KIND,
+	rewardItemEffectiveAt,
+	rewardItemsInForce,
+	type VersionedRewardItem,
+} from "./rewards.ts";
 import type { Rule } from "./rules.ts";
 import {
 	countdownRemainingMs,
@@ -194,6 +200,7 @@ export function refCandidates({
 	now,
 	field,
 	agreements = [],
+	rewards = [],
 }: {
 	rules: Rule[];
 	timers: TimerView[];
@@ -209,12 +216,16 @@ export function refCandidates({
 	field: MetadataField;
 	/** The corpus a citing ref draws from (ADR 0006). Empty is a real answer. */
 	agreements?: VersionedAgreement[];
+	/** The store a `reward` citing ref draws from (ADR 0017). Empty is a real answer. */
+	rewards?: VersionedRewardItem[];
 }): RefCandidate[] {
-	// A citing ref draws from the corpus rather than from open timers, and on the
-	// opposite lifecycle: an Agreement is a candidate while it is in force, where
-	// a timer stops being one the moment it resolves.
+	// A citing ref draws from a definition set rather than from open timers, and
+	// on the opposite lifecycle: an Agreement or a reward item is a candidate while
+	// it is in force, where a timer stops being one the moment it resolves.
 	if (isCitingRef(field)) {
-		return citingCandidates(field, agreements, now);
+		return field.kind === "ref" && field.ref_kind === REWARD_REF_KIND
+			? rewardCandidates(rewards, now)
+			: citingCandidates(field, agreements, now);
 	}
 	// An originating ref is minted by the server and never client-supplied (ADR
 	// 0005), so it can have no candidates by construction. Stated rather than
@@ -298,6 +309,39 @@ function citingCandidates(
 		const version = agreementEffectiveAt(agreement, now);
 		if (!version) continue;
 		out.push({ value: agreement.id, label: version.name });
+	}
+	return out;
+}
+
+/**
+ * The reward items a `reward_ref` may name (ADR 0017) — the store's own citing
+ * branch, on the identical lifecycle {@link citingCandidates} applies to the
+ * corpus: an item in force is offered, a retired one is offered for no new
+ * redemption while every past redemption of it still resolves.
+ *
+ * The label carries the **price** beside the name, which the corpus branch has no
+ * equivalent of and this one cannot do without: an item is *chosen* by what it
+ * costs, so a picker naming only "an hour of your undivided attention" asks the
+ * sub to pick blind. The currency is named too, because a couple may keep several
+ * (ADR 0015) and "40" says nothing about which pile it comes out of.
+ *
+ * Deliberately **not** filtered to what the viewer can afford. Whether the
+ * balance covers it is a fact about the counter right now, while candidacy is a
+ * fact about the item — and hiding the expensive half of the store would remove
+ * the thing a sub is saving toward from the only surface that names it.
+ */
+function rewardCandidates(
+	rewards: VersionedRewardItem[],
+	now: number,
+): RefCandidate[] {
+	const out: RefCandidate[] = [];
+	for (const item of rewardItemsInForce(rewards, now)) {
+		const version = rewardItemEffectiveAt(item, now);
+		if (!version) continue;
+		out.push({
+			value: item.id,
+			label: `${version.name} — ${version.price} ${version.currency}`,
+		});
 	}
 	return out;
 }

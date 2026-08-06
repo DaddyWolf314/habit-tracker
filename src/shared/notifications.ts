@@ -47,7 +47,26 @@ export interface NotificationSignals {
 	 */
 	agreement_changes: number;
 	/**
-	 * Rung crossings neither this member has looked at yet (#193, ADR 0015).
+	 * Reward-item changes the partner has made since the viewer last acknowledged
+	 * them (#194, ADR 0017). The same transparency-for-consent argument again, and
+	 * here it is load-bearing rather than decorative: **saving up is a trust
+	 * property**. A sub banking 80 points toward a 50-point item is relying on the
+	 * price holding, and if the dom can quietly reprice to 100 the store is theatre
+	 * and the currency means nothing.
+	 *
+	 * Announcing the change is the protection the ADR settled on, having declined
+	 * the stronger one (honouring the old price for anyone already above it, which
+	 * needs per-member entitled price — real state nothing else in the app has, and
+	 * it would make the price a function of who is asking). So this has to fire, and
+	 * the goalposts moving has to be something the sub can see and say so about.
+	 *
+	 * Still a count only: which item, and from what to what, is content, and content
+	 * never reaches the badge.
+	 */
+	reward_changes: number;
+	/**
+	 * Rung and price crossings neither this member has looked at yet (#193, #194,
+	 * ADR 0015, ADR 0017).
 	 *
 	 * The one signal here that is not addressed to *someone*. Every other entry
 	 * counts a thing a partner did to this member — a ruling, a response, a rule
@@ -63,8 +82,13 @@ export interface NotificationSignals {
 	 * one direction it must never be (Handoff §8's "no anxiety mechanics" governs
 	 * pressure the *app* invents, not a term the couple agreed).
 	 *
-	 * Still a count, never content — which rung, on which counter, and what it
-	 * costs are all inside the app.
+	 * A **price** crossing counts here too, rather than in a signal of its own
+	 * (ADR 0017). Affordability *is* a crossing — the same upward pass of the same
+	 * kind of line — and a second mechanism would be a second pressure surface for
+	 * a fact the ladder already knows how to announce.
+	 *
+	 * Still a count, never content — which rung, which item, on which counter, and
+	 * what it costs are all inside the app.
 	 */
 	crossings: number;
 }
@@ -77,6 +101,7 @@ export function unreadCount(signals: NotificationSignals): number {
 		(signals.recovery_pending ? 1 : 0) +
 		signals.rule_changes +
 		signals.agreement_changes +
+		signals.reward_changes +
 		signals.crossings
 	);
 }
@@ -204,6 +229,23 @@ export function agreementChangeAction(op: string): string {
 
 /** The `agreement.`-namespaced audit actions, for selecting corpus changes out. */
 export const AGREEMENT_CHANGE_ACTION_PREFIX = "agreement.";
+
+/**
+ * The `audit_log` action for a reward-store change (#194, ADR 0017), namespaced
+ * like its two neighbours so the unread count can select these rows out of the
+ * same log.
+ *
+ * A store change writes to *both* logs for the reason a corpus change does: the
+ * `consent_history` row is the couple's record of what they agreed a reward costs
+ * and when that changed, while this row carries an actor, which is what makes
+ * "repriced by someone other than you" answerable at all.
+ */
+export function rewardChangeAction(op: string): string {
+	return `reward.${op}`;
+}
+
+/** The `reward.`-namespaced audit actions, for selecting store changes out. */
+export const REWARD_CHANGE_ACTION_PREFIX = "reward.";
 
 /**
  * Events awaiting **this member's** ruling (#136, handoff §8.1 — "badge on today

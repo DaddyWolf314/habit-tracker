@@ -616,19 +616,49 @@ function resolveCounterDelta(
 	op: "increment" | "decrement",
 	ctx: RuleEventContext,
 ): EffectOp {
+	// The target is resolved first, because a skip has to say which counter it did
+	// not move and an unrouted target leaves that question unanswerable. Refused at
+	// authoring time (`validateRule` demands a `required` ref field), so reaching
+	// the skip here means the event carried a blank where the schema promised a
+	// value — a can't-happen guard, filed rather than trusted.
+	const counter = resolveCounterTarget(effect, ctx);
+	if (counter === undefined) {
+		return {
+			kind: "skipped",
+			counter: effect.counter ?? "",
+			op,
+			key: effect.counter_from ?? "",
+		};
+	}
 	if (effect.by_from === undefined) {
-		return { kind: "counter", counter: effect.counter, op, by: effect.by };
+		return { kind: "counter", counter, op, by: effect.by };
 	}
 	const routed = asNumber(ctx.metadata[effect.by_from]);
 	if (routed === undefined || !Number.isInteger(routed)) {
-		return {
-			kind: "skipped",
-			counter: effect.counter,
-			op,
-			key: effect.by_from,
-		};
+		return { kind: "skipped", counter, op, key: effect.by_from };
 	}
-	return { kind: "counter", counter: effect.counter, op, by: routed };
+	return { kind: "counter", counter, op, by: routed };
+}
+
+/**
+ * The counter a delta effect moves: the literal `counter`, or the one its
+ * `counter_from` names on the event (ADR 0017).
+ *
+ * `counter_from` **replaces** `counter`, on the reasoning `by_from` states for a
+ * magnitude — a fallback would move a counter the rule's author did not name, and
+ * moving the wrong tally is worse than moving none. Undefined when the routing
+ * found nothing usable, which the caller turns into a skip.
+ */
+function resolveCounterTarget(
+	effect: Extract<
+		Rule["effects"][number],
+		{ verb: "increment_counter" | "decrement_counter" }
+	>,
+	ctx: RuleEventContext,
+): string | undefined {
+	if (effect.counter_from === undefined) return effect.counter;
+	const routed = asString(ctx.metadata[effect.counter_from]);
+	return routed === undefined || routed === "" ? undefined : routed;
 }
 
 /**

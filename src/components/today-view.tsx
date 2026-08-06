@@ -8,6 +8,7 @@ import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.ts
 import { QueueEntry } from "#/components/today/queue-entry.tsx";
 import { RungsPanel } from "#/components/today/rungs-panel.tsx";
 import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
+import { StorePanel } from "#/components/today/store-panel.tsx";
 import { TargetsPanel } from "#/components/today/targets-panel.tsx";
 import {
 	getRoles,
@@ -18,6 +19,7 @@ import {
 	listEvents,
 	listEventTypes,
 	listOpenPrompts,
+	listRewardItems,
 	listRules,
 	listTimers,
 	queueCount,
@@ -32,6 +34,7 @@ import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
+import type { VersionedRewardItem } from "#/shared/rewards.ts";
 import type { Rule } from "#/shared/rules.ts";
 import type { TimerView } from "#/shared/timers.ts";
 
@@ -53,6 +56,7 @@ export function TodayView() {
 	// The corpus, for the rung banner (#193): a rung carries a number and cites an
 	// Agreement for what crossing it means, so the words come from here.
 	const [agreements, setAgreements] = useState<VersionedAgreement[]>([]);
+	const [rewards, setRewards] = useState<VersionedRewardItem[]>([]);
 	const [anchors, setAnchors] = useState<AnchorView[]>([]);
 	// Folded server-side too (#88): a conversation flag is one metadata key, and
 	// deriving it here would mean holding the whole log to find it.
@@ -81,6 +85,7 @@ export function TodayView() {
 			{ flags },
 			{ events },
 			{ agreements },
+			{ rewards },
 		] = await Promise.all([
 			listTimers(),
 			listOpenPrompts(),
@@ -92,6 +97,7 @@ export function TodayView() {
 			listConversationFlags(),
 			listEvents(),
 			listAgreements(),
+			listRewardItems(),
 		]);
 		setTimers(timers);
 		setEvents(events);
@@ -111,6 +117,9 @@ export function TodayView() {
 		// revise the term a standing rung cites while this screen is open, and the
 		// banner has to be reading what binds now.
 		setAgreements(agreements);
+		// And the store, for the same reason again: a reprice while this screen is
+		// open changes what "within reach" is true of (#194, ADR 0017).
+		setRewards(rewards);
 	}, []);
 
 	// The post-mutation callback children fire un-awaited: unlike the quiet
@@ -141,6 +150,7 @@ export function TodayView() {
 				flagRes,
 				logRes,
 				agreementRes,
+				rewardRes,
 			] = await Promise.all([
 				listTimers(),
 				getRoles(),
@@ -153,6 +163,7 @@ export function TodayView() {
 				listConversationFlags(),
 				listEvents(),
 				listAgreements(),
+				listRewardItems(),
 			]);
 			setTimers(timerRes.timers);
 			setMembers(roleRes.members);
@@ -165,6 +176,7 @@ export function TodayView() {
 			setFlags(flagRes.flags);
 			setEvents(logRes.events);
 			setAgreements(agreementRes.agreements);
+			setRewards(rewardRes.rewards);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
@@ -228,6 +240,10 @@ export function TodayView() {
 			{/* Above the targets: a standing rung is a term the couple agreed, and it
 			    outranks what you are aiming at today. */}
 			<RungsPanel counters={counters} agreements={agreements} />
+
+			{/* The store's state half, beside the ladder's (#194, ADR 0017): the two
+			    are the same kind of line passed, so they read together. */}
+			<StorePanel items={rewards} counters={counters} />
 
 			<TargetsPanel
 				counters={counters}

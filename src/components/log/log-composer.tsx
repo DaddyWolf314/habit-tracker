@@ -19,6 +19,7 @@ import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import { type RefCandidate, refCandidates } from "#/shared/ref-candidates.ts";
 import { isOriginatingRef } from "#/shared/refs.ts";
+import type { VersionedRewardItem } from "#/shared/rewards.ts";
 import {
 	type MetadataValue,
 	subjectRoleOf,
@@ -46,6 +47,7 @@ export function LogComposer({
 	rules,
 	timers,
 	agreements,
+	rewards,
 	onLogged,
 }: {
 	types: EventType[];
@@ -58,6 +60,8 @@ export function LogComposer({
 	timers: TimerView[];
 	/** The corpus a citing ref's candidates are drawn from (#121, ADR 0006). */
 	agreements: VersionedAgreement[];
+	/** The store a `reward` citing ref's candidates are drawn from (#194, ADR 0017). */
+	rewards: VersionedRewardItem[];
 	onLogged: () => void;
 }) {
 	const pickable = useMemo(
@@ -134,15 +138,17 @@ export function LogComposer({
 					typeId: type.id,
 					key,
 					now,
-					// A citing ref draws from the corpus rather than the timers, and
-					// needs the field to know which kind (if any) it narrows to.
+					// A citing ref draws from a definition set rather than the timers,
+					// and needs the field to know which set (and which kind, if any) it
+					// narrows to — the corpus for an Agreement, the store for a reward.
 					field,
 					agreements,
+					rewards,
 				}),
 			);
 		}
 		return byKey;
-	}, [type, rules, timers, agreements]);
+	}, [type, rules, timers, agreements, rewards]);
 
 	/** Required fields (non-`awaiting`) the user hasn't filled in yet. */
 	function missingRequired(t: EventType): string[] {

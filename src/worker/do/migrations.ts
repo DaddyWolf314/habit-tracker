@@ -433,6 +433,60 @@ export const DO_MIGRATIONS: string[][] = [
 		`ALTER TABLE amendments ADD COLUMN suppresses TEXT`,
 		`ALTER TABLE trace ADD COLUMN effect_index INTEGER`,
 	],
+	// v17 — the reward store (#194, ADR 0017): priced items a **Currency** is spent
+	// on. The **fourth** instance of the identity-plus-append-only-versions shape,
+	// after `rule_versions` (v8), `agreement_versions` (v10) and `counter_versions`
+	// (v14) — and shaped after v10 rather than v8, because a reward item is a term
+	// the couple agreed rather than machine config.
+	//
+	// It is its own table rather than columns on `counters`, and that was the
+	// decision ADR 0017 spent the most on. Putting prices beside the rungs would put
+	// every number about a currency in one place, and it was declined because a
+	// store is a *catalogue*, not a property of a tally: items are added, retired
+	// and repriced independently of each other, and #172's library work will want
+	// them portable, which a field on a counter definition is not.
+	//
+	// Three things follow the v10 shape exactly, for v10's reasons:
+	//   - `name` versions alongside the terms, so a rename is not retroactive.
+	//   - `subject` lives on the identity row and is never versioned — a versioned
+	//     subject would let a revision move an item to its author and own it
+	//     outright (ADR 0010).
+	//   - `retired` is a *version*, not a column flip, so retiring is effective-dated
+	//     and a retired item stays readable and resolvable for every redemption
+	//     already made against it.
+	//
+	// `currency` and `price` version *together with* the rest, which is the whole
+	// trust property: a reprice appends a version, so the redemption that already
+	// happened keeps the price it was quoted and a rebuild finds that price stamped
+	// on the event rather than re-reading the definition. `requires_grant` versions
+	// too — an item can stop needing a grant without becoming a different item.
+	//
+	// There is deliberately **no seed**: the pack ships no reward items, on ADR
+	// 0015's reasoning for shipping no rungs. What a couple offers and what it costs
+	// is theirs to agree, and a default reward is one nobody consented to but
+	// everybody has.
+	//
+	// **No backfill** — nothing existed to carry forward.
+	[
+		`CREATE TABLE IF NOT EXISTS reward_items (
+			id TEXT PRIMARY KEY,
+			subject TEXT,
+			created_at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS reward_item_versions (
+			reward_id TEXT NOT NULL,
+			effective_from INTEGER NOT NULL,
+			name TEXT NOT NULL,
+			terms TEXT NOT NULL,
+			currency TEXT NOT NULL,
+			price INTEGER NOT NULL,
+			requires_grant INTEGER NOT NULL DEFAULT 1,
+			retired INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (reward_id, effective_from)
+		)`,
+		`CREATE INDEX IF NOT EXISTS reward_item_versions_currency_idx
+			ON reward_item_versions (currency)`,
+	],
 ];
 
 const VERSION_KEY = "schema_version";

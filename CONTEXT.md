@@ -43,6 +43,22 @@ in and should not.
   already the weight; this is where the weight is read from. Also avoid clamping a
   negative at runtime: the refusal belongs at authoring time, and a clamp invents a
   number nobody wrote.
+- **Routed target** — `counter_from`, naming the metadata key whose **Ref** becomes
+  the counter a delta **Effect** moves ("spend it out of whatever the item was
+  priced in"). The **Routed magnitude**'s sibling, forced by the same argument one
+  step further along: a rule cannot read a **Reward item**'s **Price** off the
+  definition, so the price is stamped on the redemption — and it can no more read
+  the item's **Currency**, so that is stamped too and routed here (ADR 0017). Each
+  score dimension is already its own counter (ADR 0015), so without it the reward
+  path needs a rule per currency and a couple who mints a second one finds out by
+  not being charged. **Replaces** `counter` rather than seeding it, and naming both
+  is refused at authoring time rather than given a precedence order — the loser
+  would lose silently. Demands more of its field than a magnitude does of its own:
+  a `ref`, because a counter id is an identity and not a label, and **`required`**,
+  because a magnitude may legitimately be left blank while an absent target names
+  no projection at all. _Avoid_: reading it as a second answer to "which counter" —
+  a rule has exactly one, literal or routed; a runtime fallback to `counter`, which
+  would move a tally the rule's author never named.
 - **Ambient-state predicate** — the condition clause matching on what was
   *running* when an event happened: `timer_active`, a map of timer definition to
   expected activity (`{ denial_period: true }`, `{ session_stopwatch: false }`).
@@ -493,7 +509,11 @@ primitives that already existed.
   server from the version in force, never supplied by a client (ADR 0005's minting
   discipline). A rule cannot read a price off a definition — that is computing — so
   the decrement routes the stamped value as a **routed magnitude**. Raise the price
-  next month and last month's redemption still says what it actually cost.
+  next month and last month's redemption still says what it actually cost. The
+  item's **Currency** is stamped beside it and routed as a **routed target**, since
+  a rule can no more read which counter to spend from than how much. Stamped at the
+  redemption's **`occurred_at`**, the citing-ref clock: backdating one quotes what
+  the item cost when the thing happened.
   _Avoid_: "cost" as a competing word; reading the price off the item at replay.
 - **Redemption** — the event that spends a **Currency** on a **Reward item**. Per
   item, it either **awaits a grant** (the default) or is self-serve: a granted

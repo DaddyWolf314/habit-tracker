@@ -218,6 +218,59 @@ describe("routing derived duration into a counter (handoff §4.3, R16)", () => {
 	});
 });
 
+describe("counter_from — a routed target (ADR 0017)", () => {
+	const spend: Effect = {
+		verb: "decrement_counter",
+		counter_from: "currency",
+		by: 1,
+		by_from: "price",
+	};
+
+	it("moves the counter the event names, by the amount it names", () => {
+		expect(
+			resolveEffect(spend, ctx("redemption", { currency: "sp", price: 40 })),
+		).toEqual({ kind: "counter", counter: "sp", op: "decrement", by: 40 });
+	});
+
+	// It **replaces** the literal, exactly as `by_from` replaces `by`. A fallback
+	// would move a counter the rule's author did not name, and moving the wrong
+	// tally is worse than moving none.
+	it("replaces a literal counter rather than seeding it", () => {
+		expect(
+			resolveEffect(
+				{ verb: "decrement_counter", counter_from: "currency", by: 3 },
+				ctx("redemption", { currency: "sp" }),
+			),
+		).toEqual({ kind: "counter", counter: "sp", op: "decrement", by: 3 });
+	});
+
+	// Refused at authoring time (`validateRule` demands a required ref field), so
+	// this is the can't-happen guard rather than a live path — filed rather than
+	// trusted, and never falling through to a counter nobody named.
+	it("skips when the routed target is missing or blank", () => {
+		const cases: RuleEventContext["metadata"][] = [
+			{ price: 40 },
+			{ currency: "", price: 40 },
+		];
+		for (const metadata of cases) {
+			const op = resolveEffect(spend, ctx("redemption", metadata));
+			expect(op.kind).toBe("skipped");
+		}
+	});
+
+	// The target resolves first, so a skip can say which counter it did not move.
+	it("names the routed counter when the magnitude is what went missing", () => {
+		expect(resolveEffect(spend, ctx("redemption", { currency: "sp" }))).toEqual(
+			{
+				kind: "skipped",
+				counter: "sp",
+				op: "decrement",
+				key: "price",
+			},
+		);
+	});
+});
+
 describe("applyCounterOp (shared by live apply + rebuild)", () => {
 	it("folds increment/decrement (by defaults to 1) and reset", () => {
 		expect(

@@ -500,3 +500,48 @@ describe("v16 waivers and the effect index", () => {
 		expect(JSON.parse(amendment.patch).permitted).toBe(false);
 	});
 });
+
+/**
+ * v17 — the reward store (#194, ADR 0017). Two new tables, no seed and no
+ * backfill: the pack ships no reward items, because what a couple offers and what
+ * it costs is theirs to agree (ADR 0015's reason for shipping no rungs).
+ */
+describe("v17 the reward store", () => {
+	it("brings a fresh DO up with both tables", () => {
+		const db = new Database(":memory:");
+		runMigrations(sqlStorage(db));
+		expect(columns(db, "reward_items")).toEqual([
+			"id",
+			"subject",
+			"created_at",
+		]);
+		// `currency`, `price` and `requires_grant` version *with* the rest, which is
+		// the whole trust property: a reprice appends rather than overwrites, so the
+		// redemption already made keeps the price it was quoted.
+		expect(columns(db, "reward_item_versions")).toEqual([
+			"reward_id",
+			"effective_from",
+			"name",
+			"terms",
+			"currency",
+			"price",
+			"requires_grant",
+			"retired",
+		]);
+	});
+
+	it("adds the tables to a DO paired before it, seeding nothing", () => {
+		const db = doAtVersion(16);
+		runMigrations(sqlStorage(db));
+		const items = db
+			.prepare(`SELECT COUNT(*) AS n FROM reward_items`)
+			.get() as { n: number };
+		expect(items.n).toBe(0);
+	});
+
+	it("is a no-op on a second wake", () => {
+		const db = doAtVersion(16);
+		runMigrations(sqlStorage(db));
+		expect(() => runMigrations(sqlStorage(db))).not.toThrow();
+	});
+});

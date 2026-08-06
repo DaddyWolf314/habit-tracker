@@ -138,6 +138,13 @@ export interface CoupleExport {
 	 */
 	agreements: ExportRow[];
 	agreement_kinds: ExportRow[];
+	/**
+	 * The reward store with every version (#194, ADR 0017). Present for the same
+	 * reason the corpus is, and one more: a redemption event carries the price it
+	 * was stamped with but names its item by id, so without the store the log says
+	 * "spent 40 on 01JB6X…" — the number survives and the thing bought does not.
+	 */
+	rewards: ExportRow[];
 	events: ExportRow[];
 	amendments: ExportRow[];
 	rules: ExportRow[];

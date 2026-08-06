@@ -247,6 +247,7 @@ function composer(timers: TimerView[], onLogged: () => void) {
 			rules={RULES}
 			timers={timers}
 			agreements={AGREEMENTS}
+			rewards={[]}
 			onLogged={onLogged}
 		/>
 	);

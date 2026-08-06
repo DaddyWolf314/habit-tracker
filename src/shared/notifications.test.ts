@@ -29,6 +29,7 @@ function signals(
 		recovery_pending: false,
 		rule_changes: 0,
 		agreement_changes: 0,
+		reward_changes: 0,
 		crossings: 0,
 		...partial,
 	};

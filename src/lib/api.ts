@@ -32,6 +32,11 @@ import type {
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { RuleChangeNotice } from "#/shared/notifications.ts";
 import type { RecoveryView } from "#/shared/recovery.ts";
+import type {
+	CreateRewardItemInput,
+	ReviseRewardItemInput,
+	VersionedRewardItem,
+} from "#/shared/rewards.ts";
 import type { Role } from "#/shared/roles.ts";
 import type { Rule, RuleDefinition, VersionedRule } from "#/shared/rules.ts";
 import type { ScaffoldPlan } from "#/shared/scaffold.ts";
@@ -545,6 +550,64 @@ export function retireAgreement(
 /** Hard delete, accepted only for an Agreement nothing has ever cited. */
 export function deleteAgreement(id: string): Promise<{ id: string }> {
 	return apiFetch<{ id: string }>(`/api/agreements/${encodeURIComponent(id)}`, {
+		method: "DELETE",
+	});
+}
+
+/**
+ * The reward store (#194, ADR 0017). Reads are open to both members and writes
+ * are authorized server-side by the `counterpart` scope, so a sub's attempt to
+ * reprice is a 403 rather than something the client pre-empts — the store screen
+ * still hides the controls, but the guard is not there.
+ */
+export function listRewardItems(): Promise<{ rewards: VersionedRewardItem[] }> {
+	return apiFetch<{ rewards: VersionedRewardItem[] }>("/api/rewards");
+}
+
+/** Marks the partner's store changes seen (#194) — a reprice is news. */
+export function ackRewardChanges(): Promise<{ ok: boolean }> {
+	return apiFetch<{ ok: boolean }>("/api/rewards/changes/seen", {
+		method: "POST",
+	});
+}
+
+export function createRewardItem(
+	input: CreateRewardItemInput,
+): Promise<VersionedRewardItem> {
+	return apiFetch<VersionedRewardItem>("/api/rewards", {
+		method: "POST",
+		body: input,
+	});
+}
+
+/**
+ * Appends a version — a reprice, a rewording, or a change of grant policy. Never
+ * overwrites, so a redemption already made keeps the price it was quoted.
+ */
+export function reviseRewardItem(
+	id: string,
+	input: ReviseRewardItemInput,
+): Promise<VersionedRewardItem> {
+	return apiFetch<VersionedRewardItem>(
+		`/api/rewards/${encodeURIComponent(id)}`,
+		{ method: "PUT", body: input },
+	);
+}
+
+/** Retires an item — the real "remove", effective-dated like every other change. */
+export function retireRewardItem(
+	id: string,
+	effectiveFrom?: number,
+): Promise<VersionedRewardItem> {
+	return apiFetch<VersionedRewardItem>(
+		`/api/rewards/${encodeURIComponent(id)}/retire`,
+		{ method: "POST", body: { effective_from: effectiveFrom } },
+	);
+}
+
+/** Hard delete, accepted only for an item nothing has ever redeemed. */
+export function deleteRewardItem(id: string): Promise<{ id: string }> {
+	return apiFetch<{ id: string }>(`/api/rewards/${encodeURIComponent(id)}`, {
 		method: "DELETE",
 	});
 }

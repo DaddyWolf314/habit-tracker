@@ -1,5 +1,5 @@
 {
-	"version": 13,
+	"version": 14,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -442,6 +442,48 @@
 			"awaiting": [],
 			"journaling": true,
 			"note_prompt": "What's on your mind?"
+		},
+		{
+			"id": "redemption",
+			"label": "Redemption",
+			"icon": "gift",
+			"valence": "positive",
+			"log_permission": ["dom", "sub", "switch"],
+			"subject_required": true,
+			"metadata": {
+				"reward_ref": {
+					"kind": "ref",
+					"ref_kind": "reward",
+					"label": "Reward",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"price": {
+					"kind": "number",
+					"min": 0,
+					"integer": true,
+					"label": "Price",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"currency": {
+					"kind": "ref",
+					"ref_kind": "counter",
+					"label": "Currency",
+					"required": true,
+					"set_permission": ["dom", "sub", "switch"]
+				},
+				"granted": {
+					"kind": "boolean",
+					"label": "Granted",
+					"required": false,
+					"set_permission": ["dom", "sub", "switch"],
+					"adjudicated_by": ["dom"]
+				}
+			},
+			"awaiting": ["granted"],
+			"journaling": false,
+			"note_prompt": "Anything you want to say about this?"
 		}
 	]
 }
