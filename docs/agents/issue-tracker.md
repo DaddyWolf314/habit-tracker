@@ -32,3 +32,42 @@ Create a GitHub issue.
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
+
+## Wayfinding operations
+
+How `/wayfinder`'s map, tickets, blocking, and frontier are expressed on GitHub. Both
+relationships below are **native** — they render in GitHub's own UI, so the frontier is visible
+without opening the map.
+
+Both APIs take a **database id** (`.id`), not an issue number. Fetch one with
+`gh api repos/{owner}/{repo}/issues/<number> --jq '.id'`.
+
+- **The map** — an issue labelled `wayfinder:map`. Find the open ones with
+  `gh issue list --label "wayfinder:map" --state open`.
+- **Tickets** — issues labelled `wayfinder:<type>` (`grilling`, `research`, `prototype`,
+  `task`), attached to the map as **sub-issues**:
+
+  ```
+  gh api -X POST repos/{owner}/{repo}/issues/<map>/sub_issues -F sub_issue_id=<child db id>
+  gh api repos/{owner}/{repo}/issues/<map>/sub_issues --jq '.[] | "\(.number)\t\(.title)\t\(.state)"'
+  ```
+
+- **Blocking** — GitHub issue **dependencies**:
+
+  ```
+  gh api -X POST repos/{owner}/{repo}/issues/<blocked>/dependencies/blocked_by -F issue_id=<blocker db id>
+  gh api repos/{owner}/{repo}/issues/<number>/dependencies/blocked_by --jq '[.[].number]'
+  ```
+
+- **The frontier** — open, unassigned children whose every blocker is closed. There is no single
+  query; list the map's sub-issues, keep the open unassigned ones, and check each one's
+  `blocked_by` for a non-closed entry.
+- **Claiming** — `gh issue edit <number> --add-assignee @me`, **before** any work. An open,
+  unassigned ticket is unclaimed.
+- **Resolving** — post the answer as a comment, then close:
+  `gh issue comment <number> --body-file <file>` followed by `gh issue close <number>`. Then
+  append the one-line pointer to the map's Decisions-so-far with `gh issue edit <map> --body-file`.
+
+`gh` infers the repo from `git remote -v`, so run it inside a clone — or pass
+`-R DaddyWolf314/habit-tracker` when the working directory is elsewhere (writing issue bodies to
+a scratchpad file and passing `--body-file` needs this, since the scratchpad is not a git repo).
