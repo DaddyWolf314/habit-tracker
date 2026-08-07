@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_EVENT_TYPES } from "#/templates/index.ts";
 import type { EventType } from "./event-types.ts";
 import type { Rule } from "./rules.ts";
 import {
@@ -157,17 +158,83 @@ describe("countingTypeFor", () => {
 		expect(countingTypeFor("limit", [RITUAL_TYPE])).toBeNull();
 	});
 
-	it("accepts a type that cites any kind", () => {
-		const unnarrowed = {
+	it("does not read an undeclared kind as counting every kind (#213)", () => {
+		// This is the defect, in miniature. An earlier version accepted a citing ref
+		// with no `agreement_kind` as counting anything — and the *previous* test
+		// passed anyway, because its fixture held only a narrowed type. Put an
+		// unqualified one beside it, as the pack does, and a limit becomes
+		// countable through a field that means "cite any term".
+		const unqualified = {
 			...RITUAL_TYPE,
+			id: "infraction",
 			metadata: {
-				ritual_id: {
+				rule_ref: {
 					...RITUAL_TYPE.metadata.ritual_id,
 					agreement_kind: undefined,
 				},
 			},
 		} as EventType;
-		expect(countingTypeFor("ritual", [unnarrowed])).not.toBeNull();
+		expect(countingTypeFor("limit", [RITUAL_TYPE, unqualified])).toBeNull();
+		expect(countingTypeFor("safeword", [unqualified])).toBeNull();
+		// And it does not stand in for the kind it happens to sit next to either.
+		expect(countingTypeFor("ritual", [unqualified])).toBeNull();
+	});
+
+	it("still finds a couple's own ritual-shaped type", () => {
+		// The derivation stays open, which is the whole reason it is derived: a
+		// custom type is tracked the day it is written, so long as it says which
+		// kind it counts.
+		const theirs = {
+			...RITUAL_TYPE,
+			id: "devotion_logged",
+			metadata: {
+				devotion_id: { ...RITUAL_TYPE.metadata.ritual_id },
+			},
+		} as EventType;
+		expect(countingTypeFor("ritual", [theirs])).toMatchObject({
+			refKey: "devotion_id",
+		});
+	});
+});
+
+/**
+ * The shipped pack, which is where #213 actually lived: every fixture above
+ * passed while the real seeds offered a daily target for breaching a limit. A
+ * derivation whose failure mode is inventing a goal nobody asked for gets
+ * asserted against the thing couples are really handed.
+ */
+describe("countingTypeFor over the shipped pack (#213)", () => {
+	it("counts rituals, through the type that says so", () => {
+		expect(countingTypeFor("ritual", DEFAULT_EVENT_TYPES)).toMatchObject({
+			refKey: "ritual_id",
+		});
+		expect(countingTypeFor("ritual", DEFAULT_EVENT_TYPES)?.type.id).toBe(
+			"ritual_completed",
+		);
+	});
+
+	it("counts nothing else the pack ships a kind for", () => {
+		// A limit, a protocol and a safeword all used to resolve to `infraction`
+		// via its unqualified `rule_ref`. Tracking must refuse all three: there is
+		// no honest counter for "how often was this boundary crossed today, and
+		// what's my streak".
+		for (const kind of ["limit", "protocol", "safeword"]) {
+			expect(countingTypeFor(kind, DEFAULT_EVENT_TYPES)).toBeNull();
+		}
+	});
+
+	it("leaves infraction's own ref alone as a citation", () => {
+		// The field is not the bug and is not changed — an infraction may still cite
+		// any term. What changed is that citing is no longer read as counting.
+		const infraction = DEFAULT_EVENT_TYPES.find((t) => t.id === "infraction");
+		expect(infraction?.metadata.rule_ref).toMatchObject({
+			kind: "ref",
+			ref_kind: "agreement",
+		});
+		expect(
+			(infraction?.metadata.rule_ref as { agreement_kind?: string })
+				.agreement_kind,
+		).toBeUndefined();
 	});
 });
 

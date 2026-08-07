@@ -117,6 +117,32 @@ export function citingKeyOf(type: EventType): string | null {
  * other than what gets made. Hardcoding `ritual_completed`/`ritual_id` on either
  * side would be a second derivation wearing a constant, and would quietly
  * mis-describe a couple's own ritual-shaped type.
+ *
+ * The match is on a **declared** `agreement_kind` and nothing else (#213). This
+ * used to also accept a citing ref that declared no kind at all, reading an
+ * absent narrowing as "counts anything" — and the pack ships exactly such a
+ * field: `infraction.rule_ref`, unqualified on purpose, because a breach may
+ * cite any term the couple wrote. So "what counts a limit?" resolved to
+ * `infraction`, and the scaffold built from that answer gave a limit a
+ * positive-valence daily target of **1**, a `floor` direction and a streak — a
+ * goal of one breach a day, with a run of consecutive days of breaking your own
+ * boundary, rendered on Today as met at 1/1. The same held for protocols and
+ * safewords, which is every kind but the one this was written for.
+ *
+ * The defect was a conflation, not a typo: *"cite anything"* and *"count this
+ * kind"* are different statements, and only the second is an answer to the
+ * question asked here. Requiring the declaration makes countability something a
+ * type states on purpose rather than something that falls out of leaving a field
+ * off — which is the right default for a mechanism whose failure mode is
+ * inventing a target nobody asked for.
+ *
+ * This restores a decision rather than making one. ADR 0006 already settled it —
+ * "you do not tick a limit… the only tickable kind is `ritual`" — so the code was
+ * contradicting its own ADR, which is why nothing here needed re-deciding and no
+ * ADR is amended.
+ *
+ * A couple's own ritual-shaped type is still tracked the day they write it; it
+ * declares the kind it counts, exactly as `ritual_completed` does.
  */
 export function countingTypeFor(
 	kindId: string,
@@ -127,7 +153,7 @@ export function countingTypeFor(
 		if (!refKey) continue;
 		const field = type.metadata[refKey];
 		if (field.kind !== "ref") continue;
-		if (field.agreement_kind === undefined || field.agreement_kind === kindId) {
+		if (field.agreement_kind === kindId) {
 			return { type, refKey };
 		}
 	}

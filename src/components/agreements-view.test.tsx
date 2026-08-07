@@ -29,6 +29,7 @@ import {
 	getRoles,
 	listAgreementKinds,
 	listAgreements,
+	listEventTypes,
 	listRules,
 	retireAgreement,
 	trackAgreement,
@@ -506,6 +507,79 @@ describe("AgreementsView — tracking a ritual", () => {
 		asRole("sub");
 		await openRow();
 		expect(screen.queryByRole("button", { name: /track this/i })).toBeNull();
+	});
+
+	/**
+	 * The screen half of #213.
+	 *
+	 * The fixtures above could not catch it: they hold only `ritual_completed`,
+	 * whose ref names the kind it counts. The pack also ships `infraction`, whose
+	 * `rule_ref` names no kind — deliberately, since a breach may cite any term —
+	 * and `countingTypeFor` used to read that absence as "counts everything". So
+	 * this adds the unqualified type the pack actually has, which is what makes
+	 * the offer appear where it must not.
+	 */
+	const INFRACTION: EventType = {
+		id: "infraction",
+		label: "Infraction",
+		valence: "negative",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: true,
+		metadata: {
+			rule_ref: {
+				kind: "ref",
+				ref_kind: "agreement",
+				label: "Agreement",
+				required: false,
+				set_permission: ["dom", "sub", "switch"],
+			},
+		},
+		awaiting: [],
+		journaling: false,
+	};
+
+	it("never offers to track a limit, whatever else cites agreements", async () => {
+		// Accepting it built a positive daily target of *one infraction against your
+		// own limit*, with a streak of consecutive days of breaching it — rendered
+		// on Today as met at 1/1. A missing button is the whole fix here, so it is
+		// asserted from the screen rather than only from the derivation.
+		vi.mocked(listAgreementKinds).mockResolvedValue({ kinds: RITUAL_KINDS });
+		vi.mocked(listAgreements).mockResolvedValue({
+			agreements: [
+				{
+					id: "ag_lim",
+					kind: "limit",
+					// The dom's own limit, so authorship is not what withholds the
+					// control — otherwise this would pass for the wrong reason.
+					subject: "m1",
+					versions: [
+						{
+							effective_from: NOW - 10_000,
+							name: "no breath play",
+							text: "",
+							retired: false,
+						},
+					],
+				},
+			],
+		});
+		vi.mocked(listEventTypes).mockResolvedValue({
+			types: [...TYPES, INFRACTION],
+		});
+		await renderView();
+		fireEvent.click(screen.getByText("no breath play"));
+
+		expect(screen.queryByRole("button", { name: /track this/i })).toBeNull();
+		expect(screen.queryByText(/keeps a streak/i)).toBeNull();
+	});
+
+	it("still offers tracking on a ritual with that type present", async () => {
+		// The other half: narrowing the match must not cost the case it was for.
+		vi.mocked(listEventTypes).mockResolvedValue({
+			types: [...TYPES, INFRACTION],
+		});
+		await openRow();
+		expect(screen.getByRole("button", { name: /track this/i })).not.toBeNull();
 	});
 });
 
