@@ -102,6 +102,17 @@ async function fetchLive() {
 
 type LiveBundle = Awaited<ReturnType<typeof fetchLive>>;
 
+/**
+ * What only the first load wants. Who is in the couple doesn't change under the
+ * viewer — a membership change is a re-onboard, not a poll tick — so the poll
+ * doesn't carry it. Declared here rather than by being absent from a second copy
+ * of the list above.
+ */
+async function fetchDefinitions() {
+	const { members } = await getRoles();
+	return { members };
+}
+
 export function TodayView() {
 	const [ready, setReady] = useState(false);
 	const [timers, setTimers] = useState<TimerView[]>([]);
@@ -173,15 +184,15 @@ export function TodayView() {
 		}
 	}, [refresh]);
 
-	// The first load: the live bundle, plus the one fetch only it wants. Who is in
-	// the couple doesn't change under the viewer — a membership change is a
-	// re-onboard, not a poll tick — so `getRoles` is declared first-load-only here
-	// rather than by being absent from a second copy of the list above.
+	// The first load: the live bundle, plus what only it wants.
 	const loadAll = useCallback(async () => {
 		try {
-			const [live, { members }] = await Promise.all([fetchLive(), getRoles()]);
+			const [live, definitions] = await Promise.all([
+				fetchLive(),
+				fetchDefinitions(),
+			]);
 			applyLive(live);
-			setMembers(members);
+			setMembers(definitions.members);
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your timers.",
