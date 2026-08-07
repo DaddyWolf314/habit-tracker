@@ -4,6 +4,7 @@ import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
+import { pageClass, pageRowsClass } from "#/components/ui/page.ts";
 import {
 	createRule,
 	deleteRule,
@@ -112,7 +113,7 @@ export function RulesView() {
 	if (!ready) return null;
 	if (!hasIdentity()) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageClass}>
 				<p className="text-muted-foreground">
 					You don't have a space on this device yet.{" "}
 					<Link to="/" className="underline">
@@ -125,8 +126,11 @@ export function RulesView() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl space-y-4 p-6">
-			<h1 className="text-2xl font-bold">Rules</h1>
+		// A rule reads as a row of clauses — when this, do that, to that counter —
+		// and the editor below it is a form of side-by-side fields. Both had to wrap
+		// hard at 672px; neither is prose, so both get the wider shell.
+		<div className={`${pageRowsClass} space-y-4`}>
+			<h1 className="text-2xl font-bold lg:text-3xl">Rules</h1>
 
 			<p className="text-sm text-muted-foreground">
 				These are the automations that turn what you log into your counters and

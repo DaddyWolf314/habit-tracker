@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { pageRowsClass } from "#/components/ui/page.ts";
 import { listDevices, mintDevice, revokeDevice } from "#/lib/api.ts";
 import { clearCredentials, hasIdentity } from "#/lib/identity.ts";
 import { useCopy } from "#/lib/use-copy.ts";
@@ -100,7 +101,7 @@ export function DevicesPanel() {
 	if (!ready) return null;
 	if (signedOut) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageRowsClass}>
 				<h1 className="text-2xl font-bold">Signed out</h1>
 				<p className="mt-2 text-sm text-muted-foreground">
 					This device's token has been revoked and its copy is gone from here.
@@ -116,7 +117,7 @@ export function DevicesPanel() {
 	}
 	if (!hasIdentity()) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageRowsClass}>
 				<p className="text-muted-foreground">
 					You don't have a space on this device yet.{" "}
 					<Link to="/" className="underline">
@@ -129,7 +130,7 @@ export function DevicesPanel() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl p-8">
+		<div className={pageRowsClass}>
 			<div className="flex items-center justify-between">
 				<h1 className="text-2xl font-bold">Your devices</h1>
 				{/* Devices hangs off Settings rather than earning a tab of its own

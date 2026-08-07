@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Input } from "#/components/ui/input.tsx";
+import { pageRowsClass } from "#/components/ui/page.ts";
 import {
 	ackRewardChanges,
 	createRewardItem,
@@ -112,9 +113,9 @@ export function RewardsView() {
 	const onOffer = rewardItemsInForce(items, now);
 
 	return (
-		<div className="mx-auto max-w-2xl space-y-4 p-4">
+		<div className={`${pageRowsClass} space-y-4`}>
 			<header>
-				<h1 className="text-xl font-semibold">Rewards</h1>
+				<h1 className="text-xl font-semibold lg:text-2xl">Rewards</h1>
 				<p className="mt-1 text-sm text-muted-foreground">
 					What's on offer, what it costs, and what you can afford right now.
 				</p>
@@ -128,7 +129,11 @@ export function RewardsView() {
 					what it costs is yours to agree.
 				</p>
 			) : (
-				<ul className="space-y-3">
+				// A priced item is a card, not a line in a ledger: it stands alone and
+				// it is scanned against its neighbours ("what can I afford"), which is
+				// what a grid is for. One column below `lg`, where `gap-3` is the
+				// `space-y-3` this replaced.
+				<ul className="grid gap-3 lg:grid-cols-2">
 					{onOffer.map((item) => (
 						<RewardCard
 							key={item.id}
