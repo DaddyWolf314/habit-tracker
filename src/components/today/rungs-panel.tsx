@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { Explainer } from "#/components/ui/explainer.tsx";
 import { ackCrossings } from "#/lib/api.ts";
 import {
 	agreementEffectiveAt,
@@ -6,6 +7,7 @@ import {
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
 import { type Counter, rungsReached } from "#/shared/counters.ts";
+import { describeLadders } from "#/shared/today-describe.ts";
 
 /**
  * Where the couple's ladders stand (#193, ADR 0015) — a banner for every rung a
@@ -70,6 +72,23 @@ export function RungsPanel({
 	return (
 		<section className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-4">
 			<h2 className="text-lg font-semibold">Where you stand</h2>
+			{/*
+			 * The half a reader cannot get from the rows is that this is not an inbox
+			 * (#212 item 2). A bordered, tinted banner at the top of the landing screen
+			 * reads as something owed until told otherwise, and CONTEXT §Crossing is
+			 * explicit that it is neither: "nothing to dismiss and nobody owes
+			 * anything". Saying so is the derived half's job, because what makes it go
+			 * away is a number, and the number is theirs.
+			 */}
+			<Explainer label="What is this?">
+				<p>
+					A rung is a number on one of your counters with one of your agreements
+					attached to it. This shows every rung a counter is sitting at or
+					above, in the words of the term itself — so what it means is something
+					the two of you wrote, not something the app decided.
+				</p>
+				<p>{describeLadders(standing)}</p>
+			</Explainer>
 			<ul className="space-y-3">
 				{standing.map(({ counter, rung }) => {
 					const agreement = agreements.find((a) => a.id === rung.agreement_ref);

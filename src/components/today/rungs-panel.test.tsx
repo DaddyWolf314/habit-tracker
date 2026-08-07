@@ -1,5 +1,12 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/api.ts", () => ({
@@ -75,8 +82,25 @@ describe("RungsPanel", () => {
 	it("has nothing to dismiss", () => {
 		// A crossing is a recorded moment, not a debt (ADR 0015) — the "Got it" the
 		// rule-change notice carries would assert an obligation was discharged.
+		//
+		// Stated as "the only control here is the explainer" rather than "no buttons
+		// at all", which is what it used to say. That was a fine proxy while the
+		// panel had no controls, but it made #212's explainer toggle read as a
+		// regression — and a proxy that fails on the wrong change would eventually
+		// be relaxed to `length <= 1`, which a real "Got it" would then pass.
 		render(<RungsPanel counters={[counter(12)]} agreements={[TERM]} />);
-		expect(screen.queryAllByRole("button")).toEqual([]);
+		expect(
+			screen.queryAllByRole("button").map((control) => control.textContent),
+		).toEqual(["What is this?"]);
+	});
+
+	it("explains why the banner is here and how it goes away", () => {
+		// The two halves (#212): what a rung is, which is shipped copy, and what
+		// makes *this* one clear, which is the couple's own number.
+		render(<RungsPanel counters={[counter(12)]} agreements={[TERM]} />);
+		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
+		expect(screen.getByText(/A rung is a number/)).not.toBeNull();
+		expect(screen.getByText(/drops back under 10/)).not.toBeNull();
 	});
 
 	it("stacks a row per rung the counter is above", () => {

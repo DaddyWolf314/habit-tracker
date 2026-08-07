@@ -243,6 +243,25 @@ export function LogView() {
 				</Sheet>
 			</div>
 
+			{/*
+			 * The lead sentence Rules, Rewards, Vocabulary and Settings all had and
+			 * this screen did not (#212 item 3).
+			 *
+			 * It says nothing about *what* is in the log, and that omission is load-
+			 * bearing rather than brevity: `listEvents` omits a partner's `secret`
+			 * entries entirely (ADR 0001), so a sentence like "everything the two of
+			 * you have logged" would be a false claim about the couple's record, made
+			 * to the partner least able to check it — the same trap #214's floor
+			 * avoided. What is safe to say is what the log *is*, which both partners
+			 * see alike: the thing everything else is folded from, and append-only.
+			 */}
+			<p className="text-sm text-muted-foreground">
+				The record everything else is folded from — your counters, clocks and
+				streaks are all read off what's here, newest first. Nothing in it is
+				edited or deleted: a correction is appended as an amendment, so what was
+				said first still stands beside it.
+			</p>
+
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
 			{/* Queue stays top-of-page: for the dom it is the actionable part (#91). */}

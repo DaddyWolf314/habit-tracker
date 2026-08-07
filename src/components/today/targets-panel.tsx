@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { Explainer } from "#/components/ui/explainer.tsx";
 import { logEvent } from "#/lib/api.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { type TargetRow, targetRows } from "#/shared/target-rows.ts";
+import { describeTargets } from "#/shared/today-describe.ts";
 
 /**
  * What you are aiming at today (#135, handoff §9.2 — "today's counter targets").
@@ -20,6 +22,13 @@ import { type TargetRow, targetRows } from "#/shared/target-rows.ts";
  * up" instead of "I did the morning kneel" — no rule fires, no term is cited,
  * and per-ritual history sees nothing. The streak would still move, so it would
  * look like it worked.
+ *
+ * The heading was **Today**, inside the page titled Today (#212 item 2). Two
+ * headings deep in the same word says nothing about either, and this one is the
+ * panel a new couple meets first — the seeded row #214 exists to account for is
+ * in here. The phrase that replaces it is the one Today's own floor already uses
+ * for this panel ("what you're aiming at, what's running, and anything waiting on
+ * one of you"), so the screen names its parts the same way twice.
  */
 export function TargetsPanel({
 	counters,
@@ -38,7 +47,16 @@ export function TargetsPanel({
 
 	return (
 		<section className="rounded-lg border p-4">
-			<h2 className="text-lg font-semibold">Today</h2>
+			<h2 className="text-lg font-semibold">What you're aiming at</h2>
+			<Explainer label="What is this?">
+				<p>
+					A counter with a target on it — for today, or for the week. The number
+					is folded out of your log, so the button logs the event ("I did the
+					morning kneel") and the count follows from it. Nothing here edits a
+					number directly.
+				</p>
+				<p>{describeTargets(rows)}</p>
+			</Explainer>
 			<ul className="mt-3 space-y-2">
 				{rows.map((row) => (
 					<li key={row.counter.id}>

@@ -157,6 +157,31 @@ describe("TargetsPanel", () => {
 		expect(screen.getByText("Morning kneel")).not.toBeNull();
 	});
 
+	it("is not headed with the page's own title", () => {
+		// It was headed "Today", inside the page titled Today (#212 item 2) — two
+		// headings deep in one word, on the panel a new couple meets first.
+		renderPanel([KNEEL], [KNEEL_RULE]);
+		expect(
+			screen.getByRole("heading", { name: "What you're aiming at" }),
+		).not.toBeNull();
+		expect(screen.queryByRole("heading", { name: "Today" })).toBeNull();
+	});
+
+	it("says why a row has no button", () => {
+		// The seeded case (#212, #214): the pack's counter is incremented by an
+		// unconditional rule, so `tickFor` has nothing to cite and the row is a
+		// readout — which #214's floor only explains while the log is empty.
+		renderPanel([KNEEL], []);
+		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
+		expect(screen.getByText(/“Morning kneel” has no button/)).not.toBeNull();
+	});
+
+	it("says the rows are ticked once they can be", () => {
+		renderPanel([KNEEL], [KNEEL_RULE]);
+		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
+		expect(screen.getByText(/Every row here has a button/)).not.toBeNull();
+	});
+
 	it("keeps the row when logging fails, and says so", async () => {
 		vi.mocked(logEvent).mockRejectedValueOnce(new Error("offline"));
 		renderPanel([KNEEL], [KNEEL_RULE]);
