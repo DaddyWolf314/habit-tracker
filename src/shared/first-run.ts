@@ -1,9 +1,8 @@
 import { agreementEffectiveAt, type VersionedAgreement } from "./agreements.ts";
 import type { Counter } from "./counters.ts";
 import type { EventType } from "./event-types.ts";
-import { isCitingRef } from "./refs.ts";
 import type { Rule } from "./rules.ts";
-import { isTracked } from "./scaffold.ts";
+import { countingTypeFor, isTracked } from "./scaffold.ts";
 import { targetRows } from "./target-rows.ts";
 
 /**
@@ -68,43 +67,20 @@ export function firstRunStep({
 	);
 	if (tickable) return "log";
 
-	// A term that *could* be counted and is not yet.
+	// A term that *could* be counted and is not yet — through the very derivation
+	// the Agreements screen offers "Track this" from, so the floor cannot point at
+	// a term that screen would refuse to track.
+	//
+	// That parity is only safe since #213. `countingTypeFor` used to read a citing
+	// ref declaring no `agreement_kind` as counting every kind, and the pack ships
+	// one — `infraction.rule_ref`, unqualified because a breach may cite any term —
+	// so it answered "track a limit?" with `infraction`. This carried a private
+	// qualified-match predicate to stay clear of that; now the shared helper is
+	// right, keeping a second copy would just be a second thing to keep in step.
 	const trackable = live.some(
 		(agreement) =>
-			countsKind(agreement.kind, types) &&
+			countingTypeFor(agreement.kind, types) !== null &&
 			!isTracked(agreement.id, rules, types),
 	);
 	return trackable ? "track" : "log";
-}
-
-/**
- * Whether some event type is *about* counting this kind — a citing ref that
- * names the kind outright.
- *
- * Deliberately **not** {@link countingTypeFor}, which is what the Agreements
- * screen offers "Track this" from. That helper also matches a citing ref which
- * declares no `agreement_kind` at all, and the pack ships one: `infraction`'s
- * `rule_ref`, which is unqualified precisely because a breach may cite any term.
- * So it answers "track a limit?" with `infraction`, and the scaffold built from
- * that reads *a positive daily target of one infraction against your own limit,
- * with a streak* — see #213, which is a bug in that screen and not this one's to
- * fix.
- *
- * Requiring the qualified match keeps the floor's advice right on both sides of
- * that fix: a ref declaring `agreement_kind: "ritual"` is the statement "this
- * type counts rituals", which is the only thing worth pointing a first-run
- * suggestion at, while an unqualified ref means "cite anything" and is not a
- * tracking relationship at all. A couple whose only terms are limits and
- * safewords is therefore told to log, rather than sent looking for a control
- * that should not be there.
- */
-function countsKind(kindId: string, types: EventType[]): boolean {
-	return types.some((type) =>
-		Object.values(type.metadata).some(
-			(field) =>
-				isCitingRef(field) &&
-				field.kind === "ref" &&
-				field.agreement_kind === kindId,
-		),
-	);
 }
