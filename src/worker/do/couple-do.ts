@@ -47,6 +47,7 @@ import type {
 	VersionedCounter,
 } from "#/shared/counters.ts";
 import {
+	counterDefinitionSchema,
 	countersEffectiveAt,
 	counterValuesOf,
 	rungsCrossed,
@@ -5915,14 +5916,40 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	private requireCounter(id: string): CounterDefinition {
-		return JSON.parse(
-			this.requireCounterRow(id).definition,
-		) as CounterDefinition;
+		return this.storedCounterDefinition(this.requireCounterRow(id).definition);
 	}
 
 	private rowToCounter(row: CounterRow): Counter {
-		const def = JSON.parse(row.definition) as CounterDefinition;
-		return { ...def, value: row.value, updated_at: row.updated_at };
+		return {
+			...this.storedCounterDefinition(row.definition),
+			value: row.value,
+			updated_at: row.updated_at,
+		};
+	}
+
+	/**
+	 * One stored `counters.definition` mirror as a definition — **parsed**, not
+	 * cast.
+	 *
+	 * The cast this replaces was a lie with a date on it. The mirror is written by
+	 * whatever the schema was on the day of the write, so every field the schema
+	 * has since *added* is simply absent from a row an older deploy left behind:
+	 * `target_direction` (ADR 0015), `modify_permission`, and `rungs`. The cast
+	 * then handed those out as `undefined` under a type that says they are not, and
+	 * `RungsPanel` folding `counter.rungs` is where that surfaced — a blank Today,
+	 * not a missing banner, because `undefined.filter` throws.
+	 *
+	 * Parsing is the fix rather than `?? []` at the fold for the reason the fold is
+	 * shared at all: a default belongs where the shape is declared, and the next
+	 * field the schema gains would otherwise reopen this at whichever call site
+	 * forgot. It also makes the two read seams agree — the *version* path never had
+	 * the bug, because `versionFromCounterDefinition` has always parsed.
+	 *
+	 * Every field is optional or defaulted except `id` and `name`, both of which
+	 * predate the mirror, so this cannot throw on a row any deploy wrote.
+	 */
+	private storedCounterDefinition(definition: string): CounterDefinition {
+		return counterDefinitionSchema.parse(JSON.parse(definition));
 	}
 
 	// ── SQL helpers ──────────────────────────────────────────────────────────
@@ -6196,7 +6223,7 @@ export class CoupleDO extends DurableObject<Env> {
 		const rows = this.counterRows();
 		const defs =
 			policies ??
-			rows.map((row) => JSON.parse(row.definition) as CounterDefinition);
+			rows.map((row) => this.storedCounterDefinition(row.definition));
 		const valueById = new Map(rows.map((r) => [r.id, r.value]));
 		for (const def of defs) {
 			const streak = def.streak;
@@ -6342,8 +6369,8 @@ export class CoupleDO extends DurableObject<Env> {
 	}
 
 	private counterDefinitions(): CounterDefinition[] {
-		return this.counterRows().map(
-			(row) => JSON.parse(row.definition) as CounterDefinition,
+		return this.counterRows().map((row) =>
+			this.storedCounterDefinition(row.definition),
 		);
 	}
 
