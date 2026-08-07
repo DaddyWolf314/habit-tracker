@@ -11,6 +11,11 @@ import { StopwatchesPanel } from "#/components/today/stopwatches-panel.tsx";
 import { StorePanel } from "#/components/today/store-panel.tsx";
 import { TargetsPanel } from "#/components/today/targets-panel.tsx";
 import {
+	columnsClass,
+	pageClass,
+	pageColumnsClass,
+} from "#/components/ui/page.ts";
+import {
 	getRoles,
 	listAgreements,
 	listAnchors,
@@ -205,7 +210,7 @@ export function TodayView() {
 	if (!ready) return null;
 	if (!hasIdentity()) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageClass}>
 				<p className="text-muted-foreground">
 					You don't have a space on this device yet.{" "}
 					<Link to="/" className="underline">
@@ -218,61 +223,70 @@ export function TodayView() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl space-y-4 p-6">
-			<h1 className="text-2xl font-bold">Today</h1>
+		<div className={pageColumnsClass}>
+			<h1 className="mb-4 text-2xl font-bold lg:text-3xl">Today</h1>
 
-			{error && <p className="text-sm text-destructive">{error}</p>}
+			{error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
-			<RuleChangeNotice />
+			{/* Ten panels stacked in one column is a phone screen's answer, and it was
+			    the only answer the app had: on a laptop it was the same column with
+			    the countdowns pushed below the fold and half the width unused. The
+			    panels are independent and ordered, which is exactly what a
+			    multi-column flow takes — the order below is unchanged, and so is the
+			    phone layout, which is still one column because that is all `columns-2`
+			    turns on at `lg`. */}
+			<div className={columnsClass}>
+				<RuleChangeNotice />
 
-			<QueueEntry count={awaiting} />
+				<QueueEntry count={awaiting} />
 
-			{/* Above the glance panels: someone asking to talk outranks a day count,
-			    and unlike everything below it, this one waits on a person. */}
-			<ConversationFlagsPanel
-				flags={flags}
-				selfId={self?.member_id ?? null}
-				onChange={refreshAfterMutation}
-			/>
+				{/* Above the glance panels: someone asking to talk outranks a day count,
+				    and unlike everything below it, this one waits on a person. */}
+				<ConversationFlagsPanel
+					flags={flags}
+					selfId={self?.member_id ?? null}
+					onChange={refreshAfterMutation}
+				/>
 
-			<AnchorsPanel anchors={anchors} />
+				<AnchorsPanel anchors={anchors} />
 
-			{/* Above the targets: a standing rung is a term the couple agreed, and it
-			    outranks what you are aiming at today. */}
-			<RungsPanel counters={counters} agreements={agreements} />
+				{/* Above the targets: a standing rung is a term the couple agreed, and
+				    it outranks what you are aiming at today. */}
+				<RungsPanel counters={counters} agreements={agreements} />
 
-			{/* The store's state half, beside the ladder's (#194, ADR 0017): the two
-			    are the same kind of line passed, so they read together. */}
-			<StorePanel items={rewards} counters={counters} />
+				{/* The store's state half, beside the ladder's (#194, ADR 0017): the two
+				    are the same kind of line passed, so they read together. */}
+				<StorePanel items={rewards} counters={counters} />
 
-			<TargetsPanel
-				counters={counters}
-				rules={rules}
-				types={types}
-				onChange={refreshAfterMutation}
-			/>
+				<TargetsPanel
+					counters={counters}
+					rules={rules}
+					types={types}
+					onChange={refreshAfterMutation}
+				/>
 
-			<StopwatchesPanel
-				timers={timers}
-				types={types}
-				events={events}
-				members={members}
-				selfId={self?.member_id ?? null}
-				onChange={refreshAfterMutation}
-			/>
+				<StopwatchesPanel
+					timers={timers}
+					types={types}
+					events={events}
+					members={members}
+					selfId={self?.member_id ?? null}
+					onChange={refreshAfterMutation}
+				/>
 
-			<CountdownsPanel
-				timers={timers}
-				selfRole={selfRole}
-				selfId={self?.member_id ?? null}
-				partnerId={partner?.member_id ?? null}
-				onChange={refreshAfterMutation}
-			/>
+				<CountdownsPanel
+					timers={timers}
+					selfRole={selfRole}
+					selfId={self?.member_id ?? null}
+					partnerId={partner?.member_id ?? null}
+					onChange={refreshAfterMutation}
+				/>
 
-			<JournalPromptsPanel
-				openPrompts={openPrompts}
-				onChange={refreshAfterMutation}
-			/>
+				<JournalPromptsPanel
+					openPrompts={openPrompts}
+					onChange={refreshAfterMutation}
+				/>
+			</div>
 		</div>
 	);
 }

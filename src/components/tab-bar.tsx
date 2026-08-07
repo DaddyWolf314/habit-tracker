@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { getNotifications } from "#/lib/api.ts";
+import { APP_NAME } from "#/lib/app-config.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 import { lock } from "#/lib/pin.ts";
 import { LIVE_REFRESH_MS, useLiveRefresh } from "#/lib/use-live-refresh.ts";
@@ -27,8 +28,12 @@ const TABS = [
  * and the Log's compose button are the same measurement seen from two files: a
  * bar that grows on its own silently covers the button (cf. `LIVE_REFRESH_MS` —
  * "one number, not three literals that can drift apart", #92).
+ *
+ * Both stop applying at `lg`, where the bar is a side rail and nothing is
+ * floating over the bottom of the screen any more — hence the `lg:` resets that
+ * travel with them.
  */
-export const TAB_BAR_SPACER = "h-20";
+export const TAB_BAR_SPACER = "h-20 lg:hidden";
 export const ABOVE_TAB_BAR = "bottom-24";
 
 /**
@@ -63,6 +68,21 @@ export function TabBar() {
  * The bar itself, split from its data so the navigation contract is testable
  * without standing up a session. Fixed to the bottom for thumb reach, with an
  * in-flow spacer so the last of a scrolled surface never hides underneath it.
+ *
+ * At `lg` the same strip becomes a side rail. It is the same markup restyled,
+ * not a second copy behind a `lg:hidden`/`hidden lg:flex` pair — one tab is one
+ * link in the document either way, which is what keeps the accessibility tree
+ * (and every `getByRole("link")` in the tests) honest about how many ways there
+ * are to reach the Log. A bottom bar is a thumb affordance; on a laptop it is
+ * navigation parked several hundred pixels below the thing you were reading,
+ * while the rail sits where the pointer already is and gets the labels out of a
+ * 12px caption and onto a line of their own.
+ *
+ * The rail is `sticky`, not `fixed`, so it is a flex item the page column can
+ * lay out against — see the root layout, which is a plain block until `lg` and
+ * a two-column flex after it. That is also why the bar stays *last* in the
+ * document (the spacer has to fall below the page on a phone) and comes back to
+ * the left with `order-first`.
  */
 export function TabBarNav({
 	unread = 0,
@@ -78,11 +98,17 @@ export function TabBarNav({
 			    "Lock now" rides alongside them as an action rather than a fifth
 			    place to go — so the nav landmark wraps only the list, and vanishes
 			    with it rather than leaving an empty one behind. */}
-			<div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
-				<div className="mx-auto flex max-w-2xl justify-end">
+			<div className="fixed inset-x-0 bottom-0 z-40 border-t bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:sticky lg:inset-x-auto lg:top-0 lg:bottom-auto lg:order-first lg:h-screen lg:w-56 lg:shrink-0 lg:border-t-0 lg:border-r lg:pb-0">
+				<div className="mx-auto flex max-w-2xl justify-end lg:h-full lg:max-w-none lg:flex-col lg:justify-start lg:gap-1 lg:p-3">
+					{/* Wayfinding the phone layout has no room for and no need of —
+					    there, the app is the only thing on screen. On a laptop it is one
+					    window among many, so the rail says which one. */}
+					<div className="hidden px-3 pt-2 pb-4 text-sm font-semibold lg:block">
+						{APP_NAME}
+					</div>
 					{showTabs ? (
-						<nav aria-label="Main" className="flex-1">
-							<ul className="flex">
+						<nav aria-label="Main" className="flex-1 lg:flex-none">
+							<ul className="flex lg:flex-col lg:gap-1">
 								{TABS.map(({ to, label, Icon }) => (
 									<li key={to} className="flex-1">
 										{/* The colours carry `!` because `styles.css` paints every anchor
@@ -93,9 +119,9 @@ export function TabBarNav({
 							    not by which one the router meant to win. */}
 										<Link
 											to={to}
-											className="relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 text-xs transition-colors"
+											className="relative flex min-h-14 flex-col items-center justify-center gap-1 py-2 text-xs transition-colors lg:min-h-11 lg:flex-row lg:justify-start lg:gap-3 lg:rounded-md lg:px-3 lg:text-sm lg:hover:bg-accent/50"
 											activeProps={{
-												className: "text-foreground! font-medium",
+												className: "text-foreground! font-medium lg:bg-accent",
 												"aria-current": "page",
 											}}
 											inactiveProps={{
@@ -105,16 +131,22 @@ export function TabBarNav({
 										>
 											{({ isActive }) => (
 												<>
+													{/* The rule that marks the active tab turns on its
+													    side with the bar: a top edge over a bottom-bar
+													    cell, a left edge down a rail row. */}
 													{isActive && (
 														<span
 															aria-hidden="true"
-															className="absolute inset-x-5 top-0 h-0.5 rounded-full bg-current"
+															className="absolute inset-x-5 top-0 h-0.5 rounded-full bg-current lg:inset-x-auto lg:inset-y-1 lg:left-0 lg:h-auto lg:w-0.5"
 														/>
 													)}
 													<Icon aria-hidden="true" className="size-5" />
 													{label}
+													{/* Pinned over the icon in a bottom-bar cell, where
+													    there is nowhere else for it to go; on a rail row
+													    it stops floating and takes the end of the line. */}
 													{to === "/log" && unread > 0 && (
-														<span className="absolute top-1 left-1/2 ml-1 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] leading-4 font-semibold text-primary-foreground">
+														<span className="absolute top-1 left-1/2 ml-1 min-w-4 rounded-full bg-primary px-1 text-center text-[10px] leading-4 font-semibold text-primary-foreground lg:static lg:ml-auto">
 															<span aria-hidden="true">{unread}</span>
 															{/* Content-free (#42): the count, never what the
 												    items are. The comma keeps the tab's accessible
@@ -159,7 +191,9 @@ function LockNowCell() {
 		<button
 			type="button"
 			onClick={() => lock()}
-			className="flex min-h-14 w-20 flex-col items-center justify-center gap-1 border-l px-1 py-2 text-center text-xs leading-tight text-muted-foreground transition-colors hover:text-foreground"
+			// `mt-auto` on the rail: locking is the one thing here that isn't a
+			// place, so it sits apart at the foot rather than reading as a fifth tab.
+			className="flex min-h-14 w-20 flex-col items-center justify-center gap-1 border-l px-1 py-2 text-center text-xs leading-tight text-muted-foreground transition-colors hover:text-foreground lg:mt-auto lg:min-h-11 lg:w-full lg:flex-row lg:justify-start lg:gap-3 lg:rounded-md lg:border-t lg:border-l-0 lg:px-3 lg:pt-3 lg:text-left lg:text-sm lg:hover:bg-accent/50"
 		>
 			<Lock aria-hidden="true" className="size-5" />
 			Lock now

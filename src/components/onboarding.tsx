@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { StatusSummary } from "#/components/status-summary.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { pageClass } from "#/components/ui/page.ts";
 import {
 	ApiError,
 	confirmRoles,
@@ -576,7 +577,7 @@ function Home({
 	if (destination) return null;
 
 	return (
-		<div className="mx-auto max-w-2xl p-8">
+		<div className={pageClass}>
 			<h1 className="text-2xl font-bold">Your space</h1>
 			<div className="mt-6">
 				<StatusSummary session={session} />

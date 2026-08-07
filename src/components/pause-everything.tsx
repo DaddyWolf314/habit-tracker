@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
+// The widest of the three shells, so the bar lines up with the widest surface
+// underneath it rather than sitting short of the page on Today and Settings.
+import { pageColumnsClass } from "#/components/ui/page.ts";
 import { getSession, pause, resume } from "#/lib/api.ts";
 import { hasIdentity } from "#/lib/identity.ts";
 
@@ -99,7 +102,13 @@ export function PauseEverythingBar() {
 
 	if (state === "running") {
 		return (
-			<div className="mx-auto flex max-w-2xl justify-end px-6 pt-3">
+			// Right edge of the content area, not of the page column: this is
+			// root-layout chrome sitting above a surface whose width it cannot know
+			// (the Log is narrower than Today). Pinning it to any one of the three
+			// shells would leave it visibly short of the column on the other two,
+			// whereas top-right of the available space reads as chrome, which is what
+			// it is — the control that has to be reachable from everywhere.
+			<div className="flex justify-end px-6 pt-3 lg:px-8">
 				<Button
 					variant="outline"
 					size="sm"
@@ -116,7 +125,9 @@ export function PauseEverythingBar() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl px-6 pt-3">
+		// The banner is prose, not chrome, so unlike the button above it keeps a
+		// measure — the widest of the three, since it outranks whatever it sits on.
+		<div className={`${pageColumnsClass} py-0 pt-3`}>
 			<div className="rounded-lg border border-amber-300 bg-amber-50 p-4">
 				<p className="font-semibold text-amber-900">Everything is paused.</p>
 				<p className="mt-1 text-sm text-amber-800">

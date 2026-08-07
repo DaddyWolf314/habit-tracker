@@ -6,6 +6,7 @@ import { LogComposer } from "#/components/log/log-composer.tsx";
 import { QueuePanel } from "#/components/log/queue-panel.tsx";
 import { ABOVE_TAB_BAR } from "#/components/tab-bar.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { pageClass, pageRowsClass } from "#/components/ui/page.ts";
 import { Sheet, SheetContent, SheetTrigger } from "#/components/ui/sheet.tsx";
 import {
 	getRoles,
@@ -178,7 +179,7 @@ export function LogView() {
 	if (!ready) return null;
 	if (!hasIdentity()) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageClass}>
 				<p className="text-muted-foreground">
 					You don't have a space on this device yet.{" "}
 					<Link to="/" className="underline">
@@ -193,9 +194,43 @@ export function LogView() {
 	return (
 		// Bottom padding leaves room for the floating compose button so it never
 		// covers the last events in the stream — on top of the tab bar's own
-		// spacer, which already clears the bar itself.
-		<div className="mx-auto max-w-2xl space-y-4 p-6 pb-20">
-			<h1 className="text-2xl font-bold">Log</h1>
+		// spacer, which already clears the bar itself. Neither is needed at `lg`,
+		// where that button is in the header instead of over the stream.
+		<div className={`${pageRowsClass} space-y-4 pb-20 lg:pb-6`}>
+			{/* The compose control is one button that changes where it lives, not a
+			    phone copy and a desktop copy: a thumb needs it floating at the bottom
+			    of the screen, a pointer wants it beside the heading it belongs to, and
+			    two of them would be two things to keep in step and two hits for every
+			    "Log an event" query in the tests. So it sits in the header in the
+			    document and is lifted out of flow only below `lg`. */}
+			<div className="flex items-center justify-between gap-3">
+				<h1 className="text-2xl font-bold lg:text-3xl">Log</h1>
+
+				<Sheet open={composerOpen} onOpenChange={setComposerOpen}>
+					<SheetTrigger asChild>
+						<Button
+							className={`fixed ${ABOVE_TAB_BAR} left-1/2 z-40 -translate-x-1/2 shadow-lg lg:static lg:left-auto lg:translate-x-0 lg:shadow-sm`}
+						>
+							Log an event
+						</Button>
+					</SheetTrigger>
+					<SheetContent title="Log an event">
+						<LogComposer
+							types={types}
+							members={members}
+							openPrompts={openPrompts}
+							rules={liveRules}
+							timers={timers}
+							agreements={agreements}
+							rewards={rewards}
+							onLogged={() => {
+								refreshLog();
+								setComposerOpen(false);
+							}}
+						/>
+					</SheetContent>
+				</Sheet>
+			</div>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 
@@ -236,34 +271,6 @@ export function LogView() {
 				selfRole={selfRole}
 				onAmended={refreshLog}
 			/>
-
-			{/* The primary write action floats over the stream and opens the composer
-			    as a sheet (handoff §9.4), instead of sitting buried mid-scroll. It
-			    clears the tab bar (#85), which owns the very bottom of the screen. */}
-			<Sheet open={composerOpen} onOpenChange={setComposerOpen}>
-				<SheetTrigger asChild>
-					<Button
-						className={`fixed ${ABOVE_TAB_BAR} left-1/2 z-40 -translate-x-1/2 shadow-lg`}
-					>
-						Log an event
-					</Button>
-				</SheetTrigger>
-				<SheetContent title="Log an event">
-					<LogComposer
-						types={types}
-						members={members}
-						openPrompts={openPrompts}
-						rules={liveRules}
-						timers={timers}
-						agreements={agreements}
-						rewards={rewards}
-						onLogged={() => {
-							refreshLog();
-							setComposerOpen(false);
-						}}
-					/>
-				</SheetContent>
-			</Sheet>
 		</div>
 	);
 }
