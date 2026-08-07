@@ -4,6 +4,11 @@ import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
+import {
+	columnsClass,
+	pageClass,
+	pageColumnsClass,
+} from "#/components/ui/page.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import {
 	ackAgreementChanges,
@@ -158,7 +163,7 @@ export function AgreementsView() {
 	if (!ready) return null;
 	if (!hasIdentity()) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageClass}>
 				<p className="text-muted-foreground">
 					You don't have a space on this device yet.{" "}
 					<Link to="/" className="underline">
@@ -171,8 +176,12 @@ export function AgreementsView() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl space-y-4 p-6">
-			<h1 className="text-2xl font-bold">Agreements</h1>
+		// A term is prose that binds, so the *measure* is what has to be protected
+		// here — not the column. Splitting the kind sections into two at `lg` keeps
+		// a term at about the width it already had while the page stops being a
+		// strip; widening the single column instead would have done the reverse.
+		<div className={`${pageColumnsClass} space-y-4`}>
+			<h1 className="text-2xl font-bold lg:text-3xl">Agreements</h1>
 			<p className="text-sm text-muted-foreground">
 				What the two of you have agreed. Everything here is shared — a term
 				binds you both, so you can both always read it.
@@ -196,29 +205,31 @@ export function AgreementsView() {
 				</section>
 			)}
 
-			{kinds.map((kind) => (
-				<KindSection
-					key={kind.id}
-					kind={kind}
-					kinds={kinds}
-					agreements={live.filter((a) => a.kind === kind.id)}
-					now={now}
-					canAuthor={authorsKind(kinds, kind.id, selfRole)}
-					selfId={selfId}
-					selfRole={selfRole}
-					partnerRole={partnerRole}
-					rules={rules}
-					types={types}
-					adding={adding === kind.id}
-					onAdd={() => setAdding(kind.id)}
-					onCancelAdd={() => setAdding(null)}
-					onChanged={() => {
-						setAdding(null);
-						reload();
-					}}
-					onError={setError}
-				/>
-			))}
+			<div className={columnsClass}>
+				{kinds.map((kind) => (
+					<KindSection
+						key={kind.id}
+						kind={kind}
+						kinds={kinds}
+						agreements={live.filter((a) => a.kind === kind.id)}
+						now={now}
+						canAuthor={authorsKind(kinds, kind.id, selfRole)}
+						selfId={selfId}
+						selfRole={selfRole}
+						partnerRole={partnerRole}
+						rules={rules}
+						types={types}
+						adding={adding === kind.id}
+						onAdd={() => setAdding(kind.id)}
+						onCancelAdd={() => setAdding(null)}
+						onChanged={() => {
+							setAdding(null);
+							reload();
+						}}
+						onError={setError}
+					/>
+				))}
+			</div>
 
 			{retired.length > 0 && (
 				<section className="rounded-lg border p-4">

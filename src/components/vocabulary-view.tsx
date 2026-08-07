@@ -3,6 +3,11 @@ import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import {
+	columnsClass,
+	pageClass,
+	pageColumnsClass,
+} from "#/components/ui/page.ts";
+import {
 	addEventTypeOption,
 	getRoles,
 	listEventTypeOptions,
@@ -106,7 +111,7 @@ export function VocabularyView() {
 	if (!ready) return null;
 	if (!hasIdentity()) {
 		return (
-			<div className="mx-auto max-w-2xl p-8">
+			<div className={pageClass}>
 				<p className="text-muted-foreground">
 					You don't have a space on this device yet.
 				</p>
@@ -115,9 +120,9 @@ export function VocabularyView() {
 	}
 
 	return (
-		<div className="mx-auto max-w-2xl space-y-6 p-6">
+		<div className={`${pageColumnsClass} space-y-6`}>
 			<div>
-				<h1 className="text-2xl font-bold">Your words</h1>
+				<h1 className="text-2xl font-bold lg:text-3xl">Your words</h1>
 				<p className="mt-1 text-sm text-muted-foreground">
 					The app ships a starting vocabulary. Add your own words to any of
 					these lists and they'll show up wherever you log — and in rules you
@@ -133,23 +138,28 @@ export function VocabularyView() {
 				</p>
 			)}
 
-			{editable.map(({ type, key, field }) => (
-				<OptionList
-					key={`${type.id}.${key}`}
-					typeId={type.id}
-					typeLabel={type.label}
-					fieldKey={key}
-					field={field}
-					mine={
-						new Set(
-							mine
-								.filter((o) => o.type_id === type.id && o.field_key === key)
-								.map((o) => o.option),
-						)
-					}
-					onChanged={reload}
-				/>
-			))}
+			{/* One list per enum, and they are siblings rather than steps — you come
+			    here to add a word to *one* of them. Stacked, that is a long scroll
+			    past lists you didn't want on a screen with room for two abreast. */}
+			<div className={columnsClass}>
+				{editable.map(({ type, key, field }) => (
+					<OptionList
+						key={`${type.id}.${key}`}
+						typeId={type.id}
+						typeLabel={type.label}
+						fieldKey={key}
+						field={field}
+						mine={
+							new Set(
+								mine
+									.filter((o) => o.type_id === type.id && o.field_key === key)
+									.map((o) => o.option),
+							)
+						}
+						onChanged={reload}
+					/>
+				))}
+			</div>
 		</div>
 	);
 }

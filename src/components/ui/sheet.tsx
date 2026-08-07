@@ -9,7 +9,9 @@ import { cn } from "#/lib/utils.ts";
  * action to open onto (handoff §9.4, #91), rather than a panel wedged into the
  * page. Radix gives us the focus trap, Escape/backdrop dismissal, and the
  * dialog aria wiring; the styling anchors the panel to the bottom of the content
- * column so it reads as a drawer on phone-width screens.
+ * column so it reads as a drawer on phone-width screens, and re-centres it as an
+ * ordinary dialog above `sm`, where the bottom edge of the window is nowhere
+ * near the hand or the eye. See {@link SheetContent} for that half.
  */
 const Sheet = SheetPrimitive.Root;
 const SheetTrigger = SheetPrimitive.Trigger;
@@ -53,6 +55,17 @@ function SheetContent({
 				data-slot="sheet-content"
 				className={cn(
 					"fixed inset-x-0 bottom-0 z-50 mx-auto flex max-h-[85vh] w-full max-w-2xl flex-col rounded-t-2xl border bg-background shadow-lg data-[state=closed]:animate-out data-[state=closed]:slide-out-to-bottom data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom",
+					// A drawer is a phone gesture — it comes up from the edge your thumb
+					// is already at. On a pointer screen the same panel anchored to the
+					// bottom of a tall window reads as something half off the display,
+					// and the eye has to travel to the bottom edge to use a form the
+					// button for was at the top. Above `sm` it is a centred dialog
+					// instead: same component, same focus trap, same escape hatch.
+					"sm:inset-x-auto sm:top-1/2 sm:bottom-auto sm:left-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-2xl",
+					// The slide is cancelled rather than left to fight the centring
+					// translate, and a dialog that is already in the middle gets the
+					// scale-in a dialog usually gets.
+					"sm:data-[state=closed]:slide-out-to-bottom-0 sm:data-[state=closed]:zoom-out-95 sm:data-[state=open]:slide-in-from-bottom-0 sm:data-[state=open]:zoom-in-95",
 					className,
 				)}
 				{...props}
