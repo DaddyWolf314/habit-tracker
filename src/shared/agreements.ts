@@ -94,6 +94,25 @@ export const agreementKindSchema = z.object({
 	author_permission: permissionListSchema,
 	author_scope: authorScopeSchema,
 	/**
+	 * One sentence saying what this category *is*, for the reader who has never
+	 * met the word (#210). Editorial copy about a category, not a term the couple
+	 * agreed — so it is pack-owned like `label`, and unlike `label` it is
+	 * **never persisted**: no column, no seed, no export row.
+	 *
+	 * That split is deliberate. `label` is stored because a citation renders it
+	 * and the couple's row is the resolution unit; a description is documentation
+	 * about the app, which the app already ships. Storing it would put prose
+	 * behind `agreement_kinds_version`, so every wording fix would need a pack
+	 * bump to reach anybody and a couple on an older seed would read stale copy —
+	 * an absurd cost for a sentence, and one the export should not carry into the
+	 * record a member leaves with.
+	 *
+	 * Absent on a stored kind, therefore, and on any kind the pack does not ship.
+	 * The screen renders nothing rather than inventing a description, the same way
+	 * {@link describeCitation} returns null for an id the couple does not hold.
+	 */
+	description: z.string().optional(),
+	/**
 	 * Whether the couple has edited this kind's author list (#159). Adoption
 	 * freezes the list against the pack, exactly as it does a rule's definition
 	 * (ADR 0002): a kinds bump stops overwriting it and only raises a notice.
@@ -332,6 +351,65 @@ export function authorsKind(
 	if (role === null) return false;
 	const kind = kinds.find((k) => k.id === kindId);
 	return kind?.author_permission.includes(role) ?? false;
+}
+
+/**
+ * Who may write a term of this kind, and whose it is once written — in one
+ * sentence, from the viewer's side (#210).
+ *
+ * **Derived, never written down.** The other half of a kind's explanatory copy
+ * is its {@link agreementKindSchema} `description`, which is shipped prose; this
+ * half deliberately is not, because `edit_kind` lets a couple change
+ * `author_permission` at any time. A shipped sentence reading "only your dom
+ * writes these" would then be a false statement sitting in a consent record,
+ * which is the one place this app cannot afford decorative copy. Computing it
+ * from the same `author_permission` and `author_scope` the server authorizes
+ * against means the sentence moves when the rule moves.
+ *
+ * Reads both members' roles rather than the viewer's alone, since every
+ * interesting case turns on the *pair*: `subject` scope says something different
+ * in a couple where both partners hold limits than where one does, and ADR 0010
+ * exists precisely because a role list resolving to more than one member is the
+ * defect. A couple where neither holds the kind is dormant, not broken (ADR
+ * 0003's dormancy) — the terms stay readable and the sentence says so.
+ *
+ * Says nothing about retiring, which {@link mayRetireAgreement} deliberately
+ * opens wider: the subjectless residual it exists for cannot be created any more,
+ * so explaining it here would spend the reader's attention on a state they will
+ * never see.
+ */
+export function describeKindAuthorship(
+	kind: AgreementKind,
+	selfRole: Role | null,
+	partnerRole: Role | null,
+): string {
+	const holds = (role: Role | null) =>
+		role !== null && kind.author_permission.includes(role);
+	const mine = holds(selfRole);
+	const theirs = holds(partnerRole);
+
+	if (!mine && !theirs) {
+		return "Neither of your roles holds this kind, so there's nothing to write here — anything already here stays readable.";
+	}
+	switch (kind.author_scope) {
+		case "subject":
+			if (mine && theirs)
+				return "Each of you writes your own. Your partner can read yours, and can't change them.";
+			return mine
+				? "Yours to write and yours to change. Your partner can read them."
+				: "Your partner's to write and to change. You can read them.";
+		case "counterpart":
+			if (mine && theirs)
+				return "Either of you can write one about the other. Whoever a term is about can't change it.";
+			return mine
+				? "You write these and they're about your partner — so they can't rewrite their own."
+				: "Your partner writes these and they're about you. You can always read them; you can't change them.";
+		default:
+			if (mine && theirs) return "Either of you can write or change these.";
+			return mine
+				? "Yours to write and to change. Your partner can read them."
+				: "Your partner writes these. You can read them.";
+	}
 }
 
 /** The author scope of `kindId`, or null when the couple holds no such kind. */
