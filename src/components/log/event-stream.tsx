@@ -19,8 +19,13 @@ import type { WaivedEffect } from "#/shared/amendments.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
-import { isCitingRef, readableMetadata } from "#/shared/refs.ts";
+import { citingRefKind, readableMetadata } from "#/shared/refs.ts";
 import { standingEffects, waivedEffectOf } from "#/shared/reversal.ts";
+import {
+	describeRewardCitation,
+	REWARD_REF_KIND,
+	type VersionedRewardItem,
+} from "#/shared/rewards.ts";
 import type { MetadataValue, Role } from "#/shared/roles.ts";
 import type { TraceRow } from "#/shared/trace.ts";
 import {
@@ -54,6 +59,7 @@ export function EventStream({
 	types,
 	members,
 	agreements = [],
+	rewards = [],
 	selfId = null,
 	selfRole = null,
 	onAmended,
@@ -63,6 +69,13 @@ export function EventStream({
 	members: RoleMember[];
 	/** The corpus, so a citation reads as a name rather than an id (#121). */
 	agreements?: VersionedAgreement[];
+	/**
+	 * The store, so a redemption's `reward_ref` reads as the item's name and a
+	 * price crossing on its chain names what became affordable (#194, ADR 0017).
+	 * The corpus's argument, applied to the other citing kind: a row saying
+	 * "spent 40 on 01JB6X…" carries the number and loses the thing bought.
+	 */
+	rewards?: VersionedRewardItem[];
 	/**
 	 * The viewer's member id: it decides whose row this is, and so which of the
 	 * three amendment affordances a row offers — note/retract on your own pending
@@ -95,6 +108,7 @@ export function EventStream({
 				{events.map((event) => (
 					<EventRow
 						agreements={agreements}
+						rewards={rewards}
 						now={now}
 						key={event.id}
 						event={event}
@@ -112,6 +126,7 @@ export function EventStream({
 
 function EventRow({
 	agreements,
+	rewards,
 	now,
 	event,
 	type,
@@ -122,6 +137,8 @@ function EventRow({
 }: {
 	/** The corpus, so a citation reads as a name rather than an id (#121). */
 	agreements: VersionedAgreement[];
+	/** The store, for the same reason on the other citing kind (#194). */
+	rewards: VersionedRewardItem[];
 	now: number;
 	event: EventView;
 	/** The event's type schema, or undefined for a type the couple has since dropped. */
@@ -245,6 +262,7 @@ function EventRow({
 										value,
 										event.occurred_at,
 										agreements,
+										rewards,
 										now,
 									)}
 								</span>
@@ -317,10 +335,15 @@ function EventRow({
 								<li>No effects — this event touched no projections.</li>
 							)}
 							{trace?.map((row) => {
-								// The corpus rides along so a crossing names the term it cites
-								// rather than its id (ADR 0015) — the same corpus the event's own
-								// citing refs render through, two lines up.
-								const line = describeTraceRow(row, { agreements, now });
+								// The corpus and the store ride along so a crossing names the term
+								// it cites (ADR 0015) and a price crossing names the item it made
+								// affordable (ADR 0017), rather than either id — the same two the
+								// event's own citing refs render through, two lines up.
+								const line = describeTraceRow(row, {
+									agreements,
+									rewards,
+									now,
+								});
 								const isNearMiss = line.tone === "near_miss";
 								// A declined reversal reads muted like a near-miss — both record
 								// something that did not happen — but keeps the effect bullet,
@@ -680,14 +703,20 @@ function readMetaValue(
 	value: MetadataValue,
 	occurredAt: number,
 	agreements: VersionedAgreement[],
+	rewards: VersionedRewardItem[],
 	now: number,
 ): string {
 	const field = type?.metadata[key];
-	if (field && isCitingRef(field) && typeof value === "string") {
-		return (
-			describeCitation(agreements, value, occurredAt, now) ??
-			formatMetaValue(value)
-		);
+	// Which definition set the ref names is already stated in the schema, so it
+	// picks the describer rather than a flag doing it. Both render the name **as it
+	// stood when the act happened**, with today's beside it when they differ.
+	const citing = field ? citingRefKind(field) : undefined;
+	if (citing !== undefined && typeof value === "string") {
+		const cited =
+			citing === REWARD_REF_KIND
+				? describeRewardCitation(rewards, value, occurredAt, now)
+				: describeCitation(agreements, value, occurredAt, now);
+		return cited ?? formatMetaValue(value);
 	}
 	return displayMetaValue(field, value);
 }

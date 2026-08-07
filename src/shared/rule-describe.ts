@@ -132,30 +132,56 @@ export function describeCondition(
 }
 
 /**
+ * How a delta effect names the counter it moves: the counter itself, or — when
+ * the target is routed (ADR 0017) — the key it is read from, phrased as a key
+ * rather than dressed up as a counter name. "subtract Price from the counter
+ * named by Currency" is longer than "subtract Price from service points" and is
+ * the only honest reading: which counter moves depends on the event, and a
+ * description that names one would be describing a single redemption rather than
+ * the rule.
+ */
+function routedCounterLabel(
+	counter: string | undefined,
+	counterFrom: string | undefined,
+	type?: EventType,
+): string {
+	if (counterFrom === undefined) return humanize(counter ?? "");
+	const label = type?.metadata[counterFrom]?.label ?? humanize(counterFrom);
+	return `the counter named by ${label}`;
+}
+
+/**
  * A single effect as a phrase, e.g. "+2 demerits" or "notify partner" — the
  * shared {@link summarizeEffectOp} phrase, so it reads identically here and on
  * the confirm/trace surfaces. The effect is resolved against an empty event
  * context (description needs no event); a timer close's duration routing, which
  * only the rules screen states up front, is appended to the shared phrase.
  *
- * A **routed magnitude** is the one effect this cannot borrow the shared phrase
- * for (ADR 0015), and deliberately so: `resolveEffect` against an empty context
- * resolves a `by_from` to a *skip*, which is the truth about that context and a
- * lie about the rule. A description has no event, so it names the key instead of
- * a number — the same move the timer-close line below makes when it states a
- * routing the shared phrase has no room for.
+ * A **routed** value is the one thing this cannot borrow the shared phrase for
+ * (ADR 0015, ADR 0017), and deliberately so: `resolveEffect` against an empty
+ * context resolves a `by_from` or a `counter_from` to a *skip*, which is the
+ * truth about that context and a lie about the rule. A description has no event,
+ * so it names the key instead of the value — the same move the timer-close line
+ * below makes when it states a routing the shared phrase has no room for.
  */
 export function describeEffect(effect: Effect, type?: EventType): string {
 	if (
 		(effect.verb === "increment_counter" ||
 			effect.verb === "decrement_counter") &&
-		effect.by_from !== undefined
+		(effect.by_from !== undefined || effect.counter_from !== undefined)
 	) {
-		const label =
-			type?.metadata[effect.by_from]?.label ?? humanize(effect.by_from);
+		const amount =
+			effect.by_from === undefined
+				? String(effect.by)
+				: (type?.metadata[effect.by_from]?.label ?? humanize(effect.by_from));
+		const target = routedCounterLabel(
+			effect.counter,
+			effect.counter_from,
+			type,
+		);
 		const verb = effect.verb === "increment_counter" ? "add" : "subtract";
 		const preposition = effect.verb === "increment_counter" ? "to" : "from";
-		return `${verb} ${label} ${preposition} ${humanize(effect.counter)}`;
+		return `${verb} ${amount} ${preposition} ${target}`;
 	}
 	const op = resolveEffect(effect, {
 		type: "",

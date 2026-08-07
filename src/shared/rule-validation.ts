@@ -118,7 +118,7 @@ function checkEffectTarget(
 		case "increment_counter":
 		case "decrement_counter":
 			return (
-				checkCounterTarget(effect.counter, ctx) ??
+				checkDeltaTarget(effect, ctx, type) ??
 				// A routed magnitude must name a field that can actually hold one
 				// (ADR 0015). Beside the other routed keys because it is one: at
 				// runtime an absent key routes `undefined`, which degrades the effect
@@ -180,6 +180,47 @@ function checkCounterTarget(
 	return ctx.counters.has(counter)
 		? null
 		: `effect targets unknown counter '${counter}'`;
+}
+
+/**
+ * Ensures a delta effect names its counter exactly one way (ADR 0017): a literal
+ * `counter` the couple holds, or a `counter_from` routing one off the event.
+ *
+ * **Exactly one**, checked here rather than given a precedence order in the
+ * engine. A rule carrying both is two answers to one question, and whichever lost
+ * would lose silently — the author would read the literal in the editor and watch
+ * a different counter move.
+ *
+ * A routed target demands more of its field than a routed magnitude does of its
+ * own: it must be a **ref**, because a counter id is an identity rather than a
+ * label, and it must be `required`, because a magnitude field may legitimately be
+ * blank while a target that is absent names no projection at all. That second
+ * demand is what keeps the runtime skip a can't-happen guard instead of a live
+ * path nobody sees.
+ */
+function checkDeltaTarget(
+	effect: Extract<
+		Rule["effects"][number],
+		{ verb: "increment_counter" | "decrement_counter" }
+	>,
+	ctx: RuleValidationContext,
+	type: EventType,
+): string | null {
+	if (effect.counter !== undefined && effect.counter_from !== undefined) {
+		return "effect names both a counter and a counter_from — pick one";
+	}
+	if (effect.counter_from === undefined) {
+		return effect.counter === undefined
+			? "effect needs a counter, or a counter_from to route one"
+			: checkCounterTarget(effect.counter, ctx);
+	}
+	const routed = checkRoutedKey("counter_from", effect.counter_from, type, [
+		"ref",
+	]);
+	if (routed) return routed;
+	return type.metadata[effect.counter_from]?.required === true
+		? null
+		: `effect counter_from key '${effect.counter_from}' on ${type.id} must be a required field`;
 }
 
 /**

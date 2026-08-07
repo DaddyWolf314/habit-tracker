@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { VersionedAgreement } from "./agreements.ts";
 import type { MetadataField } from "./event-types.ts";
 import { RECENT_ECHO_CANDIDATES, refCandidates } from "./ref-candidates.ts";
+import type { VersionedRewardItem } from "./rewards.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
 
@@ -649,6 +650,131 @@ describe("citing-ref candidates", () => {
 				now: MAR,
 				field: citing(),
 				agreements: [],
+			}),
+		).toEqual([]);
+	});
+});
+
+/**
+ * The store's citing branch (#194, ADR 0017) — the same lifecycle the corpus has,
+ * asked of the other definition kind.
+ */
+describe("reward-item candidates", () => {
+	const MAR = 1_700_000_000_000;
+	const JUN = MAR + 90 * 86_400_000;
+
+	const item = (
+		id: string,
+		name: string,
+		price: number,
+		retiredAt?: number,
+	): VersionedRewardItem => ({
+		id,
+		subject: "m_sub",
+		versions: [
+			{
+				effective_from: MAR,
+				name,
+				terms: "",
+				currency: "service_points",
+				price,
+				requires_grant: true,
+				retired: false,
+			},
+			...(retiredAt
+				? [
+						{
+							effective_from: retiredAt,
+							name,
+							terms: "",
+							currency: "service_points",
+							price,
+							requires_grant: true,
+							retired: true,
+						},
+					]
+				: []),
+		],
+	});
+
+	const REWARDS = [
+		item("rw_1", "an hour of your attention", 50),
+		item("rw_2", "skip today's ritual", 20),
+		item("rw_3", "a night off", 100, JUN),
+	];
+
+	const rewardField: MetadataField = {
+		kind: "ref",
+		ref_kind: "reward",
+		label: "Reward",
+		required: true,
+		set_permission: ["dom", "sub", "switch"],
+	};
+
+	const rewards = (now: number, items = REWARDS) =>
+		offer({
+			rules: [],
+			timers: [],
+			typeId: "redemption",
+			key: "reward_ref",
+			now,
+			field: rewardField,
+			rewards: items,
+		});
+
+	// An item is *chosen* by what it costs, so a picker naming only the item asks
+	// the sub to pick blind. The currency is named too, since a couple may keep
+	// several (ADR 0015).
+	it("offers every item in force, priced", () => {
+		expect(rewards(MAR + 1)).toEqual([
+			{ value: "rw_1", label: "an hour of your attention — 50 service_points" },
+			{ value: "rw_2", label: "skip today's ritual — 20 service_points" },
+			{ value: "rw_3", label: "a night off — 100 service_points" },
+		]);
+	});
+
+	// The Agreement rule, deliberately unchanged: a retired item is offered for no
+	// new citation while every past one still resolves.
+	it("withholds a retired item", () => {
+		expect(rewards(JUN + 1).map((c) => c.value)).toEqual(["rw_1", "rw_2"]);
+	});
+
+	// Nothing existed before the first version, so nothing is offered.
+	it("offers nothing before the store existed", () => {
+		expect(rewards(MAR - 1)).toEqual([]);
+	});
+
+	// Deliberately not filtered to what the viewer can afford: whether the value
+	// covers it is a fact about the counter now, while candidacy is a fact about
+	// the item — and hiding the expensive half would remove what the sub is saving
+	// toward from the one surface that names it.
+	it("offers an item regardless of what anything costs", () => {
+		expect(rewards(MAR + 1).map((c) => c.value)).toContain("rw_3");
+	});
+
+	it("falls back to free text when the store is empty", () => {
+		expect(rewards(MAR + 1, [])).toEqual([]);
+	});
+
+	// The dispatch is on the declared `ref_kind`, so an agreement field on the same
+	// call is still answered from the corpus rather than the store.
+	it("does not answer an agreement ref from the store", () => {
+		expect(
+			offer({
+				rules: [],
+				timers: [],
+				typeId: "infraction",
+				key: "rule_ref",
+				now: MAR + 1,
+				field: {
+					kind: "ref",
+					ref_kind: "agreement",
+					label: "Agreement",
+					required: false,
+					set_permission: ["dom", "sub", "switch"],
+				},
+				agreements: [],
+				rewards: REWARDS,
 			}),
 		).toEqual([]);
 	});

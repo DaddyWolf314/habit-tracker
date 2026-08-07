@@ -1,5 +1,5 @@
 {
-	"version": 10,
+	"version": 11,
 	"rules": [
 		{
 			"id": "R1",
@@ -285,6 +285,21 @@
 				"metadata": { "mood": { "op": "lte", "value": 2 } }
 			},
 			"effects": [{ "verb": "notify", "target": "partner" }]
+		},
+		{
+			"id": "R28",
+			"name": "A granted redemption spends its price",
+			"condition": {
+				"type": "redemption",
+				"metadata": { "granted": true }
+			},
+			"effects": [
+				{
+					"verb": "decrement_counter",
+					"counter_from": "currency",
+					"by_from": "price"
+				}
+			]
 		}
 	]
 }

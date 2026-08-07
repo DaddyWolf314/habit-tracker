@@ -4,6 +4,7 @@ import type { AnchorView } from "./anchors.ts";
 import type { Counter } from "./counters.ts";
 import type { Event } from "./events.ts";
 import type { ExportRow } from "./identity.ts";
+import type { RewardItemVersion } from "./rewards.ts";
 import type { Rule } from "./rules.ts";
 import type { TimerView } from "./timers.ts";
 
@@ -178,5 +179,35 @@ export function agreementKindToExportRow(kind: AgreementKind): ExportRow {
 		label: kind.label,
 		author_permission: JSON.stringify(kind.author_permission),
 		author_scope: kind.author_scope,
+	};
+}
+
+/**
+ * One **Reward item** version as an export row (#194, ADR 0017) — per version,
+ * for the reason {@link agreementVersionToExportRow} is: a redemption resolves to
+ * whichever price was in force when it happened, so an export carrying only
+ * today's price would leave every past redemption unexplainable.
+ *
+ * That is sharper here than in the corpus. The whole trust argument of the store
+ * is that a reprice cannot rewrite what was already paid, and the export is where
+ * a member takes the record with them when things go badly — the one moment the
+ * price history has to survive the app.
+ */
+export function rewardItemVersionToExportRow(
+	rewardId: string,
+	version: RewardItemVersion,
+	subject?: string,
+): ExportRow {
+	return {
+		reward_id: rewardId,
+		// On the identity rather than the version (ADR 0010), so it repeats per row.
+		subject: subject ?? null,
+		effective_from: version.effective_from,
+		name: version.name,
+		terms: version.terms,
+		currency: version.currency,
+		price: version.price,
+		requires_grant: version.requires_grant,
+		retired: version.retired,
 	};
 }

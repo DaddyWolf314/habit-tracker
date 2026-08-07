@@ -29,6 +29,7 @@ import type {
 	CreateCounterBody,
 	TargetDirection,
 } from "#/shared/counters.ts";
+import type { VersionedRewardItem } from "#/shared/rewards.ts";
 import type { Role, Valence } from "#/shared/roles.ts";
 import type { CounterTrace } from "#/shared/trace.ts";
 import { describeTraceRow, formatTime } from "./formatting.ts";
@@ -151,12 +152,20 @@ function withRungs(parts: string[], counter: Counter): string[] {
 export function CountersPanel({
 	counters,
 	agreements,
+	rewards = [],
 	selfRole,
 	onChange,
 }: {
 	counters: Counter[];
 	/** The corpus a rung cites for what crossing it means (ADR 0015, ADR 0006). */
 	agreements: VersionedAgreement[];
+	/**
+	 * The store a **price crossing** on a chain names its item through (#194, ADR
+	 * 0017). Defaulted, because a caller with no store yet is a real answer and
+	 * the chain degrades to the raw ref — an opaque id beats a blank, the call
+	 * `describeCitation` already makes for a term the couple no longer holds.
+	 */
+	rewards?: VersionedRewardItem[];
 	selfRole: Role | null;
 	onChange: () => void;
 }) {
@@ -702,6 +711,7 @@ export function CountersPanel({
 				<CounterTraceSheet
 					trace={openTrace}
 					agreements={agreements}
+					rewards={rewards}
 					onClose={() => setOpenTrace(null)}
 				/>
 			)}
@@ -825,11 +835,14 @@ function RungEditor({
 function CounterTraceSheet({
 	trace,
 	agreements,
+	rewards,
 	onClose,
 }: {
 	trace: CounterTrace;
 	/** So a crossing on this chain names the term it cites (ADR 0015). */
 	agreements: VersionedAgreement[];
+	/** So a price crossing names the item it made affordable (ADR 0017). */
+	rewards: VersionedRewardItem[];
 	onClose: () => void;
 }) {
 	const now = Date.now();
@@ -858,7 +871,7 @@ function CounterTraceSheet({
 								? "reset → 0"
 								: `${delta >= 0 ? "+" : ""}${delta} (${d.from} → ${d.to})`;
 					} else {
-						const line = describeTraceRow(row, { agreements, now });
+						const line = describeTraceRow(row, { agreements, rewards, now });
 						// The note carries a crossing's term; a chain line is one row, so it
 						// rides beside the summary rather than wrapping underneath it.
 						label = line.note ? `${line.summary} — ${line.note}` : line.summary;

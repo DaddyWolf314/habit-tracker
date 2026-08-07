@@ -23,11 +23,11 @@ const counterIds = new Set(DEFAULT_COUNTERS.map((c) => c.id));
 const anchors = new Set(DEFAULT_ANCHORS);
 const timers = new Set(DEFAULT_TIMERS);
 
-describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004, ADR 0011)", () => {
-	it("installs exactly R1 through R27", () => {
-		expect(DEFAULT_RULES).toHaveLength(27);
+describe("R1–R28 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004, ADR 0011, ADR 0017)", () => {
+	it("installs exactly R1 through R28", () => {
+		expect(DEFAULT_RULES).toHaveLength(28);
 		expect(DEFAULT_RULES.map((r) => r.id)).toEqual(
-			Array.from({ length: 27 }, (_, i) => `R${i + 1}`),
+			Array.from({ length: 28 }, (_, i) => `R${i + 1}`),
 		);
 	});
 
@@ -52,6 +52,17 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 				switch (effect.verb) {
 					case "increment_counter":
 					case "decrement_counter":
+						// A **routed target** (ADR 0017) names no counter here by design:
+						// the redemption rule moves whichever currency the item was priced
+						// in, and the couple's own counters are not the pack's to know. It
+						// still has to route off a real key on the triggering type, which
+						// `validateRule` checks and the pack-validity test below exercises.
+						if (effect.counter_from !== undefined) {
+							expect(effect.counter).toBeUndefined();
+							break;
+						}
+						expect(counterIds.has(effect.counter ?? "")).toBe(true);
+						break;
 					case "reset_counter":
 						expect(counterIds.has(effect.counter)).toBe(true);
 						break;
@@ -378,11 +389,11 @@ describe("R1–R27 default rule pack (handoff §7, ADR 0001, ADR 0003, ADR 0004,
 		// their qualifier in a later bump (#122), so un-qualifying them too would
 		// put them in `upserted` and misdescribe what the ADR 0003 bump changed.
 		const BUMP_AT = 1_000;
-		// This bump predates the edge rules (R24/R25) and the ADR 0011 pair
-		// (R26/R27); scope the reconstruction to the qualifier-era pack so later
-		// arrivals don't pollute the added/upserted sets.
+		// This bump predates the edge rules (R24/R25), the ADR 0011 pair (R26/R27)
+		// and the redemption rule (R28); scope the reconstruction to the
+		// qualifier-era pack so later arrivals don't pollute the added/upserted sets.
 		const qualifierPack = DEFAULT_RULES.filter(
-			(r) => !["R24", "R25", "R26", "R27"].includes(r.id),
+			(r) => !["R24", "R25", "R26", "R27", "R28"].includes(r.id),
 		);
 		const oldPack = qualifierPack
 			.filter((r) => r.id !== "R21")

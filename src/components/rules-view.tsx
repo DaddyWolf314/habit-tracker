@@ -1341,6 +1341,10 @@ function effectToDraft(effect: Effect): EffectDraft {
 	switch (effect.verb) {
 		case "increment_counter":
 		case "decrement_counter":
+			// A **routed target** (ADR 0017) isn't picker-editable either: which
+			// counter moves is decided by the event, so the counter dropdown has
+			// nothing to select. Falls back like a timer effect does below.
+			if (effect.counter === undefined) return base;
 			return {
 				...base,
 				verb: effect.verb,

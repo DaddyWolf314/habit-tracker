@@ -1,5 +1,6 @@
 import { AGREEMENT_REF_KIND } from "./agreements.ts";
 import type { EventType, MetadataField } from "./event-types.ts";
+import { REWARD_REF_KIND } from "./rewards.ts";
 import type { MetadataValue } from "./roles.ts";
 
 /**
@@ -29,6 +30,36 @@ export function isOriginatingRef(field: MetadataField): boolean {
 }
 
 /**
+ * Whether the **server** owns this field's value at log time — a minted ref, or
+ * anything else declared `server_set` (a redemption's `price`, `currency` and
+ * `granted`, ADR 0017).
+ *
+ * The *write*-side question, and deliberately not the same one
+ * {@link readableMetadata} asks. A composer must offer no input for either kind,
+ * and must not demand one as required — a `required` field the server supplies
+ * would otherwise block the form until the author types a value the server then
+ * refuses. But only a minted ref is hidden on the way *out*: a price is content,
+ * and the reason it is stamped at all is so a reader can find what a redemption
+ * cost.
+ */
+export function isServerAssigned(field: MetadataField): boolean {
+	return isOriginatingRef(field) || field.server_set === true;
+}
+
+/**
+ * The ref kinds that name a **definition** — the corpus (ADR 0006) and, since
+ * ADR 0017, the reward store. A *set* rather than a second equality test, because
+ * what makes a ref citing is that the app holds a versioned row for what it
+ * names, and that is a growing list: each entry here is one more definition kind
+ * whose candidates come from "the ones in force" and whose value resolves at the
+ * citing event's `occurred_at`.
+ */
+export const CITING_REF_KINDS: ReadonlySet<string> = new Set([
+	AGREEMENT_REF_KIND,
+	REWARD_REF_KIND,
+]);
+
+/**
  * Whether a field is a **citing** ref — the third flavor (ADR 0006): it names a
  * definition the app holds a row for, rather than an id some event minted.
  *
@@ -38,11 +69,24 @@ export function isOriginatingRef(field: MetadataField): boolean {
  * with it. Nothing mints a citing ref, so it is never originating.
  */
 export function isCitingRef(field: MetadataField): boolean {
-	return (
-		field.kind === "ref" &&
-		field.minted !== true &&
-		field.ref_kind === AGREEMENT_REF_KIND
-	);
+	return citingRefKind(field) !== undefined;
+}
+
+/**
+ * *Which* definition set a citing ref names, or undefined when the field cites
+ * nothing — the accessor every caller that has to branch reads through.
+ *
+ * One place asks "is this a ref, is it unminted, is its kind a citing one", so a
+ * caller picking between the corpus and the store writes a single comparison
+ * against a value rather than repeating the three-part test. Before this, both
+ * the candidate picker and the log row re-checked `field.kind === "ref"` inside
+ * a branch {@link isCitingRef} had already established.
+ */
+export function citingRefKind(field: MetadataField): string | undefined {
+	if (field.kind !== "ref" || field.minted === true) return undefined;
+	return field.ref_kind !== undefined && CITING_REF_KINDS.has(field.ref_kind)
+		? field.ref_kind
+		: undefined;
 }
 
 /**

@@ -18,7 +18,8 @@ import type { LogEventInput } from "#/shared/events.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import { type RefCandidate, refCandidates } from "#/shared/ref-candidates.ts";
-import { isOriginatingRef } from "#/shared/refs.ts";
+import { isServerAssigned } from "#/shared/refs.ts";
+import type { VersionedRewardItem } from "#/shared/rewards.ts";
 import {
 	type MetadataValue,
 	subjectRoleOf,
@@ -46,6 +47,7 @@ export function LogComposer({
 	rules,
 	timers,
 	agreements,
+	rewards,
 	onLogged,
 }: {
 	types: EventType[];
@@ -58,6 +60,8 @@ export function LogComposer({
 	timers: TimerView[];
 	/** The corpus a citing ref's candidates are drawn from (#121, ADR 0006). */
 	agreements: VersionedAgreement[];
+	/** The store a `reward` citing ref's candidates are drawn from (#194, ADR 0017). */
+	rewards: VersionedRewardItem[];
 	onLogged: () => void;
 }) {
 	const pickable = useMemo(
@@ -134,15 +138,17 @@ export function LogComposer({
 					typeId: type.id,
 					key,
 					now,
-					// A citing ref draws from the corpus rather than the timers, and
-					// needs the field to know which kind (if any) it narrows to.
+					// A citing ref draws from a definition set rather than the timers,
+					// and needs the field to know which set (and which kind, if any) it
+					// narrows to — the corpus for an Agreement, the store for a reward.
 					field,
 					agreements,
+					rewards,
 				}),
 			);
 		}
 		return byKey;
-	}, [type, rules, timers, agreements]);
+	}, [type, rules, timers, agreements, rewards]);
 
 	/** Required fields (non-`awaiting`) the user hasn't filled in yet. */
 	function missingRequired(t: EventType): string[] {
@@ -153,7 +159,9 @@ export function LogComposer({
 		// exposed level (#94). Non-journaling types have no choice to make.
 		if (t.journaling && !visibility) missing.push("Visibility");
 		for (const [key, field] of Object.entries(t.metadata)) {
-			if (isOriginatingRef(field)) continue;
+			// The server owns these (ADR 0005, ADR 0017): no input is offered, so
+			// demanding one would block the form on a value the author cannot supply.
+			if (isServerAssigned(field)) continue;
 			if (field.required && !awaitedKeys.has(key) && !(meta[key] ?? "")) {
 				missing.push(field.label);
 			}
@@ -239,7 +247,7 @@ export function LogComposer({
 					    input: the form neither renders it nor counts it against the
 					    required check, and the event card hides it on the way back out. */}
 					{Object.entries(type.metadata)
-						.filter(([, field]) => !isOriginatingRef(field))
+						.filter(([, field]) => !isServerAssigned(field))
 						.map(([key, field]) => (
 							// Keyed by type *and* key so switching types remounts the inputs:
 							// two types sharing a key (both sides of `session_id`) must not

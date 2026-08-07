@@ -21,6 +21,23 @@ const metadataFieldBase = {
 	required: z.boolean().default(false),
 	set_permission: permissionListSchema,
 	adjudicated_by: permissionListSchema.optional(),
+	/**
+	 * The server assigns this key's value at log time and a client may never
+	 * supply it — ADR 0005's minting discipline, on a field that is not a minted
+	 * **Ref** (a redemption's `price`, `currency` and `granted`, ADR 0017).
+	 *
+	 * Deliberately a second flag rather than widening `minted`, because the two
+	 * drive *different sides*. `minted` says the value is machine identity, so it
+	 * is hidden from readers as well as writers — nobody learns anything from
+	 * `01JB6X…`. A stamped price is the opposite: it is **content**, and the one
+	 * thing a reader most wants off a redemption. So this hides the field from the
+	 * *composer* and exempts it from the required check, while leaving it visible
+	 * everywhere it is read.
+	 *
+	 * Declared on the base rather than one arm because what is stamped is not one
+	 * kind: a price is a `number`, a currency a `ref`, a grant a `boolean`.
+	 */
+	server_set: z.boolean().optional(),
 };
 
 export const metadataFieldSchema = z.discriminatedUnion("kind", [

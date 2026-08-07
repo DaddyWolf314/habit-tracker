@@ -22,6 +22,10 @@ import {
 	revokeDeviceInputSchema,
 } from "#/shared/identity.ts";
 import { introspectInputSchema } from "#/shared/introspection.ts";
+import {
+	createRewardItemInputSchema,
+	reviseRewardItemInputSchema,
+} from "#/shared/rewards.ts";
 import { permissionListSchema } from "#/shared/roles.ts";
 import { extendTimerInputSchema } from "#/shared/timers.ts";
 import {
@@ -542,6 +546,72 @@ export async function handleApi(request: Request, env: Env): Promise<Response> {
 					parsed.data.kind,
 				);
 				return json(agreement);
+			});
+		}
+
+		// ── #194 / ADR 0017: the reward store ───────────────────────────────────
+		// Reads are open to both members, for the corpus's reason and one more: the
+		// person saving toward a price is the person who most needs to see it.
+		// Writes go through the DO's single authorization bridge, which applies the
+		// `counterpart` scope — a sub cannot reprice what they are saving toward.
+		//
+		// Acknowledging is an explicit POST, never a side effect of reading.
+		if (path === "/api/rewards/changes/seen" && method === "POST") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub.ackRewardChanges(auth.identityHash).then(() => json({ ok: true })),
+			);
+		}
+		if (path === "/api/rewards" && method === "GET") {
+			return await withAuth(request, env, ({ auth, stub }) =>
+				stub
+					.listRewardItems(auth.identityHash)
+					.then((rewards) => json({ rewards })),
+			);
+		}
+		if (path === "/api/rewards" && method === "POST") {
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(request, createRewardItemInputSchema);
+				if ("response" in parsed) return parsed.response;
+				const item = await stub.createRewardItem(
+					auth.identityHash,
+					parsed.data,
+				);
+				return json(item, 201);
+			});
+		}
+		const rewardMatch = path.match(/^\/api\/rewards\/([^/]+)$/);
+		if (rewardMatch) {
+			const id = decodeURIComponent(rewardMatch[1]);
+			if (method === "PUT") {
+				return await withAuth(request, env, async ({ auth, stub }) => {
+					const parsed = await readJson(request, reviseRewardItemInputSchema);
+					if ("response" in parsed) return parsed.response;
+					const item = await stub.reviseRewardItem(
+						auth.identityHash,
+						id,
+						parsed.data,
+					);
+					return json(item);
+				});
+			}
+			// Retiring is the store's only removal — there is no DELETE here, where
+			// the corpus has one: a redemption has to keep resolving what it bought.
+		}
+		const rewardRetireMatch = path.match(/^\/api\/rewards\/([^/]+)\/retire$/);
+		if (rewardRetireMatch && method === "POST") {
+			const id = decodeURIComponent(rewardRetireMatch[1]);
+			return await withAuth(request, env, async ({ auth, stub }) => {
+				const parsed = await readJson(
+					request,
+					z.object({ effective_from: z.number().int().optional() }),
+				);
+				if ("response" in parsed) return parsed.response;
+				const item = await stub.retireRewardItem(
+					auth.identityHash,
+					id,
+					parsed.data.effective_from,
+				);
+				return json(item);
 			});
 		}
 

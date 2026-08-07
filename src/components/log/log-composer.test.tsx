@@ -16,6 +16,7 @@ import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { Rule } from "#/shared/rules.ts";
 import type { TimerView } from "#/shared/timers.ts";
+import { STARTER_EVENT_TYPES } from "#/templates/index.ts";
 import { LogComposer } from "./log-composer.tsx";
 
 /**
@@ -247,6 +248,7 @@ function composer(timers: TimerView[], onLogged: () => void) {
 			rules={RULES}
 			timers={timers}
 			agreements={AGREEMENTS}
+			rewards={[]}
 			onLogged={onLogged}
 		/>
 	);
@@ -571,6 +573,93 @@ describe("LogComposer enum fields", () => {
 		expect(logEvent).toHaveBeenCalledWith(
 			expect.objectContaining({
 				metadata: expect.objectContaining({ quality: "exceeded" }),
+			}),
+		);
+	});
+});
+
+/**
+ * A **server-assigned** field must not reach the composer (#194, ADR 0017).
+ *
+ * A regression test for a real defect. A redemption's `price` and `currency` are
+ * `required: true` and stamped by the server, so before they declared
+ * `server_set` the composer both rendered inputs for them *and* blocked submit
+ * via the required check — while `stampRedemption` refuses any client-supplied
+ * value. The pack's `redemption` type was unloggable from the UI in both
+ * directions at once, and every server-side test missed it by calling `logEvent`
+ * directly with only the reward.
+ */
+describe("LogComposer server-assigned fields", () => {
+	beforeEach(() => vi.spyOn(Date, "now").mockReturnValue(NOW));
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	const REDEMPTION = STARTER_EVENT_TYPES.find((t) => t.id === "redemption");
+
+	function renderWithPack() {
+		if (!REDEMPTION) throw new Error("the pack ships no redemption type");
+		return render(
+			<LogComposer
+				types={[REDEMPTION]}
+				members={MEMBERS}
+				openPrompts={[]}
+				rules={[]}
+				timers={[]}
+				agreements={[]}
+				rewards={[
+					{
+						id: "rw_1",
+						subject: "m1",
+						versions: [
+							{
+								effective_from: NOW - 1000,
+								name: "an hour of your attention",
+								terms: "",
+								currency: "service_points",
+								price: 50,
+								requires_grant: true,
+								retired: false,
+							},
+						],
+					},
+				]}
+				onLogged={() => {}}
+			/>,
+		);
+	}
+
+	it("offers no input for a field the server stamps", () => {
+		renderWithPack();
+		chooseType("redemption");
+
+		// The reward is the one thing the author picks.
+		expect(screen.getByRole("combobox", { name: /reward/i })).toBeTruthy();
+		expect(screen.queryByLabelText(/price/i)).toBeNull();
+		expect(screen.queryByLabelText(/currency/i)).toBeNull();
+		expect(screen.queryByLabelText(/granted/i)).toBeNull();
+	});
+
+	it("logs a redemption from the reward alone", async () => {
+		renderWithPack();
+		chooseType("redemption");
+
+		// The sub is the subject of their own redemption; the type requires one.
+		fireEvent.change(screen.getByRole("combobox", { name: /subject/i }), {
+			target: { value: "m1" },
+		});
+		fireEvent.change(screen.getByRole("combobox", { name: /reward/i }), {
+			target: { value: "rw_1" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Log it" }));
+		await act(async () => {});
+
+		// No "Please fill in: Price, Currency" — and nothing the server owns is sent.
+		expect(logEvent).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				type: "redemption",
+				metadata: { reward_ref: "rw_1" },
 			}),
 		);
 	});

@@ -78,6 +78,22 @@ export function SettingsView() {
 				</div>
 			</div>
 
+			{/* Beside Rules for the same reason (#123, #194): setting a store up is a
+			    rare act. *Browsing* it is not — that entrance is on Today, beside the
+			    line that says what you can afford. */}
+			<div className="rounded-md border p-4">
+				<h2 className="font-medium">Rewards</h2>
+				<p className="mt-1 text-sm text-muted-foreground">
+					What's on offer and what it costs. The app ships none — what's
+					offered, and its price, is yours to agree.
+				</p>
+				<div className="mt-3">
+					<Link to="/rewards" className="text-sm underline">
+						View rewards
+					</Link>
+				</div>
+			</div>
+
 			{/* Beside Rules for the same reason (#123): authoring is a rare act, and
 			    the tab bar is for what you reach daily. You add a word once and then
 			    use it from the composer for months. */}

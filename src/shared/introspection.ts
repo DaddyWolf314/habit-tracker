@@ -66,10 +66,11 @@ export interface IntrospectionResult {
  * empty history degrades to a plain note rather than throwing: the audit surface
  * must never crash on a projection that has no recorded changes.
  *
- * `context` carries the corpus a crossing's citing ref resolves through (ADR
- * 0015). It matters most here of anywhere: this is the audited causal record, and
- * a chain that reads `ag_01JB6X…` instead of the term the couple agreed answers
- * "why did this change" with the one part a person cannot read.
+ * `context` carries the definitions a crossing's citing ref resolves through —
+ * the corpus for a rung (ADR 0015), the store for a price (ADR 0017). It matters
+ * most here of anywhere: this is the audited causal record, and a chain that reads
+ * `ag_01JB6X…` instead of the term the couple agreed answers "why did this change"
+ * with the one part a person cannot read.
  */
 export function explainProjection(
 	projection: string,

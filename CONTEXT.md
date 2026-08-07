@@ -43,6 +43,22 @@ in and should not.
   already the weight; this is where the weight is read from. Also avoid clamping a
   negative at runtime: the refusal belongs at authoring time, and a clamp invents a
   number nobody wrote.
+- **Routed target** — `counter_from`, naming the metadata key whose **Ref** becomes
+  the counter a delta **Effect** moves ("spend it out of whatever the item was
+  priced in"). The **Routed magnitude**'s sibling, forced by the same argument one
+  step further along: a rule cannot read a **Reward item**'s **Price** off the
+  definition, so the price is stamped on the redemption — and it can no more read
+  the item's **Currency**, so that is stamped too and routed here (ADR 0017). Each
+  score dimension is already its own counter (ADR 0015), so without it the reward
+  path needs a rule per currency and a couple who mints a second one finds out by
+  not being charged. **Replaces** `counter` rather than seeding it, and naming both
+  is refused at authoring time rather than given a precedence order — the loser
+  would lose silently. Demands more of its field than a magnitude does of its own:
+  a `ref`, because a counter id is an identity and not a label, and **`required`**,
+  because a magnitude may legitimately be left blank while an absent target names
+  no projection at all. _Avoid_: reading it as a second answer to "which counter" —
+  a rule has exactly one, literal or routed; a runtime fallback to `counter`, which
+  would move a tally the rule's author never named.
 - **Ambient-state predicate** — the condition clause matching on what was
   *running* when an event happened: `timer_active`, a map of timer definition to
   expected activity (`{ denial_period: true }`, `{ session_stopwatch: false }`).
@@ -311,6 +327,19 @@ in and should not.
 - **Originating ref** — the ref on the event that *mints* the id: the server
   assigns it at log time and a client may never supply one (`minted: true`,
   ADR 0005). `task_assigned`, `session_started`, `journal_prompt`.
+- **Stamped value** — a metadata value the server writes at log time from a
+  definition it resolved, rather than minting: a **Redemption**'s **Price**,
+  **Currency** and (when self-serve) its grant, read off the **Reward item**
+  version in force (`server_set: true`, ADR 0017). Carries ADR 0005's discipline
+  whole — a client supplying one is *refused*, never overwritten — but it is **not
+  a fourth ref flavor**, and not every stamped value is a ref: a price is a
+  number. The flag it declares governs the **write** side only. A minted ref is
+  machine identity and so is hidden from readers too; a stamped value is
+  *content* — the whole reason the price is on the event is so a reader finds what
+  a redemption cost — so it is hidden from the composer and exempt from its
+  required check, and shown everywhere it is read. _Avoid_: reusing `minted` for
+  one (it would hide the price from the log); treating a `required` stamped field
+  as something the author must supply — the composer offers no input for it.
 - **Echoing ref** — a ref repeating an id minted elsewhere, in order to pair with
   it. Two flavors, differing in what they may name rather than in what the schema
   declares: a **closing echo** discharges the row it names (`task_completed`,
@@ -493,7 +522,11 @@ primitives that already existed.
   server from the version in force, never supplied by a client (ADR 0005's minting
   discipline). A rule cannot read a price off a definition — that is computing — so
   the decrement routes the stamped value as a **routed magnitude**. Raise the price
-  next month and last month's redemption still says what it actually cost.
+  next month and last month's redemption still says what it actually cost. The
+  item's **Currency** is stamped beside it and routed as a **routed target**, since
+  a rule can no more read which counter to spend from than how much. Stamped at the
+  redemption's **`occurred_at`**, the citing-ref clock: backdating one quotes what
+  the item cost when the thing happened.
   _Avoid_: "cost" as a competing word; reading the price off the item at replay.
 - **Redemption** — the event that spends a **Currency** on a **Reward item**. Per
   item, it either **awaits a grant** (the default) or is self-serve: a granted
@@ -503,6 +536,22 @@ primitives that already existed.
   nothing. _Avoid_: "purchase"; "claim"; assuming every reward needs asking — a
   reward that needs the dom present and one that does not are different things, and
   the item says which.
+- **Spend refusal** — a **Redemption** is refused when the **Currency** does not
+  cover its **Price**, asked **at the moment the points move**: the append for a
+  self-serve item, the *grant* for one that awaits adjudication. Necessary because
+  a counter has no floor — `applyCounterOp` is `value ± by` — so an uncovered
+  spend would drive the currency negative and the ladder would announce
+  **Crossing**s climbing back out of the hole. The clock is what makes it honest:
+  checking the *request* protects only the self-serve half while reading as a
+  general guard, since the value can fall between asking and granting and two
+  individually affordable requests can both be granted. Asking therefore stays
+  free — a request "sits in the queue that already exists" however little is saved
+  up — and a refused grant strands nothing, because the redemption is still
+  **Pending**: the dom can grant it once the currency recovers, and the sub can
+  still retract it. A **waived** spend moves nothing and so is never refused.
+  _Avoid_: reading it as a floor under every counter — a decrement taking
+  `demerits` negative is a forgiveness rule working, and only a *spend* has to be
+  covered; refusing the request rather than the grant.
 
 ## Journaling
 

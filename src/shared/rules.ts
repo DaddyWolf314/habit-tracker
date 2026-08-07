@@ -189,13 +189,43 @@ export const TIMER_CLOSE_STATUSES: readonly TimerCloseStatus[] =
 const byFromSchema = z.string().optional();
 
 /**
+ * A **routed target** (ADR 0017): the metadata key whose ref names the counter a
+ * delta effect moves, so "spend the price on the currency the item is priced in"
+ * is one rule rather than one rule per counter a couple ever mints.
+ *
+ * The same argument that forces {@link byFromSchema} forces this one. A rule
+ * cannot read a price off a reward item — that is computing, and rules route — so
+ * the price is stamped on the redemption; but a rule can no more read the item's
+ * *currency* off the definition than its price, and each score dimension is
+ * already its own counter (ADR 0015). Without this, the reward path needs a rule
+ * per currency, authored by hand, and a couple who mints a second currency
+ * discovers the omission by not being charged.
+ *
+ * Present ⇒ it **replaces** `counter`, exactly as `by_from` replaces `by`, and
+ * the two are declared mutually exclusive at authoring time
+ * ({@link validateRule}) rather than given a precedence order — a rule naming
+ * both would be two answers to one question, and the loser would be silent.
+ *
+ * Unlike a routed magnitude, the *absent* case **does** move to authoring time: a
+ * magnitude field may legitimately be optional and left blank, while a routed
+ * target that is not there names no projection at all, so `validateRule` demands
+ * the key be a `required` ref field. What remains at runtime is a can't-happen
+ * guard rather than a live path.
+ */
+const counterFromSchema = z.string().optional();
+
+/**
  * Effect verbs — the complete v1 set. Rules route values; they never compute
  * them. Multiple effects per rule (effects is a list).
  */
 export const effectSchema = z.discriminatedUnion("verb", [
 	z.object({
 		verb: z.literal("increment_counter"),
-		counter: z.string(),
+		// Optional since ADR 0017, and only because `counter_from` may stand in its
+		// place: exactly one of the two must be present, which `validateRule`
+		// enforces so the error names the rule rather than the parse.
+		counter: z.string().optional(),
+		counter_from: counterFromSchema,
 		// Integer only — counter values are integers (counterSchema.value.int()); a
 		// fractional `by` would drive the cache non-integer and break reads/export.
 		by: z.number().int().default(1),
@@ -203,7 +233,8 @@ export const effectSchema = z.discriminatedUnion("verb", [
 	}),
 	z.object({
 		verb: z.literal("decrement_counter"),
-		counter: z.string(),
+		counter: z.string().optional(),
+		counter_from: counterFromSchema,
 		by: z.number().int().default(1),
 		by_from: byFromSchema,
 	}),
