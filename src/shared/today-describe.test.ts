@@ -7,6 +7,7 @@ import {
 	describeClocks,
 	describeLadders,
 	describeTargets,
+	describeTracking,
 	describeWithinReach,
 } from "./today-describe.ts";
 
@@ -201,6 +202,7 @@ describe("describeTargets", () => {
 			streak: null,
 			met: false,
 			tickLogs: tickable ? { type: "ritual_completed", metadata: {} } : null,
+			tracks: null,
 		};
 	}
 
@@ -233,6 +235,35 @@ describe("describeTargets", () => {
 				row("Three", false),
 			]),
 		).toContain("3 of these have no button");
+	});
+
+	// Provenance (#212 item 5). The confirm sheet explains the three scaffolded
+	// artifacts once; after that they sit on Today with nothing tying them to the
+	// term, and ADR 0006 stores no link to tie them with.
+	describe("describeTracking", () => {
+		const tracked = (term: string | null): TargetRow => ({
+			...row("Morning kneel", true),
+			tracks: term,
+		});
+
+		it("says nothing for a row whose rules cite no term", () => {
+			// The pack's seeded row: it came from the app, not from anything agreed.
+			expect(describeTracking(tracked(null), { ag_7f3: "x" })).toBeNull();
+		});
+
+		it("names the term", () => {
+			expect(
+				describeTracking(tracked("ag_7f3"), { ag_7f3: "Morning kneel" }),
+			).toContain("“Morning kneel”");
+		});
+
+		it("keeps the relationship when the term can't be named", () => {
+			// Never the raw id: on a glance screen beside a real name it would read
+			// as a second, broken term. The fact is still true and still worth saying.
+			const note = describeTracking(tracked("ag_gone"), {});
+			expect(note).toContain("one of your agreements");
+			expect(note).not.toContain("ag_gone");
+		});
 	});
 
 	it("agrees with itself about number", () => {

@@ -74,6 +74,20 @@ describe("the seeded state this exists for", () => {
 		expect(rows[0].counter.id).toBe("rituals_completed_today");
 		expect(rows[0].tickLogs).toBeNull();
 	});
+
+	it("leaves that row claiming no provenance", () => {
+		// The other half of the same premise (#212 item 5). The seeded row did not
+		// come from anything the couple agreed — R1 cites nothing — so the panel
+		// must say nothing about where it came from. Pinned against the pack for the
+		// reason above: a seed that later cited a term would make the row's silence
+		// wrong, and this fails instead of the screen quietly under-explaining it.
+		const rows = targetRows({
+			counters: SEEDED,
+			rules: PACK_RULES,
+			types: DEFAULT_EVENT_TYPES,
+		});
+		expect(rows[0].tracks).toBeNull();
+	});
 });
 
 describe("firstRunStep", () => {

@@ -143,6 +143,38 @@ export function describeWithinReach(
  * rules disagree" sends someone hunting for a conflict the app should be naming
  * on the rules screen instead.
  */
+/**
+ * Where a target row came from, or null when nothing says (#212 item 5).
+ *
+ * "Track this" mints a counter, a streak and a rule, and the confirm sheet
+ * explains all three *once*. After that the artifacts sit on Today and Rules with
+ * nothing tying them to the term, so a couple who has forgotten reads three
+ * things that appeared from nowhere. ADR 0006 stores no link back — the citing
+ * rule is the record — so this is read out of the rules, the same direction
+ * `isTracked` already reads them in reverse.
+ *
+ * Names the term even when the counter already carries its wording, which is the
+ * common case because that is how `scaffoldPlan` names it. The repetition is the
+ * point rather than a cost: what the reader lacks is not the word, it is that
+ * this row is *downstream of an agreement* — and the two names drift the moment
+ * either is renamed, at which point saying both is the only way to keep the row
+ * findable in the corpus.
+ */
+export function describeTracking(
+	row: TargetRow,
+	termNames: Readonly<Record<string, string>>,
+): string | null {
+	if (row.tracks === null) return null;
+	const name = termNames[row.tracks];
+	// A term the couple no longer holds, or one not loaded yet: the relationship
+	// is still true and still worth saying, so the sentence drops the name rather
+	// than the fact — and never falls back to the id, which on a glance screen
+	// beside a real name would read as a second, broken term.
+	return name === undefined
+		? "Counts one of your agreements, each time it's logged."
+		: `Counts “${name}” from your agreements, each time it's logged.`;
+}
+
 export function describeTargets(rows: readonly TargetRow[]): string {
 	const readouts = rows.filter((row) => row.tickLogs === null);
 	if (readouts.length === 0)

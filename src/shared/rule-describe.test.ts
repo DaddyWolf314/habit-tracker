@@ -298,3 +298,68 @@ describe("describeEffect — by_from", () => {
 		).toBe(phraseCounter("demerits", "increment", 2));
 	});
 });
+
+/**
+ * A citing ref rendered as the term's name rather than its id (#212 item 5).
+ *
+ * This is where a scaffolded rule stops looking like it appeared from nowhere.
+ * "Track this" mints `when Ritual completed is logged and Ritual is ag_01J8…` —
+ * a rule the couple never typed, whose one word that could say where it came
+ * from was rendered as the ULID it matches on. ADR 0006 stores no link back, so
+ * the citation *is* the provenance, and it only reads as provenance in words.
+ */
+describe("describeCondition — naming a cited term", () => {
+	const cites = {
+		type: "ritual_completed",
+		metadata: { ritual_id: "ag_7f3" },
+	};
+
+	it("renders the ref's value as the term's name", () => {
+		expect(
+			describeCondition(cites, types.get("ritual_completed"), {
+				ag_7f3: "Morning kneel",
+			}),
+		).toBe("when Ritual completed is logged and Ritual is Morning kneel");
+	});
+
+	it("falls back to the id when the corpus doesn't hold it", () => {
+		// An opaque id beats a blank — the call every citing surface here makes.
+		const described = describeCondition(cites, types.get("ritual_completed"), {
+			ag_other: "Something else",
+		});
+		expect(described).toContain("ag 7f3");
+		expect(described).not.toContain("Something else");
+	});
+
+	it("is unchanged when no names are supplied", () => {
+		expect(describeCondition(cites, types.get("ritual_completed"))).toBe(
+			describeCondition(cites, types.get("ritual_completed"), {}),
+		);
+	});
+
+	it("names nothing through a field that isn't a ref", () => {
+		// A value that merely equals a term's id is not a citation, and naming it
+		// would put a term's wording into a clause that never pointed at it.
+		expect(
+			describeCondition(
+				{ type: "ritual_completed", metadata: { late: true } },
+				types.get("ritual_completed"),
+				{ true: "Morning kneel" },
+			),
+		).toBe("when Ritual completed is logged and Late? is yes");
+	});
+
+	it("reaches the same clause through describeRule", () => {
+		const rule: Rule = {
+			id: "track_ag_7f3",
+			enabled: true,
+			condition: cites,
+			effects: [{ verb: "increment_counter", counter: "ag_7f3_today", by: 1 }],
+		};
+		expect(
+			describeRule(rule, types.get("ritual_completed"), {
+				ag_7f3: "Morning kneel",
+			}).when,
+		).toContain("Morning kneel");
+	});
+});

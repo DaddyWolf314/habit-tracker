@@ -309,10 +309,15 @@ export function TodayView() {
 				    are the same kind of line passed, so they read together. */}
 				<StorePanel items={rewards} counters={counters} />
 
+				{/* The corpus reaches this panel for the same reason it reaches the one
+				    above: a row scaffolded off a term names that term (#212 item 5), and
+				    ADR 0006 stores no link, so the name is resolved from the corpus
+				    through the citation the rule carries. */}
 				<TargetsPanel
 					counters={counters}
 					rules={rules}
 					types={types}
+					agreements={agreements}
 					onChange={refreshAfterMutation}
 				/>
 

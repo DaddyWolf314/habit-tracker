@@ -20,6 +20,7 @@ import {
 import { hasIdentity } from "#/lib/identity.ts";
 import {
 	agreementEffectiveAt,
+	agreementNamesAt,
 	agreementsInForce,
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
@@ -33,6 +34,7 @@ import {
 	describeCondition,
 	describeRule,
 	isPickerEditable,
+	type RefNames,
 } from "#/shared/rule-describe.ts";
 import {
 	type ComparisonClause,
@@ -102,6 +104,18 @@ export function RulesView() {
 	}, [load]);
 
 	const typeMap = useMemo(() => new Map(types.map((t) => [t.id, t])), [types]);
+	// What a cited term is called, so a rule reads "Ritual is Morning kneel"
+	// rather than "Ritual is Ag 01j8…" (#212 item 5). Built once here and passed
+	// down rather than per card: it is one derivation at one clock, and the card
+	// and the editor's preview must not resolve a name two ways.
+	//
+	// Not ticked. A rename landing while this screen sits open is a change to a
+	// term, and the Agreements screen is where a term's clock is watched; here it
+	// arrives with the next load, as every other definition on this screen does.
+	const refNames = useMemo(
+		() => agreementNamesAt(agreements, Date.now()),
+		[agreements],
+	);
 	const selfRole = members.find((m) => m.is_self)?.role ?? null;
 	const canAuthor = selfRole === "dom" || selfRole === "switch";
 
@@ -152,6 +166,7 @@ export function RulesView() {
 					types={types}
 					counters={counters}
 					agreements={agreements}
+					refNames={refNames}
 					onSaved={afterChange}
 					onCancel={() => setEditing(null)}
 				/>
@@ -166,6 +181,7 @@ export function RulesView() {
 								types={types}
 								counters={counters}
 								agreements={agreements}
+								refNames={refNames}
 								onSaved={afterChange}
 								onCancel={() => setEditing(null)}
 							/>
@@ -173,6 +189,7 @@ export function RulesView() {
 							<RuleCard
 								rule={rule}
 								type={typeMap.get(latestVersion(rule).condition.type)}
+								refNames={refNames}
 								canAuthor={canAuthor}
 								onEdit={() => setEditing(rule)}
 								onChanged={load}
@@ -190,6 +207,7 @@ export function RulesView() {
 function RuleCard({
 	rule,
 	type,
+	refNames,
 	canAuthor,
 	onEdit,
 	onChanged,
@@ -197,6 +215,8 @@ function RuleCard({
 }: {
 	rule: VersionedRule;
 	type: EventType | undefined;
+	/** What a cited term is called, so the card names it rather than its id (#212). */
+	refNames: RefNames;
 	canAuthor: boolean;
 	onEdit: () => void;
 	onChanged: () => void;
@@ -216,7 +236,7 @@ function RuleCard({
 	// wiring that put the rule out of its reach in the first place.
 	const [renaming, setRenaming] = useState(false);
 	const flat = currentRule(rule);
-	const described = describeRule(flat, type);
+	const described = describeRule(flat, type, refNames);
 	const editable = isPickerEditable(flat);
 
 	const run = async (op: () => Promise<unknown>) => {
@@ -362,7 +382,7 @@ function RuleCard({
 							// The full description per version — condition and effects — so a
 							// condition-only edit is visible in the history (#64, story 8).
 							const flatVersion = ruleFromVersion(rule.id, v);
-							const d = describeRule(flatVersion, type);
+							const d = describeRule(flatVersion, type, refNames);
 							return (
 								<li key={v.effective_from}>
 									<span className="font-mono">
@@ -523,6 +543,7 @@ function RuleEditor({
 	types,
 	counters,
 	agreements,
+	refNames,
 	onSaved,
 	onCancel,
 }: {
@@ -531,6 +552,12 @@ function RuleEditor({
 	counters: Counter[];
 	/** The corpus a citing-ref condition picks from (#121, ADR 0006). */
 	agreements: VersionedAgreement[];
+	/**
+	 * What a cited term is called (#212 item 5). Passed in rather than derived
+	 * from `agreements` here: the preview must read a citation exactly as the card
+	 * behind it does, and two resolutions is how they would come to differ.
+	 */
+	refNames: RefNames;
 	onSaved: () => void;
 	onCancel: () => void;
 }) {
@@ -629,9 +656,17 @@ function RuleEditor({
 							counterClauseDrafts,
 						),
 						type,
+						refNames,
 					)
 				: null,
-		[type, subjectRole, conditions, timerClauses, counterClauseDrafts],
+		[
+			type,
+			subjectRole,
+			conditions,
+			timerClauses,
+			counterClauseDrafts,
+			refNames,
+		],
 	);
 
 	const build = (): { id: string; def: RuleDefinition } | null => {
@@ -718,7 +753,7 @@ function RuleEditor({
 	// rules screen and the trace's "what fired" — subject clause included.
 	if (stage === "confirm" && confirmed) {
 		const draft = { id: confirmed.id, ...confirmed.def };
-		const described = describeRule(draft, type);
+		const described = describeRule(draft, type, refNames);
 		return (
 			<section className="rounded-lg border border-primary/40 p-4">
 				{/* The *drafted* name, not the stored one: this sheet describes what is

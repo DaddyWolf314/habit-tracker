@@ -291,3 +291,66 @@ describe("targetRows — cases the review found untested", () => {
 		).toEqual({ type: "ritual_completed", metadata: { ritual_id: "ag_7f3" } });
 	});
 });
+
+/**
+ * Where a row came from (#212 item 5). ADR 0006 stores no link from a scaffolded
+ * counter back to the term, so the citation on the rule *is* the record that
+ * tracking happened — the same fact `isTracked` reads in the other direction.
+ *
+ * It rides the tick derivation rather than being a second scan, so the two can
+ * never disagree: a row that cannot honestly offer a tick cannot honestly name
+ * what it counts either.
+ */
+describe("targetRows — the term a row counts", () => {
+	it("names the Agreement its rule cites", () => {
+		expect(rows({ counters: [KNEEL], rules: [KNEEL_RULE] })[0]?.tracks).toBe(
+			"ag_7f3",
+		);
+	});
+
+	it("names nothing for the pack's unconditional rule", () => {
+		// R1 increments unconditionally and cites nothing — the seeded row a new
+		// couple lands on, which did not come from anything they agreed.
+		const r1: Rule = {
+			id: "r1",
+			enabled: true,
+			condition: { type: "ritual_completed", metadata: {} },
+			effects: [
+				{
+					verb: "increment_counter",
+					counter: "rituals_completed_today",
+					by: 1,
+				},
+			],
+		};
+		const [row] = rows({ counters: [RITUALS], rules: [r1] });
+		expect(row?.tracks).toBeNull();
+		expect(row?.tickLogs).toBeNull();
+	});
+
+	it("names nothing when two rules cite different terms", () => {
+		const other: Rule = {
+			...KNEEL_RULE,
+			id: "other",
+			condition: {
+				type: "ritual_completed",
+				metadata: { ritual_id: "ag_other" },
+			},
+		};
+		const [row] = rows({ counters: [KNEEL], rules: [KNEEL_RULE, other] });
+		expect(row?.tracks).toBeNull();
+		expect(row?.tickLogs).toBeNull();
+	});
+
+	it("still names it when two rules agree on the term", () => {
+		const duplicate: Rule = { ...KNEEL_RULE, id: "duplicate" };
+		expect(
+			rows({ counters: [KNEEL], rules: [KNEEL_RULE, duplicate] })[0]?.tracks,
+		).toBe("ag_7f3");
+	});
+
+	it("reads nothing off a disabled rule", () => {
+		const off: Rule = { ...KNEEL_RULE, enabled: false };
+		expect(rows({ counters: [KNEEL], rules: [off] })[0]?.tracks).toBeNull();
+	});
+});

@@ -2,11 +2,15 @@ import { useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Explainer } from "#/components/ui/explainer.tsx";
 import { logEvent } from "#/lib/api.ts";
+import {
+	agreementNamesAt,
+	type VersionedAgreement,
+} from "#/shared/agreements.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { Rule } from "#/shared/rules.ts";
 import { type TargetRow, targetRows } from "#/shared/target-rows.ts";
-import { describeTargets } from "#/shared/today-describe.ts";
+import { describeTargets, describeTracking } from "#/shared/today-describe.ts";
 
 /**
  * What you are aiming at today (#135, handoff §9.2 — "today's counter targets").
@@ -34,15 +38,26 @@ export function TargetsPanel({
 	counters,
 	rules,
 	types,
+	agreements = [],
 	onChange,
 }: {
 	counters: Counter[];
 	/** The rules in force, which say which counter counts what (#121). */
 	rules: Rule[];
 	types: EventType[];
+	/**
+	 * The corpus, for naming the term a row counts (#212 item 5). Defaulted, so a
+	 * caller with nothing loaded yet degrades to the relationship without the name
+	 * rather than to a blank row — the call {@link describeTracking} makes for a
+	 * term the couple no longer holds.
+	 */
+	agreements?: VersionedAgreement[];
 	onChange: () => void;
 }) {
 	const rows = targetRows({ counters, rules, types });
+	// The version in force now, not at some past event: a row says what this
+	// counter counts from here on, which is the clock `agreementNamesAt` argues.
+	const termNames = agreementNamesAt(agreements, Date.now());
 	if (rows.length === 0) return null;
 
 	return (
@@ -60,7 +75,11 @@ export function TargetsPanel({
 			<ul className="mt-3 space-y-2">
 				{rows.map((row) => (
 					<li key={row.counter.id}>
-						<TargetLine row={row} onChange={onChange} />
+						<TargetLine
+							row={row}
+							tracking={describeTracking(row, termNames)}
+							onChange={onChange}
+						/>
 					</li>
 				))}
 			</ul>
@@ -71,9 +90,12 @@ export function TargetsPanel({
 /** One target: where it stands, its streak, and its tick if it has one. */
 function TargetLine({
 	row,
+	tracking,
 	onChange,
 }: {
 	row: TargetRow;
+	/** Where this row came from, or null when the rules cite no term (#212). */
+	tracking: string | null;
 	onChange: () => void;
 }) {
 	const [busy, setBusy] = useState(false);
@@ -128,6 +150,12 @@ function TargetLine({
 					</Button>
 				)}
 			</div>
+			{/* Under the row rather than beside the name: it is provenance, not part
+			    of what the row currently reads, and the glance this panel exists for
+			    is the number. */}
+			{tracking && (
+				<p className="mt-1 text-xs text-muted-foreground">{tracking}</p>
+			)}
 			{error && <p className="mt-1 text-xs text-destructive">{error}</p>}
 		</div>
 	);
