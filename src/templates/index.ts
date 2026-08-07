@@ -35,6 +35,31 @@ export const AGREEMENT_KINDS_VERSION: number = agreementKindsJson.version;
 export const DEFAULT_AGREEMENT_KINDS: AgreementKind[] =
 	agreementKindsJson.kinds.map((k) => agreementKindSchema.parse(k));
 
+/**
+ * What each shipped kind *is*, in one sentence (#210) — the copy the Agreements
+ * screen shows a reader who has never met the word "protocol" in this sense.
+ *
+ * Read from the pack by id rather than off the couple's stored kind, because a
+ * description is not stored: see `agreementKindSchema`'s `description` for why
+ * prose stays out of the seed. The practical consequence lives here — **editing
+ * one of these sentences must not bump `AGREEMENT_KINDS_VERSION`**. The version
+ * gates `seedAgreementKinds`, and bumping it for copy would run a reconciliation
+ * pass, re-check every couple's author lists and possibly raise a "new default"
+ * notice, all to change a sentence that never reaches the database.
+ *
+ * Returns undefined for a kind the pack does not ship, which the caller renders
+ * as no description at all.
+ */
+const AGREEMENT_KIND_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(
+	DEFAULT_AGREEMENT_KINDS.flatMap((kind) =>
+		kind.description ? [[kind.id, kind.description] as const] : [],
+	),
+);
+
+export function agreementKindDescription(kindId: string): string | undefined {
+	return AGREEMENT_KIND_DESCRIPTIONS.get(kindId);
+}
+
 /** Bumped whenever `event-types.json` changes; recorded per couple at seed. */
 export const EVENT_TYPES_VERSION: number = eventTypesJson.version;
 

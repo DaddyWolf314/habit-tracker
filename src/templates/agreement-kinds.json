@@ -4,24 +4,28 @@
 		{
 			"id": "protocol",
 			"label": "Protocol",
+			"description": "A standing expectation: how something is to be done, holding until it's revised. There's nothing to tick off — it's kept by living up to it, and the log points back here when it isn't.",
 			"author_permission": ["dom", "switch"],
 			"author_scope": "counterpart"
 		},
 		{
 			"id": "ritual",
 			"label": "Ritual",
+			"description": "Something done deliberately, on a rhythm. The one kind with anything to count: track it and it becomes a daily target and a streak on Today.",
 			"author_permission": ["dom", "switch"],
 			"author_scope": "counterpart"
 		},
 		{
 			"id": "limit",
 			"label": "Limit",
+			"description": "A line that isn't crossed. Writing one down isn't a negotiation — it's the record of where a boundary already sits, so neither of you is going on memory.",
 			"author_permission": ["dom", "sub", "switch"],
 			"author_scope": "subject"
 		},
 		{
 			"id": "safeword",
 			"label": "Safeword",
+			"description": "The word that stops things, and what happens once it's said. Written down so it's the same word for both of you at the moment it's needed.",
 			"author_permission": ["dom", "sub", "switch"],
 			"author_scope": "unscoped"
 		}

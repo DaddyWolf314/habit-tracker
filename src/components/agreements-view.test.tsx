@@ -36,6 +36,7 @@ import {
 import type { AgreementKind, VersionedAgreement } from "#/shared/agreements.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { RoleMember } from "#/shared/identity.ts";
+import { agreementKindDescription } from "#/templates/index.ts";
 import { AgreementsView } from "./agreements-view.tsx";
 
 /**
@@ -692,5 +693,80 @@ describe("AgreementsView — review follow-ups", () => {
 		await renderView();
 		expect(screen.getByText("Not recorded")).not.toBeNull();
 		expect(screen.queryByRole("heading", { name: "Not recorded" })).toBeNull();
+	});
+});
+
+/**
+ * The per-kind explainer (#210). Its initial state is the whole design: open
+ * where the section is empty and the word is all the reader has, closed where the
+ * couple's own terms explain the category better than any shipped sentence can.
+ *
+ * The description is asserted through `agreementKindDescription` rather than as a
+ * quoted string, so these pin the *join* — a couple's stored kind, which carries
+ * no description, meeting the pack's copy by id — and a reworded sentence does not
+ * fail a test about mechanism.
+ */
+describe("AgreementsView — what a kind is", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.spyOn(Date, "now").mockReturnValue(NOW);
+		// Set every fixture this block reads, rather than inheriting: the initial
+		// state under test *is* "does this section have terms", so a corpus left
+		// over from a neighbouring test would silently decide the answer.
+		vi.mocked(listAgreementKinds).mockResolvedValue({ kinds: KINDS });
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: AGREEMENTS });
+		asRole("dom");
+	});
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it("explains an empty kind without being asked", async () => {
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: [] });
+		await renderView();
+
+		const description = agreementKindDescription("protocol") as string;
+		expect(screen.getByText(description)).not.toBeNull();
+		// Derived from the author list, so the dom is told whom a protocol binds.
+		expect(screen.getByText(/about your partner/i)).not.toBeNull();
+	});
+
+	it("steps back behind a toggle once the kind holds terms", async () => {
+		await renderView();
+		const description = agreementKindDescription("protocol") as string;
+		expect(screen.queryByText(description)).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "What's a protocol?" }));
+		expect(screen.getByText(description)).not.toBeNull();
+	});
+
+	it("gives the sub the same explanation from their own side", async () => {
+		// The `counterpart` guarantee is what the sub most needs said, since their
+		// side of it is an *absent* control — nothing on the row says why.
+		asRole("sub");
+		await renderView();
+		fireEvent.click(screen.getByRole("button", { name: "What's a protocol?" }));
+		expect(screen.getByText(/your partner writes these/i)).not.toBeNull();
+	});
+
+	it("explains a kind the pack does not ship with what it can derive", async () => {
+		// A description is pack-owned and a couple's own kind has none; the
+		// authorship half is computed from their kind, so it is still there.
+		vi.mocked(listAgreementKinds).mockResolvedValue({
+			kinds: [
+				{
+					id: "house_rule",
+					label: "House rule",
+					author_permission: ["dom", "switch"],
+					author_scope: "counterpart",
+				},
+			],
+		});
+		vi.mocked(listAgreements).mockResolvedValue({ agreements: [] });
+		await renderView();
+
+		expect(agreementKindDescription("house_rule")).toBeUndefined();
+		expect(screen.getByText(/about your partner/i)).not.toBeNull();
 	});
 });

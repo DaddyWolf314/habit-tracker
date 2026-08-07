@@ -9,6 +9,7 @@ import {
 	authorsAgreement,
 	authorsKind,
 	describeCitation,
+	describeKindAuthorship,
 	latestAgreementVersion,
 	mayRetireAgreement,
 	reconcileAgreementKinds,
@@ -955,5 +956,95 @@ describe("validateAgreementWrite — subject and scope (ADR 0010)", () => {
 			asSub({ agreements: [subsLimit] }),
 		);
 		expect(r.ok).toBe(true);
+	});
+});
+
+/**
+ * The explanatory copy that may **not** be shipped prose (#210).
+ *
+ * What a kind *is* ships in the pack; who may write one is computed here, because
+ * `edit_kind` can change `author_permission` under a shipped sentence and leave a
+ * false statement sitting in a consent record. So these assert the sentence tracks
+ * the same two fields the server authorizes against — including the couple shapes
+ * a one-author phrasing gets wrong.
+ */
+describe("describeKindAuthorship", () => {
+	const kindNamed = (id: string): AgreementKind =>
+		KINDS.find((k) => k.id === id) as AgreementKind;
+
+	it("tells the bound party they may read a protocol but not move it", () => {
+		// The `counterpart` guarantee, said out loud. Leaving it to a missing Edit
+		// button makes it invisible exactly where it is looked for.
+		const sentence = describeKindAuthorship(
+			kindNamed("protocol"),
+			"sub",
+			"dom",
+		);
+		expect(sentence).toMatch(/your partner writes these/i);
+		expect(sentence).toMatch(/can't change them/i);
+	});
+
+	it("tells a protocol's author who it binds", () => {
+		expect(describeKindAuthorship(kindNamed("protocol"), "dom", "sub")).toMatch(
+			/about your partner/i,
+		);
+	});
+
+	it("says each of you writes your own where both hold limits", () => {
+		// A `subject` kind both roles hold — the widened `limit` of ADR 0010, which
+		// is exactly the case a single-author sentence would get wrong.
+		expect(describeKindAuthorship(kindNamed("limit"), "dom", "sub")).toMatch(
+			/each of you writes your own/i,
+		);
+	});
+
+	it("distinguishes a switch+switch protocol from a one-sided one", () => {
+		// Both partners hold a `counterpart` kind, so the sentence has to say the
+		// subject cannot edit rather than naming one author.
+		const both = describeKindAuthorship(
+			kindNamed("protocol"),
+			"switch",
+			"switch",
+		);
+		expect(both).toMatch(/either of you/i);
+		expect(both).toMatch(/whoever a term is about can't change it/i);
+	});
+
+	it("says a safeword is either of yours", () => {
+		expect(describeKindAuthorship(kindNamed("safeword"), "dom", "sub")).toMatch(
+			/either of you can write or change these/i,
+		);
+	});
+
+	it("reads a kind nobody holds as dormant, not broken (ADR 0003)", () => {
+		// A `sub`-only kind in a couple with no sub. The terms stay readable, and
+		// the sentence says why there is nothing to add rather than going silent.
+		const subOnly: AgreementKind = {
+			...kindNamed("limit"),
+			author_permission: ["sub"],
+		};
+		const sentence = describeKindAuthorship(subOnly, "dom", "dom");
+		expect(sentence).toMatch(/neither of your roles holds this kind/i);
+		expect(sentence).toMatch(/stays readable/i);
+	});
+
+	it("moves when the couple edits the author list, since it is derived", () => {
+		// The whole reason this is computed rather than shipped: `edit_kind` can
+		// narrow `protocol` to the dom alone, and a switch who could write one
+		// yesterday must not still be told they can.
+		const tightened: AgreementKind = {
+			...kindNamed("protocol"),
+			author_permission: ["dom"],
+		};
+		expect(describeKindAuthorship(tightened, "switch", "dom")).toMatch(
+			/your partner writes these/i,
+		);
+	});
+
+	it("holds nothing for an unresolved role", () => {
+		// Before mutual confirmation nobody holds a role, so nobody authors.
+		expect(describeKindAuthorship(kindNamed("limit"), null, null)).toMatch(
+			/neither of your roles/i,
+		);
 	});
 });

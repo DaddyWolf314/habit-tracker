@@ -31,6 +31,7 @@ import {
 	agreementScope,
 	authorsAgreement,
 	authorsKind,
+	describeKindAuthorship,
 	latestAgreementVersion,
 	mayRetireAgreement,
 	type VersionedAgreement,
@@ -45,6 +46,7 @@ import {
 	type ScaffoldPlan,
 	scaffoldPlan,
 } from "#/shared/scaffold.ts";
+import { agreementKindDescription } from "#/templates/index.ts";
 
 /**
  * The Agreements screen (#121, ADR 0006) — the couple's terms of record.
@@ -62,6 +64,14 @@ import {
  * panels take the viewer's role) rather than introducing the app's first
  * divergent screen pair. So the dom sees "Add a protocol" and the sub sees "Add a
  * limit", on the same page, and neither sees the other's button.
+ *
+ * Each section carries an explainer (#210) in two halves with different owners:
+ * what the kind *is*, which is shipped prose looked up from the pack by id, and
+ * who may write one, which is **derived** because `edit_kind` can move the author
+ * list under a shipped sentence. The second half is also where the sub is told in
+ * words that a protocol is not theirs to move — until now that was legible only
+ * as an absent Edit button, which cannot distinguish "your role doesn't hold this
+ * kind" from "this one is your partner's".
  */
 export function AgreementsView() {
 	const [ready, setReady] = useState(false);
@@ -115,6 +125,12 @@ export function AgreementsView() {
 	}, [reload]);
 
 	const selfRole = (members.find((m) => m.is_self)?.role ??
+		null) as Role | null;
+	// The other half of the couple, for the authorship sentence each section
+	// carries (#210). Null until `getRoles` lands and in a couple nobody has
+	// joined yet — which reads as "your partner doesn't hold this kind", the same
+	// dormant phrasing an unconfirmed role already produces.
+	const partnerRole = (members.find((m) => !m.is_self)?.role ??
 		null) as Role | null;
 	// Authorship is per-member since ADR 0010, so the screen needs the viewer's id
 	// and not only their role. Empty before `getRoles` lands, which authors nothing
@@ -200,6 +216,7 @@ export function AgreementsView() {
 						canAuthor={authorsKind(kinds, kind.id, selfRole)}
 						selfId={selfId}
 						selfRole={selfRole}
+						partnerRole={partnerRole}
 						rules={rules}
 						types={types}
 						adding={adding === kind.id}
@@ -298,6 +315,7 @@ function KindSection({
 	canAuthor,
 	selfId,
 	selfRole,
+	partnerRole,
 	rules,
 	types,
 	adding,
@@ -315,6 +333,8 @@ function KindSection({
 	canAuthor: boolean;
 	selfId: string;
 	selfRole: Role | null;
+	/** The other member's role, for the authorship sentence (#210). */
+	partnerRole: Role | null;
 	rules: Rule[];
 	types: EventType[];
 	adding: boolean;
@@ -353,6 +373,28 @@ function KindSection({
 			);
 	}, [agreements, kind.author_scope, selfId]);
 
+	/**
+	 * What this kind is, and who writes one (#210).
+	 *
+	 * Open by default while the section is **empty**, closed once it holds terms.
+	 * An empty section is the one moment the reader has both the question and
+	 * nothing else to look at — "Nothing yet." under a word like *Protocol* is
+	 * the weakest square inch of this screen — and it is also the moment the copy
+	 * costs nothing, because it is displacing whitespace rather than the couple's
+	 * own terms. Once there are terms, their own words are the better explanation
+	 * of what the category holds, and this steps back behind a toggle.
+	 *
+	 * Deliberately one mechanism with a computed initial state rather than two
+	 * (always-on copy for empty, a toggle for full): the reader who wants it back
+	 * on a populated section can always get it, which "show it only when empty"
+	 * would deny exactly the partner who arrives later and does not recognise the
+	 * word.
+	 */
+	const [explaining, setExplaining] = useState(agreements.length === 0);
+	const explainerId = useId();
+	const description = agreementKindDescription(kind.id);
+	const authorship = describeKindAuthorship(kind, selfRole, partnerRole);
+
 	// A kind neither member authors is readable, never an error — that is how a
 	// `sub`-only kind behaves in a couple with no sub (ADR 0003's dormancy). An
 	// empty one still renders while it carries the new-default flag, or the notice
@@ -380,6 +422,29 @@ function KindSection({
 					</Button>
 				)}
 			</div>
+
+			<Button
+				size="xs"
+				variant="ghost"
+				className="-ml-2 mt-1"
+				aria-expanded={explaining}
+				aria-controls={explainerId}
+				onClick={() => setExplaining((open) => !open)}
+			>
+				{explaining ? "Hide" : `What's a ${kind.label.toLowerCase()}?`}
+			</Button>
+			{explaining && (
+				<div
+					id={explainerId}
+					className="mt-1 space-y-1 text-xs text-muted-foreground"
+				>
+					{/* Absent for a kind the pack does not ship — no description rather
+					    than an invented one. The authorship line is always available,
+					    since it is derived from the couple's own kind. */}
+					{description && <p>{description}</p>}
+					<p>{authorship}</p>
+				</div>
+			)}
 
 			{adding && (
 				<AgreementForm
