@@ -219,6 +219,34 @@ export function affordable(price: number, value: number): boolean {
 }
 
 /**
+ * Why a spend cannot land, or null when the currency covers it.
+ *
+ * Asked **at the moment the points move** and nowhere else — which is the append
+ * for a self-serve item and the *grant* for one that needs adjudicating. That
+ * placement is the whole of it: `applyCounterOp` has no floor, so a spend the
+ * currency cannot cover would drive it negative and the ladder would then
+ * announce crossings climbing back out of the hole.
+ *
+ * Checking it at the grant rather than at the request is what makes it honest.
+ * An earlier revision checked at append for both paths, which protected only the
+ * self-serve case while reading as a general guard: for a grant-requiring item
+ * the value can fall between the request and the ruling, and two individually
+ * affordable pending redemptions can both be granted. It also compared a price
+ * read at `occurred_at` against the value *now* — two clocks for no reason. Here
+ * the pair is exactly the one the decrement itself uses: the price the event was
+ * stamped with, against what the counter holds when the effect would apply.
+ *
+ * A refusal strands nothing. The redemption stays **pending**, so the dom can
+ * grant it later once the currency recovers and the sub can still retract it —
+ * the same window in which nothing has been spent.
+ */
+export function spendRefusal(price: number, value: number): string | null {
+	return affordable(price, value)
+		? null
+		: `that costs ${price} and only ${value} is saved up`;
+}
+
+/**
  * The items on offer at `atMs` whose price the couple's currency values cover —
  * "what is within reach", folded once so the store screen and Today's panel
  * cannot disagree about what that means.

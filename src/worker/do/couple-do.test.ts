@@ -3116,17 +3116,122 @@ describe("the reward store (#194, ADR 0017)", () => {
 		).rejects.toThrow(/no counter called/);
 	});
 
-	// Affordability is **not** enforced at append, and this pins that on purpose.
-	// An earlier revision refused an overspend and was wrong twice: it missed the
-	// default (grant-requiring) path entirely, since that spends at the ruling, and
-	// it compared a price read at `occurred_at` against the value now. It also
-	// refused a *request* ADR 0017 says should sit in the queue. A currency can go
-	// negative, unguarded exactly as an item priced in a weekly-resetting counter is.
-	it("lets a redemption overspend rather than refusing it", async () => {
+	// ── A spend has to be covered, at the moment it moves ─────────────────────
+
+	// Self-serve: the append *is* the spend, so that is where it is refused.
+	it("refuses a self-serve redemption the currency doesn't cover", async () => {
 		const couple = await coupleWithCurrency(10);
 		const rewardId = await offer(couple, { price: 50, requires_grant: false });
-		await redeem(couple, rewardId);
-		expect((await counters(couple)).service_points).toBe(-40);
+		await expect(redeem(couple, rewardId)).rejects.toThrow(
+			/costs 50 and only 10 is saved up/,
+		);
+		expect((await counters(couple)).service_points).toBe(10);
+	});
+
+	// A grant-requiring redemption is a *request*, which ADR 0017 says should sit
+	// in the queue — so asking is free however little is saved up.
+	it("accepts a request the currency doesn't cover yet", async () => {
+		const couple = await coupleWithCurrency(10);
+		const rewardId = await offer(couple, { price: 50, requires_grant: true });
+		const event = await redeem(couple, rewardId);
+		expect(event.pending).toBe(true);
+		expect((await counters(couple)).service_points).toBe(10);
+	});
+
+	// The case an append-time check could never catch: affordable when asked,
+	// not when granted.
+	it("refuses the grant when the currency fell in between", async () => {
+		const couple = await coupleWithCurrency(60);
+		const rewardId = await offer(couple, { price: 50, requires_grant: true });
+		const event = await redeem(couple, rewardId);
+
+		// Something else spends it before the dom gets to the queue.
+		await couple.do.adjustCounter(DOM, "service_points", -20);
+		await expect(
+			couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { granted: true },
+			}),
+		).rejects.toThrow(/costs 50 and only 40 is saved up/);
+
+		// Nothing moved, and nothing is stranded: it is still pending, so the dom
+		// can grant it once the currency recovers.
+		expect((await counters(couple)).service_points).toBe(40);
+		await couple.do.adjustCounter(DOM, "service_points", 20);
+		await couple.do.amend(DOM, {
+			kind: "adjudication",
+			target_event_id: event.id,
+			patch: { granted: true },
+		});
+		expect((await counters(couple)).service_points).toBe(10);
+	});
+
+	// The other case an append-time check misses: two requests each individually
+	// affordable, granted against the same currency.
+	it("refuses the second of two grants the currency can't cover together", async () => {
+		const couple = await coupleWithCurrency(60);
+		const rewardId = await offer(couple, { price: 50, requires_grant: true });
+		const first = await redeem(couple, rewardId);
+		const second = await redeem(couple, rewardId);
+
+		await couple.do.amend(DOM, {
+			kind: "adjudication",
+			target_event_id: first.id,
+			patch: { granted: true },
+		});
+		expect((await counters(couple)).service_points).toBe(10);
+		await expect(
+			couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: second.id,
+				patch: { granted: true },
+			}),
+		).rejects.toThrow(/costs 50 and only 10 is saved up/);
+	});
+
+	// A refused request is still the sub's to withdraw — retraction is pending-only,
+	// and a refused grant leaves it pending.
+	it("leaves a refused request retractable", async () => {
+		const couple = await coupleWithCurrency(10);
+		const rewardId = await offer(couple, { price: 50, requires_grant: true });
+		const event = await redeem(couple, rewardId);
+		await expect(
+			couple.do.amend(DOM, {
+				kind: "adjudication",
+				target_event_id: event.id,
+				patch: { granted: true },
+			}),
+		).rejects.toThrow(/saved up/);
+		await couple.do.amend(SUB, {
+			kind: "retracted",
+			target_event_id: event.id,
+		});
+	});
+
+	// A waived spend moves nothing, so there is nothing to afford: "have it free"
+	// stays available however little is saved up (ADR 0016).
+	it("allows a grant whose spend the dom waives", async () => {
+		const couple = await coupleWithCurrency(10);
+		const rewardId = await offer(couple, { price: 50, requires_grant: true });
+		const event = await redeem(couple, rewardId);
+
+		await couple.do.amend(DOM, {
+			kind: "adjudication",
+			target_event_id: event.id,
+			patch: { granted: true },
+			waive: [{ rule_id: "R28", effect_index: 0 }],
+		});
+		expect((await counters(couple)).service_points).toBe(10);
+	});
+
+	// Refusing a *spend* is not a floor under every counter: a decrement that takes
+	// an ordinary counter negative is a couple's forgiveness rule working, and ADR
+	// 0015 left counters without a floor on purpose.
+	it("does not put a floor under an ordinary counter", async () => {
+		const couple = await coupleWithCurrency(0);
+		await couple.do.adjustCounter(DOM, "demerits", -3);
+		expect((await counters(couple)).demerits).toBe(-3);
 	});
 
 	/** Every price-crossing row in the ledger, oldest first. */

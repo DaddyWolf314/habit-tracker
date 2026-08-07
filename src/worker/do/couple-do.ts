@@ -152,6 +152,7 @@ import {
 	rewardChangeKind,
 	rewardItemEffectiveAt,
 	rewardRefKeys,
+	spendRefusal,
 	stampRedemption,
 	validateRewardWrite,
 } from "#/shared/rewards.ts";
@@ -2470,17 +2471,18 @@ export class CoupleDO extends DurableObject<Env> {
 	 * backdating a redemption to last week quotes last week's price, because that
 	 * is what the item cost when the thing happened.
 	 *
-	 * **Affordability is deliberately not checked here.** An earlier revision
-	 * refused a redemption the currency did not cover, and it was wrong twice
-	 * over. It missed the *default* path — a grant-requiring item spends when the
-	 * ruling lands, so the value can fall in between, and two individually
-	 * affordable pending redemptions can both be granted — so it only ever
-	 * protected the self-serve case while reading as a general guard. And it mixed
-	 * clocks, quoting the price at `occurred_at` against the value *now*. It also
-	 * refused a *request* ADR 0017 says should "sit in the queue that already
-	 * exists". A currency can therefore go negative on an overspend, which is
-	 * unguarded exactly as a reward priced in a weekly-resetting counter is: what
-	 * the store costs and who may grant it are the couple's to set.
+	 * **Affordability is checked here only for a self-serve item**, because that is
+	 * the case where appending *is* the spend. A grant-requiring redemption is a
+	 * request, which ADR 0017 says should "sit in the queue that already exists" —
+	 * so it is accepted however little is saved up, and the currency is checked at
+	 * the grant instead ({@link assertGrantAffordable}). One rule, stated once:
+	 * refuse when the points would move and the currency does not cover them.
+	 *
+	 * Checking the request as well is what an earlier revision did, and it was
+	 * wrong twice over — it protected only this path while reading as a general
+	 * guard, and it compared a price read at `occurred_at` against the value *now*.
+	 * The pair here is the one the decrement itself uses: the price the event is
+	 * being stamped with, against what the counter holds as the effect applies.
 	 */
 	private stampRedemptionMetadata(
 		type: EventType,
@@ -2508,6 +2510,13 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		if (version.retired) {
 			throw coupleError("BAD_REQUEST", "that reward has been retired");
+		}
+		if (!version.requires_grant) {
+			const refusal = spendRefusal(
+				version.price,
+				this.counterById(version.currency)?.value ?? 0,
+			);
+			if (refusal) throw coupleError("BAD_REQUEST", refusal);
 		}
 		const stamped = stampRedemption(
 			metadata as Record<string, string | number | boolean>,
@@ -2605,6 +2614,13 @@ export class CoupleDO extends DurableObject<Env> {
 		}
 		if (input.kind === "waiver") {
 			this.assertEffectsLanded(event.id, input.waived);
+		}
+		// A grant is when a redemption's points move, so it is where the currency has
+		// to cover them (ADR 0017). Beside the waiver checks above and for their
+		// stated reason: the log is append-only, so this is the last moment a ruling
+		// can be refused at all.
+		if (input.kind === "adjudication") {
+			this.assertGrantAffordable(event, type, priorAmendments, input);
 		}
 
 		const amendment = this.writeAmendment(me.id, input);
@@ -2958,6 +2974,74 @@ export class CoupleDO extends DurableObject<Env> {
 	 * amendment built from the input — the ruling has no id yet, and this has to
 	 * answer before anything is written.
 	 */
+	/**
+	 * Refuses a ruling that would spend more currency than a redemption's item is
+	 * priced against (ADR 0017) — the grant-time half of {@link spendRefusal}.
+	 *
+	 * **Scoped to a redemption**, by the same derivation everything else about the
+	 * store uses: the event's type declares a `reward` ref or this does nothing. It
+	 * is deliberately not a floor under every counter — a decrement that takes
+	 * `demerits` negative is a couple's forgiveness rule working, and ADR 0015 left
+	 * counters without a floor on purpose. Only a *spend* has to be covered.
+	 *
+	 * What it asks is what the effect would really do, not what the pack's rule
+	 * says: the ops are resolved through `reevaluate` exactly as
+	 * {@link reevaluateOnAmendment} will resolve them a moment later, so a couple's
+	 * own spend rule is covered and a **waived** one is not refused — a suppressed
+	 * effect moves nothing, so there is nothing to afford. Decrements are netted per
+	 * counter, so a ruling firing two of them is judged on their sum rather than
+	 * passing twice against the same value.
+	 */
+	private assertGrantAffordable(
+		event: Event,
+		type: EventType,
+		priorAmendments: Amendment[],
+		input: Extract<AmendmentInput, { kind: "adjudication" }>,
+	): void {
+		if (rewardRefKeys(type).length === 0) return;
+		const provisional: Amendment = {
+			kind: "adjudication",
+			id: "",
+			target_event_id: event.id,
+			actor: "",
+			created_at: Date.now(),
+			patch: input.patch,
+			supersedes: input.supersedes,
+		};
+		const fired = reevaluate(
+			this.rulesAt(event.logged_at),
+			this.ruleContext(
+				event,
+				compositeMetadata(event, priorAmendments),
+				type.awaiting,
+			),
+			this.ruleContext(
+				event,
+				compositeMetadata(event, [...priorAmendments, provisional]),
+				type.awaiting,
+			),
+		);
+		const suppressed = new Set((input.waive ?? []).map(waivedEffectKey));
+		const spendPerCounter = new Map<string, number>();
+		for (const rule of fired) {
+			rule.ops.forEach((op, index) => {
+				if (op.kind !== "counter" || op.op !== "decrement") return;
+				const key = waivedEffectKey({
+					rule_id: rule.rule_id,
+					effect_index: index,
+				});
+				if (suppressed.has(key)) return;
+				const spent = spendPerCounter.get(op.counter) ?? 0;
+				spendPerCounter.set(op.counter, spent + (op.by ?? 1));
+			});
+		}
+		for (const [counterId, spend] of spendPerCounter) {
+			const value = this.counterById(counterId)?.value ?? 0;
+			const refusal = spendRefusal(spend, value);
+			if (refusal) throw coupleError("BAD_REQUEST", refusal);
+		}
+	}
+
 	private assertRulingWouldFire(
 		event: Event,
 		type: EventType,

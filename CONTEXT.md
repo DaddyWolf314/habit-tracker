@@ -536,6 +536,22 @@ primitives that already existed.
   nothing. _Avoid_: "purchase"; "claim"; assuming every reward needs asking — a
   reward that needs the dom present and one that does not are different things, and
   the item says which.
+- **Spend refusal** — a **Redemption** is refused when the **Currency** does not
+  cover its **Price**, asked **at the moment the points move**: the append for a
+  self-serve item, the *grant* for one that awaits adjudication. Necessary because
+  a counter has no floor — `applyCounterOp` is `value ± by` — so an uncovered
+  spend would drive the currency negative and the ladder would announce
+  **Crossing**s climbing back out of the hole. The clock is what makes it honest:
+  checking the *request* protects only the self-serve half while reading as a
+  general guard, since the value can fall between asking and granting and two
+  individually affordable requests can both be granted. Asking therefore stays
+  free — a request "sits in the queue that already exists" however little is saved
+  up — and a refused grant strands nothing, because the redemption is still
+  **Pending**: the dom can grant it once the currency recovers, and the sub can
+  still retract it. A **waived** spend moves nothing and so is never refused.
+  _Avoid_: reading it as a floor under every counter — a decrement taking
+  `demerits` negative is a forgiveness rule working, and only a *spend* has to be
+  covered; refusing the request rather than the grant.
 
 ## Journaling
 
