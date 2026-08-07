@@ -4,6 +4,7 @@ import { RuleChangeNotice } from "#/components/rule-change-notice.tsx";
 import { AnchorsPanel } from "#/components/today/anchors-panel.tsx";
 import { ConversationFlagsPanel } from "#/components/today/conversation-flags-panel.tsx";
 import { CountdownsPanel } from "#/components/today/countdowns-panel.tsx";
+import { FirstRunPanel } from "#/components/today/first-run-panel.tsx";
 import { JournalPromptsPanel } from "#/components/today/journal-prompts-panel.tsx";
 import { QueueEntry } from "#/components/today/queue-entry.tsx";
 import { RungsPanel } from "#/components/today/rungs-panel.tsx";
@@ -37,6 +38,7 @@ import type { ConversationFlagView } from "#/shared/conversations.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { EventView } from "#/shared/events.ts";
+import { firstRunStep } from "#/shared/first-run.ts";
 import type { RoleMember } from "#/shared/identity.ts";
 import type { OpenPromptView } from "#/shared/journaling.ts";
 import type { VersionedRewardItem } from "#/shared/rewards.ts";
@@ -243,6 +245,39 @@ export function TodayView() {
 			<h1 className="mb-4 text-2xl font-bold lg:text-3xl">Today</h1>
 
 			{error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+
+			{/*
+			 * Above everything, and only while this viewer can see no events (#212).
+			 * The panels below it all hide when empty, which made Today look like it
+			 * had a floor — but the pack seeds a counter with a daily target, so a new
+			 * couple lands on one untickable row and nothing saying where it came
+			 * from. Keyed on the log rather than on a stored "dismissed" flag: there
+			 * is nothing to remember, since logging anything at all retires it.
+			 *
+			 * Outside `columnsClass` on purpose. That flow is for the *panels*, which
+			 * are independent of each other and may sit in either column; this is
+			 * orientation for the whole screen, and a laptop dropping it into the
+			 * right-hand column beside the row it exists to explain would undo the
+			 * one thing it is placed above everything to do.
+			 */}
+			{events.length === 0 && (
+				// `Date.now()` at render rather than a ticked clock, unlike the
+				// Agreements screen: nothing here turns on a boundary being crossed
+				// while the screen sits open — a term taking force mid-view can only
+				// change which of three suggestions shows, and this screen already
+				// polls. A ticking state would buy nothing and add a timer.
+				<div className="mb-4">
+					<FirstRunPanel
+						step={firstRunStep({
+							agreements,
+							counters,
+							rules,
+							types,
+							now: Date.now(),
+						})}
+					/>
+				</div>
+			)}
 
 			{/* Ten panels stacked in one column is a phone screen's answer, and it was
 			    the only answer the app had: on a laptop it was the same column with
