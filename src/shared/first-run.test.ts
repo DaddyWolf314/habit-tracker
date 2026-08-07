@@ -115,11 +115,10 @@ describe("firstRunStep", () => {
 
 	it("does not suggest tracking a limit", () => {
 		// Nothing in the pack *counts* limits: only `ritual_completed.ritual_id`
-		// names a kind, and it names `ritual`. The Agreements screen does currently
-		// offer "Track this" here, via `countingTypeFor` falling through to
-		// `infraction`'s unqualified ref — which scaffolds a daily target for
-		// breaking your own limit (#213). This must not repeat that reasoning, and
-		// this test is what holds the two apart until #213 lands.
+		// names a kind, and it names `ritual`. This read `track` before #213, when
+		// `countingTypeFor` fell through to `infraction`'s unqualified ref and
+		// scaffolded a daily target for breaching your own limit — so it stays as a
+		// guard on the floor's own advice, independent of why it currently holds.
 		expect(step({ agreements: [ritual({ kind: "limit" })] })).toBe("log");
 	});
 
