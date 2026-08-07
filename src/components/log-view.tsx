@@ -44,6 +44,54 @@ import type { TimerView } from "#/shared/timers.ts";
  * also stays live — a low-frequency poll plus a foreground refetch (#92) — so a
  * partner's event or an incoming ruling arrives without a manual reload.
  */
+
+/**
+ * The mutable surfaces, fetched in one place (#200) so the first load and the
+ * poll read the same list. The type/rule *definitions* are deliberately not
+ * here: they don't change under the viewer, so the first load owns those — an
+ * asymmetry now stated once, in {@link fetchDefinitions}, instead of being
+ * implied by what a second hand-written copy of this list happened to omit.
+ *
+ * Fetches without setting, so the first load can commit the whole bundle at
+ * once or none of it.
+ */
+async function fetchLive() {
+	const [
+		{ events },
+		{ counters },
+		{ anchors },
+		{ prompts },
+		{ timers },
+		{ agreements },
+		{ rewards },
+	] = await Promise.all([
+		listEvents(),
+		listCounters(),
+		listAnchors(),
+		listOpenPrompts(),
+		listTimers(),
+		listAgreements(),
+		listRewardItems(),
+	]);
+	return { events, counters, anchors, prompts, timers, agreements, rewards };
+}
+
+type LiveBundle = Awaited<ReturnType<typeof fetchLive>>;
+
+/**
+ * What only the first load wants: the couple's event types, the versioned rule
+ * history, and who is in the couple. None of these change under the viewer, so
+ * the poll doesn't carry them.
+ */
+async function fetchDefinitions() {
+	const [{ types }, { rules }, { members }] = await Promise.all([
+		listEventTypes(),
+		listRuleHistory(),
+		getRoles(),
+	]);
+	return { types, rules, members };
+}
+
 export function LogView() {
 	const [ready, setReady] = useState(false);
 	const [types, setTypes] = useState<EventType[]>([]);
@@ -68,35 +116,23 @@ export function LogView() {
 	const [error, setError] = useState<string | null>(null);
 	const [composerOpen, setComposerOpen] = useState(false);
 
-	// Re-list the mutable surfaces (the type/rule definitions don't change under
-	// the viewer, so loadAll owns those). Throws on failure — the two callers
-	// below decide whether a failure is loud or quiet.
-	const refresh = useCallback(async () => {
-		const [
-			{ events },
-			{ counters },
-			{ anchors },
-			{ prompts },
-			{ timers },
-			{ agreements },
-			{ rewards },
-		] = await Promise.all([
-			listEvents(),
-			listCounters(),
-			listAnchors(),
-			listOpenPrompts(),
-			listTimers(),
-			listAgreements(),
-			listRewardItems(),
-		]);
-		setEvents(events);
-		setCounters(counters);
-		setAnchors(anchors);
-		setOpenPrompts(prompts);
-		setTimers(timers);
-		setAgreements(agreements);
-		setRewards(rewards);
+	// Where the live bundle lands. Adding a surface means one line in `fetchLive`
+	// and one here, adjacent — not the same list written out twice.
+	const applyLive = useCallback((live: LiveBundle) => {
+		setEvents(live.events);
+		setCounters(live.counters);
+		setAnchors(live.anchors);
+		setOpenPrompts(live.prompts);
+		setTimers(live.timers);
+		setAgreements(live.agreements);
+		setRewards(live.rewards);
 	}, []);
+
+	// Re-list the mutable surfaces. Throws on failure — the two callers below
+	// decide whether a failure is loud or quiet.
+	const refresh = useCallback(async () => {
+		applyLive(await fetchLive());
+	}, [applyLive]);
 
 	// Children fire this un-awaited after a mutation commits, so it must never
 	// reject: a failed refetch has to surface here — otherwise the panels keep
@@ -124,43 +160,18 @@ export function LogView() {
 
 	const loadAll = useCallback(async () => {
 		try {
-			const [
-				typeRes,
-				ruleRes,
-				counterRes,
-				anchorRes,
-				eventRes,
-				roleRes,
-				promptRes,
-				timerRes,
-				agreementRes,
-				rewardRes,
-			] = await Promise.all([
-				listEventTypes(),
-				listRuleHistory(),
-				listCounters(),
-				listAnchors(),
-				listEvents(),
-				getRoles(),
-				listOpenPrompts(),
-				listTimers(),
-				listAgreements(),
-				listRewardItems(),
+			const [live, definitions] = await Promise.all([
+				fetchLive(),
+				fetchDefinitions(),
 			]);
-			setTypes(typeRes.types);
-			setRules(ruleRes.rules);
-			setCounters(counterRes.counters);
-			setAnchors(anchorRes.anchors);
-			setEvents(eventRes.events);
-			setMembers(roleRes.members);
-			setOpenPrompts(promptRes.prompts);
-			setTimers(timerRes.timers);
-			setAgreements(agreementRes.agreements);
-			setRewards(rewardRes.rewards);
+			applyLive(live);
+			setTypes(definitions.types);
+			setRules(definitions.rules);
+			setMembers(definitions.members);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Couldn't load the log.");
 		}
-	}, []);
+	}, [applyLive]);
 
 	useEffect(() => {
 		setReady(true);
