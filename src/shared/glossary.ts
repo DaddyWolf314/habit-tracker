@@ -77,6 +77,11 @@ export const GLOSSARY = {
 		definition:
 			"A number on one of your counters with one of your agreements attached to it. Passing it is a moment the log records, not a debt: nobody owes anything, and it clears itself when the counter drops back under.",
 	},
+	timer: {
+		term: "timer",
+		definition:
+			"A stretch of time the app keeps for you: a countdown, which runs toward a deadline, or a stopwatch, which adds up while it is open. Rules open and close them, and a rule can also ask what was running when something was logged.",
+	},
 	countdown: {
 		term: "countdown",
 		definition:

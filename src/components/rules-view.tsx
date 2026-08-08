@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { pageClass, pageRowsClass } from "#/components/ui/page.ts";
 import {
@@ -153,6 +154,19 @@ export function RulesView() {
 					? "You can add, edit, enable, or remove them."
 					: "Only a dom or switch can change them — but you can always see them."}
 			</p>
+			{/*
+			 * Both words the sentence above uses, defined here (#212 item 4).
+			 *
+			 * *timer* is defined nowhere else in the app: the two flavors are
+			 * surfaced separately on Today as Countdowns and Sessions, so the umbrella
+			 * word only ever appears on this screen — in the lead sentence, in "Add
+			 * timer condition", and in the editor's timer rows. *counter* is already
+			 * defined on the Log's counters panel, and is repeated rather than left
+			 * half-explained: leaving one of two words in the same sentence defined
+			 * and the other not is worse than either. There is still one definition —
+			 * the glossary's — so the two placements cannot drift.
+			 */}
+			<Define terms={["counter", "timer"]} />
 
 			{error && <p className="text-sm text-destructive">{error}</p>}
 

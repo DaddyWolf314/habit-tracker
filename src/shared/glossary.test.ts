@@ -24,16 +24,21 @@ describe("GLOSSARY", () => {
 	});
 
 	it("covers the words #212 named as undefined in the product", () => {
-		// The issue's list, with the two the UI calls something else: an *anchor* is
-		// a "clock" on screen (CONTEXT §Counter / Timer / Anchor — "Clocks is the
-		// UI's word"), and *timer* is never shown as a word at all, since the two
-		// flavors are surfaced separately as countdowns and sessions. Defining the
-		// model's word instead of the screen's would answer a question nobody asked.
+		// The issue's eleven, one of them re-spelled: an *anchor* is a "clock" on
+		// screen (CONTEXT §Counter / Timer / Anchor — "Clocks is the UI's word"), so
+		// defining the model's word instead of the screen's would answer a question
+		// nobody asked.
+		//
+		// *timer* stays, and is not covered by countdown and session. Those are the
+		// two flavors, surfaced separately on Today; the umbrella word is what the
+		// Rules screen actually ships — "your counters and timers", "Add timer
+		// condition" — so a reader meets it there with the flavors nowhere in sight.
 		for (const id of [
 			"counter",
 			"streak",
 			"clock",
 			"rung",
+			"timer",
 			"countdown",
 			"session",
 			"waiver",
