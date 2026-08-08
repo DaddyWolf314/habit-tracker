@@ -1,5 +1,5 @@
 {
-	"version": 14,
+	"version": 15,
 	"types": [
 		{
 			"id": "ritual_completed",
@@ -309,6 +309,7 @@
 						"scene": "Scene"
 					},
 					"label": "Activity",
+					"vocabulary": "activity",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]
 				},
@@ -341,6 +342,7 @@
 						"scene": "Scene"
 					},
 					"label": "Activity",
+					"vocabulary": "activity",
 					"required": true,
 					"set_permission": ["dom", "sub", "switch"]
 				},

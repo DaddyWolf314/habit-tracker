@@ -404,6 +404,19 @@ in and should not.
   putting it where every reader would see it. _Avoid_: "custom type" (a whole
   type authored by a couple, a different thing); "adopted" (ADR 0002's word, for
   rules and Agreement kinds).
+- **Shared vocabulary** — a named list of words that more than one enum field
+  draws on, declared by id on each field (`vocabulary: "activity"`, ADR 0018).
+  Its one consequence is on **writes**: a couple's addition or rename at any site
+  reaches every site, so `activity` — asked on both `session_started` and
+  `session_ended` — cannot be extended on the opening event alone and leave the
+  close unable to validate the word it echoes. The options still live on each
+  field, so the pack ships and bumps them exactly as before and the **Option
+  overlay** merges exactly as before. Declared rather than inferred from
+  identical options: two enums that agree today have not said they are one list,
+  and a bump to either would silently reach into the other. The vocabulary screen
+  renders one card per vocabulary, naming every event it is spoken on. _Avoid_:
+  treating it as a corpus (there is no list stored apart from the fields);
+  grouping enums by matching shape.
 - **Option token** — the stored value of an enum option, as opposed to its
   **Option label**. Lower snake case, minted once, and never moved: it is what a
   logged event, a rule condition and an export carry, so renaming one would

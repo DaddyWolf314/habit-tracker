@@ -353,3 +353,157 @@ describe("renaming changes the word, never the token", () => {
 		).rejects.toThrow(/only a word you added/);
 	});
 });
+
+/**
+ * A shared vocabulary (ADR 0018) — one word, every field that speaks it.
+ *
+ * The bug these pin was reachable from the vocabulary screen alone: `activity`
+ * is asked on both `session_started` and `session_ended`, the overlay is keyed
+ * per field, so a word added on the screen's first "Activity" card was absent
+ * from the enum the *close* validates against. The couple could start a session
+ * they could then never stop — it ran until the per-activity max auto-closed it.
+ */
+describe("a word joins every field that shares its vocabulary", () => {
+	/** The couple adds "yoga" to the activity vocabulary, naming one of its sites. */
+	async function withAddedActivity(): Promise<ActiveCouple> {
+		const couple = await activeCouple();
+		await couple.do.addEventTypeOption(SUB, {
+			type_id: "session_started",
+			field_key: "activity",
+			option: "yoga",
+			label: "Yoga",
+		});
+		return couple;
+	}
+
+	it("reaches the field the caller did not name", async () => {
+		const couple = await withAddedActivity();
+		const types = await couple.do.listEventTypes(DOM);
+
+		for (const typeId of ["session_started", "session_ended"]) {
+			const field = enumField(types, typeId, "activity");
+			expect(field.options).toContain("yoga");
+			expect(field.option_labels?.yoga).toBe("Yoga");
+		}
+	});
+
+	it("lets the session it opens be closed again", async () => {
+		// The whole point. `stopwatches-panel.tsx` echoes the open row's activity
+		// into the close, so a word that reached only `session_started` made Stop
+		// fail validation — "activity is not an allowed option" — on a session the
+		// app had just let the couple start.
+		const couple = await withAddedActivity();
+		const start = await couple.do.logEvent(SUB, {
+			type: "session_started",
+			metadata: { activity: "yoga" },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+		const session_id = start.composite_metadata.session_id;
+		advance(30 * 60_000);
+
+		await couple.do.logEvent(SUB, {
+			type: "session_ended",
+			metadata: { session_id, activity: "yoga" },
+			subject: couple.subId,
+			visibility: "shared",
+		});
+
+		expect(couple.timerRows()[0]?.status).toBe("completed");
+	});
+
+	it("moves the label at every site when renamed", async () => {
+		const couple = await withAddedActivity();
+		await couple.do.renameEventTypeOption(SUB, {
+			type_id: "session_ended",
+			field_key: "activity",
+			option: "yoga",
+			label: "Yoga practice",
+		});
+
+		// Renamed through the site the caller did *not* add it at: a shared word is
+		// one word, so either site is a legitimate place to rename it from.
+		const types = await couple.do.listEventTypes(DOM);
+		for (const typeId of ["session_started", "session_ended"]) {
+			expect(enumField(types, typeId, "activity").option_labels?.yoga).toBe(
+				"Yoga practice",
+			);
+		}
+	});
+
+	it("refuses the word at both sites once it exists at either", async () => {
+		const couple = await withAddedActivity();
+		await expect(
+			couple.do.addEventTypeOption(SUB, {
+				type_id: "session_ended",
+				field_key: "activity",
+				option: "yoga",
+			}),
+		).rejects.toThrow(/already exists/);
+	});
+
+	it("repairs a word split before the vocabulary was declared", async () => {
+		// The live-instance case. A couple who added an activity under the old
+		// pack has one overlay row, on `session_started` alone — the fan-out did
+		// not exist when they typed it, so their word is still unusable at the
+		// close. `seedDefaults` spreads it on the bump that declares the shared
+		// vocabulary, so the repair rides the same wake that installs the fix.
+		const first = await activeCouple();
+		await first.do.addEventTypeOption(SUB, {
+			type_id: "session_started",
+			field_key: "activity",
+			option: "yoga",
+			label: "Yoga",
+		});
+		// Back to one row, as a pre-ADR-0018 couple's storage actually looks.
+		first.db
+			.prepare(`DELETE FROM event_type_options WHERE type_id = 'session_ended'`)
+			.run();
+		first.db
+			.prepare(
+				`UPDATE settings SET value = '0' WHERE key = 'event_types_version'`,
+			)
+			.run();
+
+		const woken = await newCoupleDO(first.db);
+		const types = await woken.do.listEventTypes(DOM);
+
+		expect(enumField(types, "session_ended", "activity").options).toContain(
+			"yoga",
+		);
+		expect(
+			enumField(types, "session_ended", "activity").option_labels?.yoga,
+		).toBe("Yoga");
+	});
+
+	it("adds nothing on a wake with no words to spread", async () => {
+		// The repair is a blind upsert with no version of its own, so it re-runs on
+		// every bump forever. It has to be a no-op when there is nothing split.
+		const first = await activeCouple();
+		first.db
+			.prepare(
+				`UPDATE settings SET value = '0' WHERE key = 'event_types_version'`,
+			)
+			.run();
+		const woken = await newCoupleDO(first.db);
+		await woken.do.listEventTypes(DOM);
+
+		const count = first.db
+			.prepare(`SELECT COUNT(*) AS n FROM event_type_options`)
+			.get() as { n: number };
+		expect(count.n).toBe(0);
+	});
+
+	it("leaves an unshared vocabulary alone", async () => {
+		// `act` declares no vocabulary, so the fan-out is a group of one — the
+		// ordinary case, and the one every other test in this file exercises.
+		const couple = await withAddedAct();
+		const types = await couple.do.listEventTypes(DOM);
+		const touched = types.filter((t) =>
+			Object.values(t.metadata).some(
+				(f) => f.kind === "enum" && f.options.includes("aftercare_check"),
+			),
+		);
+		expect(touched.map((t) => t.id)).toEqual(["act"]);
+	});
+});

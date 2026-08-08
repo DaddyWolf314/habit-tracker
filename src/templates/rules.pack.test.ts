@@ -5,7 +5,8 @@ import {
 	NO_COUNTER_VALUES,
 	rulesEffectiveAt,
 } from "#/shared/engine.ts";
-import { awaitingKeysFor } from "#/shared/event-types.ts";
+import type { MetadataField } from "#/shared/event-types.ts";
+import { awaitingKeysFor, vocabularySites } from "#/shared/event-types.ts";
 import { isCitingRef, isOriginatingRef } from "#/shared/refs.ts";
 import { reconcilePack } from "#/shared/rule-reconciliation.ts";
 import { matchStopwatch, type OpenStopwatch } from "#/shared/timers.ts";
@@ -693,6 +694,93 @@ describe("option labels in the shipped pack", () => {
 					option,
 					label: field.option_labels?.[option],
 				}).not.toEqual({ id, option, label: option });
+			}
+		}
+	});
+});
+
+describe("shared vocabularies in the shipped pack (ADR 0018)", () => {
+	const shared = new Map<string, { id: string; field: MetadataField }[]>();
+	for (const type of STARTER_EVENT_TYPES) {
+		for (const [key, field] of Object.entries(type.metadata)) {
+			if (field.kind !== "enum" || !field.vocabulary) continue;
+			const sites = shared.get(field.vocabulary) ?? [];
+			sites.push({ id: `${type.id}.${key}`, field });
+			shared.set(field.vocabulary, sites);
+		}
+	}
+
+	it("groups the shipped pack into one card per Activity", () => {
+		// The bug as reported, asserted against the *real* pack rather than a
+		// fixture: the vocabulary screen groups by `vocabularySites`, so running
+		// the shipped types through it is what the screen will show. Two entries
+		// reading "Activity" here is the regression.
+		const cards: string[] = [];
+		const claimed = new Set<string>();
+		for (const type of STARTER_EVENT_TYPES) {
+			for (const [key, field] of Object.entries(type.metadata)) {
+				if (field.kind !== "enum") continue;
+				if (claimed.has(`${type.id}.${key}`)) continue;
+				for (const site of vocabularySites(STARTER_EVENT_TYPES, type.id, key)) {
+					claimed.add(`${site.type_id}.${site.field_key}`);
+				}
+				cards.push(field.label);
+			}
+		}
+		expect(cards.filter((label) => label === "Activity")).toEqual(["Activity"]);
+		// Nothing else collapsed on the way: one card per enum, less the one the
+		// two Activity fields now share.
+		const enums = STARTER_EVENT_TYPES.flatMap((t) =>
+			Object.values(t.metadata).filter((f) => f.kind === "enum"),
+		);
+		expect(cards).toHaveLength(enums.length - 1);
+	});
+
+	it("ships the activity vocabulary on both session events", () => {
+		// The pairing the whole ADR exists for. If a bump ever drops one of these,
+		// the assertions below stop guarding anything and would silently pass.
+		expect(shared.get("activity")?.map((s) => s.id)).toEqual([
+			"session_started.activity",
+			"session_ended.activity",
+		]);
+	});
+
+	it("never declares a vocabulary at only one site", () => {
+		// A vocabulary of one is an id that means nothing and reads as though a
+		// second site exists — the fan-out has nowhere to fan to.
+		for (const [vocabulary, sites] of shared) {
+			expect({ vocabulary, count: sites.length }).toEqual({
+				vocabulary,
+				count: sites.length >= 2 ? sites.length : 2,
+			});
+		}
+	});
+
+	it("ships the same words and copy at every site", () => {
+		// The couple's *additions* are kept in step by the DO's fan-out; the pack's
+		// own options are kept in step only by this test. Two fields declared one
+		// vocabulary and then shipped different lists would be a divergence no
+		// runtime code looks for — `withAddedOptions` merges per field and would
+		// carry it straight through to a session that starts and cannot stop.
+		for (const [vocabulary, sites] of shared) {
+			const [first, ...rest] = sites;
+			if (first?.field.kind !== "enum") continue;
+			for (const site of rest) {
+				if (site.field.kind !== "enum") continue;
+				expect({
+					vocabulary,
+					id: site.id,
+					options: site.field.options,
+				}).toEqual({ vocabulary, id: site.id, options: first.field.options });
+				expect({
+					vocabulary,
+					id: site.id,
+					copy: site.field.option_labels,
+				}).toEqual({
+					vocabulary,
+					id: site.id,
+					copy: first.field.option_labels,
+				});
 			}
 		}
 	});

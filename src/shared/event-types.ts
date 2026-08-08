@@ -64,6 +64,27 @@ export const metadataFieldSchema = z.discriminatedUnion("kind", [
 		 * copy for every surface that doesn't.
 		 */
 		option_labels: z.record(z.string(), z.string()).optional(),
+		/**
+		 * Names the **shared vocabulary** this field draws on (ADR 0018). Two fields
+		 * declaring the same id are two places you say the same kind of word, so a
+		 * word added at either is added to both.
+		 *
+		 * Declared, never inferred. `session_started.activity` and
+		 * `session_ended.activity` are byte-identical, and matching on that would
+		 * make two enums that merely happen to agree today into one list tomorrow —
+		 * a pack bump to one silently reaching into the other. The id says the
+		 * sharing is intended; identical options say only that nobody has diverged
+		 * them yet.
+		 *
+		 * Optional, and its absence is the common case: a field with no id has a
+		 * vocabulary of its own, which is what every enum in the pack but these two
+		 * has. It is deliberately *not* a separate corpus — the options still live
+		 * on each field, so a bump edits the pack exactly as before and
+		 * {@link withAddedOptions} merges exactly as before. All this id changes is
+		 * who a *couple's* addition reaches, which is the only writer that was ever
+		 * splitting the list.
+		 */
+		vocabulary: z.string().optional(),
 		...metadataFieldBase,
 	}),
 	z.object({
@@ -313,6 +334,46 @@ export function withAddedOptions(
 			added && field.kind === "enum" ? extendEnum(field, added) : field;
 	}
 	return { ...type, metadata };
+}
+
+/** One field a vocabulary is spoken at — where a word has to be written. */
+export type VocabularySite = { type_id: string; field_key: string };
+
+/**
+ * Which enum fields share a word with `field_key` on `type_id` — always
+ * including itself, and only ever more than itself when the field declares a
+ * `vocabulary` (ADR 0018).
+ *
+ * The **one** resolver for that question, because it has two callers who must
+ * agree: the DO fans a couple's addition out across these sites, and the
+ * vocabulary screen collapses them into one card. If the screen showed one list
+ * and the write reached one field, the page would report a word it had not
+ * actually added everywhere it appears — which is the failure mode the whole ADR
+ * is about, moved one layer up.
+ *
+ * Sites come back in `types` order with the named field first, so the type the
+ * caller asked about owns the copy the screen renders.
+ */
+export function vocabularySites(
+	types: readonly EventType[],
+	type_id: string,
+	field_key: string,
+): VocabularySite[] {
+	const self: VocabularySite = { type_id, field_key };
+	const field = types.find((t) => t.id === type_id)?.metadata[field_key];
+	if (field?.kind !== "enum" || !field.vocabulary) return [self];
+
+	const rest: VocabularySite[] = [];
+	for (const type of types) {
+		for (const [key, other] of Object.entries(type.metadata)) {
+			if (other.kind !== "enum" || other.vocabulary !== field.vocabulary) {
+				continue;
+			}
+			if (type.id === type_id && key === field_key) continue;
+			rest.push({ type_id: type.id, field_key: key });
+		}
+	}
+	return [self, ...rest];
 }
 
 /**

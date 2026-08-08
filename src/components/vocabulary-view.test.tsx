@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/lib/identity.ts", () => ({ hasIdentity: () => true }));
 vi.mock("#/lib/api.ts", () => ({
-	listEventTypes: vi.fn(() => Promise.resolve({ types: TYPES })),
+	listEventTypes: vi.fn(() => Promise.resolve({ types: served })),
 	listEventTypeOptions: vi.fn(() => Promise.resolve({ options: MINE })),
 	getRoles: vi.fn(() => Promise.resolve({ members: MEMBERS })),
 	addEventTypeOption: vi.fn(() => Promise.resolve(TYPES[0])),
@@ -87,6 +87,9 @@ const MINE: OptionAddition[] = [
 	},
 ];
 
+/** What `listEventTypes` answers with — swapped by the shared-vocabulary block. */
+let served: EventType[] = TYPES;
+
 async function renderView(): Promise<void> {
 	render(<VocabularyView />);
 	await act(async () => {
@@ -96,6 +99,7 @@ async function renderView(): Promise<void> {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	served = TYPES;
 });
 afterEach(cleanup);
 
@@ -180,5 +184,99 @@ describe("renaming a word", () => {
 			option: "aftercare_check",
 			label: "Checked in after",
 		});
+	});
+});
+
+/**
+ * Fields sharing a `vocabulary` are one list on this screen (ADR 0018).
+ *
+ * This is the bug as reported: the page listed **Activity twice**, because
+ * `activity` is asked on both session events and the screen rendered one card
+ * per field. The two cards were identical but for a small grey line, and worse
+ * than redundant — a word added to one was absent from the other, so the couple
+ * could start a session the app would then refuse to close.
+ */
+const ACTIVITY: EventType["metadata"][string] = {
+	kind: "enum",
+	options: ["service", "scene"],
+	option_labels: { service: "Service", scene: "Scene" },
+	label: "Activity",
+	vocabulary: "activity",
+	required: true,
+	set_permission: ["dom", "sub", "switch"],
+};
+
+const SESSION_TYPES: EventType[] = [
+	{
+		id: "session_started",
+		label: "Session started",
+		valence: "neutral",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: true,
+		journaling: false,
+		awaiting: [],
+		metadata: { activity: ACTIVITY },
+	},
+	{
+		id: "session_ended",
+		label: "Session ended",
+		valence: "neutral",
+		log_permission: ["dom", "sub", "switch"],
+		subject_required: true,
+		journaling: false,
+		awaiting: [],
+		metadata: { activity: ACTIVITY },
+	},
+];
+
+describe("a shared vocabulary is one list", () => {
+	beforeEach(() => {
+		served = SESSION_TYPES;
+	});
+
+	it("lists Activity once, not once per event that asks it", async () => {
+		await renderView();
+		expect(screen.getAllByRole("heading", { name: "Activity" })).toHaveLength(
+			1,
+		);
+		expect(screen.getAllByPlaceholderText("Add a word")).toHaveLength(1);
+	});
+
+	it("names every event the words are spoken on", async () => {
+		// The card is no longer "on session started". Collapsing two lists into one
+		// must not quietly drop where the second one was asked.
+		await renderView();
+		expect(
+			screen.getByText("on session started and session ended"),
+		).toBeTruthy();
+	});
+
+	it("addresses the write to one site and lets the server fan it out", async () => {
+		await renderView();
+		fireEvent.change(screen.getByPlaceholderText("Add a word"), {
+			target: { value: "Yoga" },
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: "Add" }));
+		});
+
+		// One call, not one per site: the DO resolves the vocabulary through the
+		// same `vocabularySites` this screen grouped by, so a client that forgot
+		// half the fan-out is not a shape this API can be used in.
+		expect(addEventTypeOption).toHaveBeenCalledTimes(1);
+		expect(addEventTypeOption).toHaveBeenCalledWith({
+			type_id: "session_started",
+			field_key: "activity",
+			option: "yoga",
+			label: "Yoga",
+		});
+	});
+
+	it("still separates lists that share no vocabulary", async () => {
+		// `act` and `floor` declare none, so they stay their own cards — grouping
+		// keys on the declared id, never on two enums happening to look alike.
+		served = TYPES;
+		await renderView();
+		expect(screen.getByText("on act")).toBeTruthy();
 	});
 });
