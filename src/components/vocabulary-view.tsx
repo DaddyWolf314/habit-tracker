@@ -19,11 +19,13 @@ import type {
 	EventType,
 	MetadataField,
 	OptionAddition,
+	VocabularySite,
 } from "#/shared/event-types.ts";
 import {
 	optionLabel,
 	optionTokenSchema,
 	toOptionToken,
+	vocabularySites,
 } from "#/shared/event-types.ts";
 import type { Role } from "#/shared/roles.ts";
 import { rolePermits } from "#/shared/roles.ts";
@@ -95,17 +97,35 @@ export function VocabularyView() {
 	 * so the screen can never offer a control whose write is refused. A field you
 	 * may not set is simply absent rather than shown disabled: it is not a thing
 	 * you are being denied, it is not yours to say.
+	 *
+	 * Fields sharing a `vocabulary` (ADR 0018) collapse to **one** list, because
+	 * to the couple they are one list: `activity` is asked twice, on the event
+	 * that opens a session and the one that closes it, and shipped as two cards
+	 * both reading "Activity" with only a small grey line between them. Grouping
+	 * here mirrors the DO's fan-out through the same {@link vocabularySites}
+	 * resolver — one card, one write, one word.
 	 */
 	const editable = useMemo(() => {
-		const rows: { type: EventType; key: string; field: EnumField }[] = [];
+		const groups: VocabularyGroup[] = [];
+		const claimed = new Set<string>();
 		for (const type of types) {
 			for (const [key, field] of Object.entries(type.metadata)) {
 				if (field.kind !== "enum") continue;
 				if (!rolePermits(selfRole, field.set_permission)) continue;
-				rows.push({ type, key, field });
+				if (claimed.has(`${type.id}.${key}`)) continue;
+				// Every site, then only the ones this member may extend — the same
+				// filter the server applies to the fan-out, so the card never claims a
+				// reach the write won't have.
+				const sites = vocabularySites(types, type.id, key).filter((site) =>
+					permitted(types, selfRole, site),
+				);
+				for (const site of sites) {
+					claimed.add(`${site.type_id}.${site.field_key}`);
+				}
+				groups.push({ type, key, field, sites });
 			}
 		}
-		return rows;
+		return groups;
 	}, [types, selfRole]);
 
 	if (!ready) return null;
@@ -142,17 +162,26 @@ export function VocabularyView() {
 			    here to add a word to *one* of them. Stacked, that is a long scroll
 			    past lists you didn't want on a screen with room for two abreast. */}
 			<div className={columnsClass}>
-				{editable.map(({ type, key, field }) => (
+				{editable.map(({ type, key, field, sites }) => (
 					<OptionList
 						key={`${type.id}.${key}`}
 						typeId={type.id}
-						typeLabel={type.label}
+						// Named for every event that asks it, so a shared list does not
+						// read as belonging to whichever type happened to sort first.
+						spokenOn={sites.map(
+							(s) => types.find((t) => t.id === s.type_id)?.label ?? s.type_id,
+						)}
 						fieldKey={key}
 						field={field}
 						mine={
 							new Set(
 								mine
-									.filter((o) => o.type_id === type.id && o.field_key === key)
+									.filter((o) =>
+										sites.some(
+											(s) =>
+												o.type_id === s.type_id && o.field_key === s.field_key,
+										),
+									)
 									.map((o) => o.option),
 							)
 						}
@@ -166,17 +195,46 @@ export function VocabularyView() {
 
 type EnumField = Extract<MetadataField, { kind: "enum" }>;
 
+/**
+ * One list on the screen: the field the write is addressed to, and every site
+ * that word reaches. A group of one is the ordinary case.
+ */
+type VocabularyGroup = {
+	type: EventType;
+	key: string;
+	field: EnumField;
+	sites: VocabularySite[];
+};
+
+/** Whether this member may extend the enum at `site` — the screen's whole gate. */
+function permitted(
+	types: EventType[],
+	selfRole: Role | null,
+	site: VocabularySite,
+): boolean {
+	const field = types.find((t) => t.id === site.type_id)?.metadata[
+		site.field_key
+	];
+	return field?.kind === "enum" && rolePermits(selfRole, field.set_permission);
+}
+
+/** Reads a list of event names as a sentence: "a", "a and b", "a, b and c". */
+function andList(names: string[]): string {
+	if (names.length <= 1) return names[0] ?? "";
+	return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
 /** One enum: the words in it, and the form that adds another. */
 function OptionList({
 	typeId,
-	typeLabel,
+	spokenOn,
 	fieldKey,
 	field,
 	mine,
 	onChanged,
 }: {
 	typeId: string;
-	typeLabel: string;
+	spokenOn: string[];
 	fieldKey: string;
 	field: EnumField;
 	mine: Set<string>;
@@ -223,7 +281,7 @@ function OptionList({
 		<section className="rounded-md border p-4">
 			<h2 className="font-medium">{field.label}</h2>
 			<p className="mt-1 text-sm text-muted-foreground">
-				on {typeLabel.toLowerCase()}
+				on {andList(spokenOn.map((label) => label.toLowerCase()))}
 			</p>
 
 			<ul className="mt-3 space-y-1">

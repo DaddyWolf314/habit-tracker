@@ -74,6 +74,8 @@ import {
 	type MetadataField,
 	type OptionAddition,
 	optionAdditionSchema,
+	type VocabularySite,
+	vocabularySites,
 	withAddedOptions,
 } from "#/shared/event-types.ts";
 import type { Event, EventView, LogEventInput } from "#/shared/events.ts";
@@ -1338,7 +1340,62 @@ export class CoupleDO extends DurableObject<Env> {
 				JSON.stringify(type),
 			);
 		}
+		this.reconcileSharedVocabularies();
 		this.setSetting("event_types_version", String(EVENT_TYPES_VERSION));
+	}
+
+	/**
+	 * Spreads every couple-added word across the sites of its shared vocabulary
+	 * (ADR 0018), so a bump that *declares* a vocabulary also repairs the split
+	 * that existed before it was declared.
+	 *
+	 * Runs inside `seedDefaults`, after the definitions are upserted, because the
+	 * vocabulary it reads is the one the bump just installed. `addEventTypeOption`
+	 * keeps the sites in step from here on; this is for the words already stored
+	 * when the declaration arrives — including, on the bump that introduced this,
+	 * an activity a couple had added to `session_started` and could not close a
+	 * session with.
+	 *
+	 * A blind upsert, like the seeding around it: idempotent, no version of its
+	 * own, and a no-op for a couple who added nothing to a shared list. `added_by`
+	 * and `added_at` are carried from the row it spreads, so the copy reads as the
+	 * one word it is rather than as something the bump authored.
+	 */
+	private reconcileSharedVocabularies(): void {
+		const types = this.eventTypes();
+		const existing = new Set(
+			this.sql
+				.exec<OptionRow>(
+					`SELECT type_id, field_key, option FROM event_type_options`,
+				)
+				.toArray()
+				.map((r) => `${r.type_id}.${r.field_key}.${r.option}`),
+		);
+		const rows = this.sql
+			.exec<OptionRow & { added_by: string; added_at: number }>(
+				`SELECT type_id, field_key, option, label, added_by, added_at
+					FROM event_type_options ORDER BY added_at ASC, option ASC`,
+			)
+			.toArray();
+
+		for (const row of rows) {
+			for (const site of vocabularySites(types, row.type_id, row.field_key)) {
+				const key = `${site.type_id}.${site.field_key}.${row.option}`;
+				if (existing.has(key)) continue;
+				existing.add(key);
+				this.sql.exec(
+					`INSERT INTO event_type_options
+						(type_id, field_key, option, label, added_by, added_at)
+						VALUES (?, ?, ?, ?, ?, ?)`,
+					site.type_id,
+					site.field_key,
+					row.option,
+					row.label,
+					row.added_by,
+					row.added_at,
+				);
+			}
+		}
 	}
 
 	/**
@@ -2186,6 +2243,13 @@ export class CoupleDO extends DurableObject<Env> {
 	 * Returning the merged type rather than an ack is what makes the composer show
 	 * the new word immediately — one round trip, through the same seam every other
 	 * reader uses.
+	 *
+	 * A field declaring a shared `vocabulary` (ADR 0018) is written at every site
+	 * that shares it, in one transaction. `session_started.activity` and
+	 * `session_ended.activity` are the same list to the couple, and a word that
+	 * reached only the first would open a session that could never be closed —
+	 * the close echoes the open's activity, and `checkMetadataValue` would refuse
+	 * it against the enum the word never reached.
 	 */
 	async addEventTypeOption(
 		identityHash: string,
@@ -2200,17 +2264,20 @@ export class CoupleDO extends DurableObject<Env> {
 		if (field.options.includes(addition.option)) {
 			throw coupleError("CONFLICT", "that option already exists");
 		}
-		this.sql.exec(
-			`INSERT INTO event_type_options
-				(type_id, field_key, option, label, added_by, added_at)
-				VALUES (?, ?, ?, ?, ?, ?)`,
-			addition.type_id,
-			addition.field_key,
-			addition.option,
-			addition.label ?? null,
-			me.id,
-			Date.now(),
-		);
+		const now = Date.now();
+		for (const site of this.vocabularySitesFor(me, addition)) {
+			this.sql.exec(
+				`INSERT INTO event_type_options
+					(type_id, field_key, option, label, added_by, added_at)
+					VALUES (?, ?, ?, ?, ?, ?)`,
+				site.type_id,
+				site.field_key,
+				addition.option,
+				addition.label ?? null,
+				me.id,
+				now,
+			);
+		}
 		return this.eventTypeById(addition.type_id) as EventType;
 	}
 
@@ -2246,15 +2313,48 @@ export class CoupleDO extends DurableObject<Env> {
 		if (!existing) {
 			throw coupleError("BAD_REQUEST", "only a word you added can be renamed");
 		}
-		this.sql.exec(
-			`UPDATE event_type_options SET label = ?
-				WHERE type_id = ? AND field_key = ? AND option = ?`,
-			addition.label,
-			addition.type_id,
-			addition.field_key,
-			addition.option,
-		);
+		// The label moves at every site of a shared vocabulary (ADR 0018), for the
+		// reason the token never moves at all: one word reads one way. A site with
+		// no row is a no-op rather than an error — the same graceful degradation
+		// `withAddedOptions` makes when an overlay outlives its field.
+		for (const site of this.vocabularySitesFor(me, addition)) {
+			this.sql.exec(
+				`UPDATE event_type_options SET label = ?
+					WHERE type_id = ? AND field_key = ? AND option = ?`,
+				addition.label,
+				site.type_id,
+				site.field_key,
+				addition.option,
+			);
+		}
 		return this.eventTypeById(addition.type_id) as EventType;
+	}
+
+	/**
+	 * Every field a write to `addition` must reach — itself, plus any field
+	 * sharing its declared `vocabulary` (ADR 0018).
+	 *
+	 * Each site is re-gated through {@link enumFieldToExtend}, so the fan-out can
+	 * never write past a permission. A shared vocabulary spans types with their
+	 * own `set_permission`, and inheriting the authority of whichever field the
+	 * caller happened to name would make the id a way to reach a field you may not
+	 * set. A site this caller may not extend is dropped, not fatal: the word still
+	 * lands where they may say it.
+	 */
+	private vocabularySitesFor(
+		me: MemberRow,
+		addition: OptionAddition,
+	): VocabularySite[] {
+		const types = this.eventTypes();
+		const sites = vocabularySites(types, addition.type_id, addition.field_key);
+		return sites.filter((site) => {
+			try {
+				this.enumFieldToExtend(me, { ...addition, ...site });
+				return true;
+			} catch {
+				return false;
+			}
+		});
 	}
 
 	private parseOptionAddition(input: unknown): OptionAddition {
