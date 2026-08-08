@@ -353,4 +353,53 @@ describe("targetRows — the term a row counts", () => {
 		const off: Rule = { ...KNEEL_RULE, enabled: false };
 		expect(rows({ counters: [KNEEL], rules: [off] })[0]?.tracks).toBeNull();
 	});
+
+	/**
+	 * A type carrying **two** citing refs into the corpus — a couple's own
+	 * "one ritual, done during another" shape. Rare, and the only place the
+	 * difference between counting citations and collecting them shows.
+	 */
+	const TWO_REFS: EventType[] = [
+		{
+			...TYPES[0],
+			id: "paired_ritual",
+			metadata: {
+				ritual_id: TYPES[0].metadata.ritual_id,
+				during_id: TYPES[0].metadata.ritual_id,
+			},
+		},
+	];
+	const paired = (first: string, second: string): Rule => ({
+		id: "paired",
+		enabled: true,
+		condition: {
+			type: "paired_ritual",
+			metadata: { ritual_id: first, during_id: second },
+		},
+		effects: [{ verb: "increment_counter", counter: "ag_7f3_today", by: 1 }],
+	});
+
+	it("names the term once when a rule cites it through two keys", () => {
+		// One term named twice is one answer, not an ambiguity. Collecting the
+		// citations answers this directly; counting them as they arrive would call
+		// the second one a conflict with the first.
+		expect(
+			rows({
+				counters: [KNEEL],
+				rules: [paired("ag_7f3", "ag_7f3")],
+				types: TWO_REFS,
+			})[0]?.tracks,
+		).toBe("ag_7f3");
+	});
+
+	it("names nothing when one rule cites two different terms", () => {
+		// Genuinely ambiguous: the row would be picking which one it is about.
+		expect(
+			rows({
+				counters: [KNEEL],
+				rules: [paired("ag_7f3", "ag_other")],
+				types: TWO_REFS,
+			})[0]?.tracks,
+		).toBeNull();
+	});
 });

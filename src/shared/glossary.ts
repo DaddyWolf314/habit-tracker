@@ -30,6 +30,18 @@
  * options — "Your words", the ones they add — and this is the app's. Naming these
  * the same thing is the collision #212 flagged, and the reason nothing here is
  * called a vocabulary.
+ *
+ * **Every entry is checked against `CONTEXT.md`, not written from memory.** A
+ * definition that contradicts the model is worse than none: it is confidently
+ * wrong, in the reader's own words, at the moment they decided to trust it. The
+ * first draft of this file shipped three such sentences and a review caught them
+ * — "nothing sets a counter by hand", beside the `±1` buttons that do; *session*
+ * defined as the accumulating span, which is the stopwatch the CONTEXT entry's
+ * _Avoid_ names outright; and an adjudication and a waiver attributed to "a dom"
+ * where both are settled per event type or per rule-authoring role, so a switch
+ * couple read the wrong actor. When adding one, read the CONTEXT entry and its
+ * `_Avoid_` clause first, and prefer a hedge to a crisp sentence you cannot
+ * source.
  */
 
 export interface GlossaryEntry {
@@ -48,7 +60,7 @@ export const GLOSSARY = {
 	counter: {
 		term: "counter",
 		definition:
-			"A number the app keeps by folding your log. Nothing sets one by hand — a rule moves it when you log something — so it is always the log's answer rather than a second record that could disagree with it.",
+			"A number the app keeps by folding your log. A rule usually moves it when you log something, and either of you can nudge one by hand — but a nudge is logged too, so the number stays the log's answer rather than a second record that could disagree with it.",
 	},
 	streak: {
 		term: "streak",
@@ -73,7 +85,7 @@ export const GLOSSARY = {
 	session: {
 		term: "session",
 		definition:
-			"A stretch of time that accumulates, opened and closed by a pair of logged events. Anything you log in between belongs to it, which is what lets a rule score an act by the mode you were in.",
+			"A pair of logged events, one opening and one closing, that bounds a stretch of time. The row here is that stretch; anything you log in between belongs to it, which is what lets a rule score an act by the mode you were in.",
 	},
 	amendment: {
 		term: "amendment",
@@ -83,7 +95,7 @@ export const GLOSSARY = {
 	adjudication: {
 		term: "adjudication",
 		definition:
-			"A dom's ruling on something logged. It is the one amendment that changes what the event is taken to say; everything else sits beside the event and leaves it alone.",
+			"A ruling on something logged. Which of you rules is set per kind of event, and it is the one amendment that changes what the event is taken to say — everything else sits beside the event and leaves it alone.",
 	},
 	response: {
 		term: "response",
@@ -93,7 +105,7 @@ export const GLOSSARY = {
 	waiver: {
 		term: "waiver",
 		definition:
-			"A dom setting aside one of a rule's effects — suppressed before it lands, or reversed after. The rule still fired and the log still says so: a waiver is a fact about the ruling, not a claim that nothing matched.",
+			"Setting aside one of a rule's effects — suppressed before it lands, or reversed after. Whoever may write a rule may overrule it. The rule still fired and the log still says so: a waiver is a fact about the ruling, not a claim that nothing matched.",
 	},
 	currency: {
 		term: "currency",

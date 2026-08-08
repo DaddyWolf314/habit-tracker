@@ -144,11 +144,17 @@ function tickAndTerm(
 		// carrying one is not a citation, and the narrowing falls out of the check.
 		const cited: Record<string, MetadataValue> = {};
 		let allCite = true;
-		// The corpus citation among them, for the row's provenance (#212 item 5).
+		// The corpus citations among them, for the row's provenance (#212 item 5).
 		// Narrowed to the *Agreement* kind rather than taking any citing ref: the
 		// set also holds the store (ADR 0017), and a row that counted redemptions
 		// would otherwise claim to count a term.
-		let term: string | null = null;
+		//
+		// A set rather than a running "first one, or a sentinel if there were two".
+		// The question is "does this rule name exactly one term", which is what a
+		// set's size answers directly — and it also folds a rule citing the same
+		// term through two keys into the one answer, where counting would have
+		// called that ambiguous.
+		const terms = new Set<string>();
 		for (const [key, value] of clauses) {
 			const field = type.metadata[key];
 			if (!field || !isCitingRef(field) || isComparisonClause(value)) {
@@ -160,17 +166,18 @@ function tickAndTerm(
 				citingRefKind(field) === AGREEMENT_REF_KIND &&
 				typeof value === "string"
 			) {
-				// Only where the rule cites exactly one term. Two would make "what this
-				// counts" ambiguous in the same way two rules do, and the row would be
-				// picking one to name.
-				term = term === null ? value : "";
+				terms.add(value);
 			}
 		}
 		if (!allCite) continue;
+		// Exactly one, or the row names none. Two would make "what this counts"
+		// ambiguous in the same way two rules do, and naming one of them would be
+		// the row picking.
+		const term = terms.size === 1 ? [...terms][0] : null;
 		const tickLogs = { type: type.id, metadata: cited };
 		// Keyed on what a tick would *log*, not on the term: two rules appending the
 		// same citation are one answer, and they necessarily agree about the term.
-		found.set(JSON.stringify(tickLogs), { tickLogs, tracks: term || null });
+		found.set(JSON.stringify(tickLogs), { tickLogs, tracks: term });
 	}
 	// Ambiguity kills both halves together. A row that could not honestly offer a
 	// tick cannot honestly name what it counts either — they are the same claim.

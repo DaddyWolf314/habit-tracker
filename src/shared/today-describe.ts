@@ -125,25 +125,6 @@ export function describeWithinReach(
 }
 
 /**
- * The targets panel — the counters carrying a target, and the tick on each.
- *
- * This one exists for a specific row. `tickFor` refuses to build a tick from a
- * rule that names nothing a tick could cite, and the pack's seeded
- * `rituals_completed_today` is exactly that case — R1 increments it
- * unconditionally — so the first row a new couple ever sees is a readout with no
- * button and nothing saying why (#212, #214). #214 covers that couple only while
- * their log is empty; the row outlives the floor.
- *
- * The three ways `tickFor` returns null — nothing increments the counter, the
- * rule is unconditional, two enabled rules cite different terms — are one
- * sentence from the reader's side, because all three are the same fact about
- * their rules: the rules do not pin down what this counter counts. Deliberately
- * not three sentences behind a reason code: the distinctions are about rule
- * shape, the fix is the same in every case, and a row that reads "two of your
- * rules disagree" sends someone hunting for a conflict the app should be naming
- * on the rules screen instead.
- */
-/**
  * Where a target row came from, or null when nothing says (#212 item 5).
  *
  * "Track this" mints a counter, a streak and a rule, and the confirm sheet
@@ -175,6 +156,25 @@ export function describeTracking(
 		: `Counts “${name}” from your agreements, each time it's logged.`;
 }
 
+/**
+ * The targets panel — the counters carrying a target, and the tick on each.
+ *
+ * This one exists for a specific row. `tickAndTerm` refuses to build a tick from a
+ * rule that names nothing a tick could cite, and the pack's seeded
+ * `rituals_completed_today` is exactly that case — R1 increments it
+ * unconditionally — so the first row a new couple ever sees is a readout with no
+ * button and nothing saying why (#212, #214). #214 covers that couple only while
+ * their log is empty; the row outlives the floor.
+ *
+ * The three ways `tickAndTerm` declines a tick — nothing increments the counter, the
+ * rule is unconditional, two enabled rules cite different terms — are one
+ * sentence from the reader's side, because all three are the same fact about
+ * their rules: the rules do not pin down what this counter counts. Deliberately
+ * not three sentences behind a reason code: the distinctions are about rule
+ * shape, the fix is the same in every case, and a row that reads "two of your
+ * rules disagree" sends someone hunting for a conflict the app should be naming
+ * on the rules screen instead.
+ */
 export function describeTargets(rows: readonly TargetRow[]): string {
 	const readouts = rows.filter((row) => row.tickLogs === null);
 	if (readouts.length === 0)
