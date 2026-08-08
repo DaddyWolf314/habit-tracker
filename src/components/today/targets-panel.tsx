@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
 import { Explainer } from "#/components/ui/explainer.tsx";
 import { logEvent } from "#/lib/api.ts";
@@ -57,7 +57,18 @@ export function TargetsPanel({
 	const rows = targetRows({ counters, rules, types });
 	// The version in force now, not at some past event: a row says what this
 	// counter counts from here on, which is the clock `agreementNamesAt` argues.
-	const termNames = agreementNamesAt(agreements, Date.now());
+	//
+	// Memoised on the corpus alone, exactly as `rules-view.tsx` does it. Today
+	// polls, so this component re-renders on a timer whether or not anything it
+	// reads has moved, and rebuilding a map over the whole corpus each time is
+	// work for an answer that only changes when a term is revised. `Date.now()` is
+	// deliberately not a dependency: a rename arrives with the poll that carries
+	// the corpus, and treating the clock as an input would defeat the memo on
+	// every tick to catch a boundary nothing here turns on.
+	const termNames = useMemo(
+		() => agreementNamesAt(agreements, Date.now()),
+		[agreements],
+	);
 	if (rows.length === 0) return null;
 
 	return (

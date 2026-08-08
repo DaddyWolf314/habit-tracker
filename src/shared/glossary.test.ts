@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defineTerms, GLOSSARY, type TermId } from "./glossary.ts";
+import { GLOSSARY, type TermId } from "./glossary.ts";
 
 /**
  * The app's words (#212 item 4).
@@ -53,17 +53,6 @@ describe("GLOSSARY", () => {
 	});
 });
 
-describe("defineTerms", () => {
-	it("returns entries in the order asked for", () => {
-		// A reading order, not a set: "streak" only makes sense after "counter", so
-		// the caller's order is the one that ships.
-		expect(defineTerms(["streak", "counter"]).map((e) => e.term)).toEqual([
-			"streak",
-			"counter",
-		]);
-	});
-
-	it("returns nothing for no terms", () => {
-		expect(defineTerms([])).toEqual([]);
-	});
-});
+// The reading-order and empty-list behaviour that `defineTerms` used to hold is
+// tested on `Define` now, which is where it lives since the helper — a one-caller
+// `ids.map((id) => GLOSSARY[id])` — was inlined.

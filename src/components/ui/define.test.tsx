@@ -42,12 +42,35 @@ describe("Define", () => {
 		}
 	});
 
-	it("leads each entry with the term, so it can be found by eye", () => {
-		render(<Define terms={["currency", "price"]} />);
+	it("leads each entry with the term, in the order asked for", () => {
+		// A reading order, not a set — "streak" only means anything after "counter",
+		// so the caller's order ships. Asserted against alphabetical so a stray sort
+		// would fail rather than coincide.
+		render(<Define terms={["price", "currency"]} />);
 		fireEvent.click(screen.getByRole("button"));
 		expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(
-			["currency", "price"],
+			["price", "currency"],
 		);
+	});
+
+	it("renders the derived half a surface passes in, after the words", () => {
+		// The slot that lets Today's clocks and ladder panels keep their computed
+		// sentence and still take their word from the glossary, instead of rendering
+		// the definition themselves.
+		render(
+			<Define terms={["clock"]}>
+				<p>One of these has never been reset.</p>
+			</Define>,
+		);
+		fireEvent.click(screen.getByRole("button"));
+		const panel = screen.getByText(/One of these has never been reset/);
+		expect(panel).not.toBeNull();
+		// After the definitions, since it is only meaningful once the word is.
+		expect(
+			screen
+				.getByText(GLOSSARY.clock.definition)
+				.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("starts closed, so it costs nothing on a screen nobody is confused by", () => {

@@ -54,7 +54,7 @@ describe("AnchorsPanel", () => {
 				]}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("button", { name: "What are these?" }));
+		fireEvent.click(screen.getByRole("button", { name: "What's a clock?" }));
 		// Asserted against the glossary entry itself, not a copy of its wording
 		// (#212 item 4): the panel reads the definition from there so "clock" cannot
 		// come to mean two things on two screens, and a test holding its own copy of

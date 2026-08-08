@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Explainer } from "#/components/ui/explainer.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { ackCrossings } from "#/lib/api.ts";
 import {
 	agreementEffectiveAt,
@@ -7,7 +7,6 @@ import {
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
 import { type Counter, rungsReached } from "#/shared/counters.ts";
-import { GLOSSARY } from "#/shared/glossary.ts";
 import { describeLadders } from "#/shared/today-describe.ts";
 
 /**
@@ -80,20 +79,21 @@ export function RungsPanel({
 			 * explicit that it is neither: "nothing to dismiss and nobody owes
 			 * anything". Saying so is the derived half's job, because what makes it go
 			 * away is a number, and the number is theirs.
+			 *
+			 * Through `Define`, so *rung* means the same here as in the counter editor
+			 * where one is written, and its term renders beside its definition like
+			 * every other word's (#212 item 4). The two sentences below are what the
+			 * glossary cannot know: one fact about this panel, and one derived from the
+			 * counters it is currently showing.
 			 */}
-			<Explainer label="What is this?">
-				{/* The word from the glossary, so it means the same here as it does in
-				    the counter editor where a rung is written (#212 item 4). What the
-				    *panel* shows is a separate sentence, because it is a fact about
-				    this panel rather than about the word. */}
-				<p>{GLOSSARY.rung.definition}</p>
+			<Define terms={["rung"]}>
 				<p>
 					This shows every rung a counter is sitting at or above, in the words
 					of the term itself — so what it means is something the two of you
 					wrote, not something the app decided.
 				</p>
 				<p>{describeLadders(standing)}</p>
-			</Explainer>
+			</Define>
 			<ul className="space-y-3">
 				{standing.map(({ counter, rung }) => {
 					const agreement = agreements.find((a) => a.id === rung.agreement_ref);

@@ -124,16 +124,12 @@ export const GLOSSARY = {
 	},
 } as const satisfies Record<string, GlossaryEntry>;
 
-/** The words this file defines — the ids a surface names to attach one. */
-export type TermId = keyof typeof GLOSSARY;
-
 /**
- * The entries for `ids`, in the order asked for.
+ * The words this file defines — the ids a surface names to attach one.
  *
- * Order is the caller's because it is a reading order: a surface introducing
- * both a counter and a streak wants the counter first, since the second sentence
- * is only meaningful after the first.
+ * There is deliberately no `defineTerms(ids)` helper beside this. It existed, and
+ * was `ids.map((id) => GLOSSARY[id])` with one caller: a function whose whole
+ * body is the indexing its caller could do, which is one more name to learn for
+ * no decision made. `Define` reads `GLOSSARY` directly.
  */
-export function defineTerms(ids: readonly TermId[]): GlossaryEntry[] {
-	return ids.map((id) => GLOSSARY[id]);
-}
+export type TermId = keyof typeof GLOSSARY;

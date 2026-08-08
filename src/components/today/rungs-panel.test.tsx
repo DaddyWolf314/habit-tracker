@@ -92,16 +92,16 @@ describe("RungsPanel", () => {
 		render(<RungsPanel counters={[counter(12)]} agreements={[TERM]} />);
 		expect(
 			screen.queryAllByRole("button").map((control) => control.textContent),
-		).toEqual(["What is this?"]);
+		).toEqual(["What's a rung?"]);
 	});
 
 	it("explains why the banner is here and how it goes away", () => {
 		// The two halves (#212): what a rung is, which is shipped copy, and what
 		// makes *this* one clear, which is the couple's own number.
 		render(<RungsPanel counters={[counter(12)]} agreements={[TERM]} />);
-		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
-		// The word from the glossary, so it means the same here as where a rung is
-		// written (#212 item 4); the number is this panel's own.
+		// The toggle names the word, since the definition comes from the glossary
+		// through `Define` rather than being written into this panel (#212 item 4).
+		fireEvent.click(screen.getByRole("button", { name: "What's a rung?" }));
 		expect(screen.getByText(GLOSSARY.rung.definition)).not.toBeNull();
 		expect(screen.getByText(/drops back under 10/)).not.toBeNull();
 	});
