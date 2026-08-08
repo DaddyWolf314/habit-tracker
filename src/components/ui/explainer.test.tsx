@@ -15,6 +15,29 @@ import { Explainer } from "./explainer.tsx";
 describe("Explainer", () => {
 	afterEach(cleanup);
 
+	it("is a full-size tap target, in both states", () => {
+		// CLAUDE.md: h-11 is the floor for this phone-first app, and `sm`/`xs` are
+		// "for dense secondary rows … not by default". This sits alone under a
+		// section heading, so it takes the default height — and the assertion is
+		// here because the floor "rotted" once already by being nobody's to hold.
+		// Asserted on `data-size` rather than the class string: the height belongs
+		// to the Button variant, and re-deriving it here is what CLAUDE.md warns off.
+		render(
+			<Explainer label="What is this?">
+				<p>Copy.</p>
+			</Explainer>,
+		);
+		expect(screen.getByRole("button").getAttribute("data-size")).toBe(
+			"default",
+		);
+
+		// Open too — "Hide" is the same control and the same target.
+		fireEvent.click(screen.getByRole("button"));
+		expect(screen.getByRole("button").getAttribute("data-size")).toBe(
+			"default",
+		);
+	});
+
 	it("starts closed, and asks the caller's question", () => {
 		render(
 			<Explainer label="What's a protocol?">

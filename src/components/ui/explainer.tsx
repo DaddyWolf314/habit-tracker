@@ -24,6 +24,16 @@ import { Button } from "#/components/ui/button.tsx";
  * this?" under a panel headed with a phrase. Only the closed state carries it;
  * open, the control is "Hide" everywhere, since by then the copy is on screen and
  * saying the question back is noise.
+ *
+ * **Default height, not `xs`.** #210's one-off was `size="xs"` (h-9), and this
+ * inherited it — which was how a sub-floor control was about to reach a dozen
+ * screens. CLAUDE.md allows `sm`/`xs` "for dense secondary rows … when a row
+ * genuinely cannot spare the height, not by default", and none of these is that
+ * row: every one sits alone under a section heading with room above and below.
+ * This is also the affordance most likely to be tapped by someone who does not
+ * yet know what the screen is, on a phone, which is the worst case to make small.
+ * `ghost` keeps it visually quiet without making it a small target; the `-ml-4`
+ * cancels the variant's own `px-4` so the label still lines up with the heading.
  */
 export function Explainer({
 	label,
@@ -47,9 +57,8 @@ export function Explainer({
 	return (
 		<>
 			<Button
-				size="xs"
 				variant="ghost"
-				className="-ml-2 mt-1"
+				className="-ml-4 mt-1"
 				aria-expanded={open}
 				aria-controls={panelId}
 				onClick={() => setOpen((isOpen) => !isOpen)}
