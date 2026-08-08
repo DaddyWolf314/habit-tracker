@@ -16,6 +16,7 @@ vi.mock("#/lib/api.ts", () => ({
 import { ackCrossings } from "#/lib/api.ts";
 import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { Counter } from "#/shared/counters.ts";
+import { GLOSSARY } from "#/shared/glossary.ts";
 import { RungsPanel } from "./rungs-panel.tsx";
 
 /**
@@ -99,7 +100,9 @@ describe("RungsPanel", () => {
 		// makes *this* one clear, which is the couple's own number.
 		render(<RungsPanel counters={[counter(12)]} agreements={[TERM]} />);
 		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
-		expect(screen.getByText(/A rung is a number/)).not.toBeNull();
+		// The word from the glossary, so it means the same here as where a rung is
+		// written (#212 item 4); the number is this panel's own.
+		expect(screen.getByText(GLOSSARY.rung.definition)).not.toBeNull();
 		expect(screen.getByText(/drops back under 10/)).not.toBeNull();
 	});
 

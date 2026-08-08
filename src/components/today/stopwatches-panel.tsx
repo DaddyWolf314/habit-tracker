@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Input } from "#/components/ui/input.tsx";
 import { logEvent } from "#/lib/api.ts";
@@ -168,6 +169,9 @@ export function StopwatchesPanel({
 	return (
 		<section className="rounded-lg border p-4">
 			<h2 className="text-lg font-semibold">Sessions</h2>
+			{/* What a session is, and the part the rows can't show: what you log
+			    while one is open belongs to it (#212 item 4). */}
+			<Define terms={["session"]} />
 
 			{selfId ? (
 				<StartForm

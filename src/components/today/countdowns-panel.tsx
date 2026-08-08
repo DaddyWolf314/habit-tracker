@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Input } from "#/components/ui/input.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
@@ -212,6 +213,9 @@ export function CountdownsPanel({
 	return (
 		<section className="rounded-lg border p-4">
 			<h2 className="text-lg font-semibold">Countdowns</h2>
+			{/* The section that is *about* countdowns, so the word is defined here
+			    rather than beside every row that is one (#212 item 4). */}
+			<Define terms={["countdown"]} />
 
 			{isDom && <AssignForm partnerId={partnerId} onAssigned={onChange} />}
 

@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AnchorView } from "#/shared/anchors.ts";
+import { GLOSSARY } from "#/shared/glossary.ts";
 import { AnchorsPanel } from "./anchors-panel.tsx";
 
 /**
@@ -54,9 +55,11 @@ describe("AnchorsPanel", () => {
 			/>,
 		);
 		fireEvent.click(screen.getByRole("button", { name: "What are these?" }));
-		// The since/toward contrast is emphasised, so each half is its own node.
-		expect(screen.getByText(/A clock counts/)).not.toBeNull();
-		expect(screen.getByText("toward")).not.toBeNull();
+		// Asserted against the glossary entry itself, not a copy of its wording
+		// (#212 item 4): the panel reads the definition from there so "clock" cannot
+		// come to mean two things on two screens, and a test holding its own copy of
+		// the sentence would be a third place for it to drift.
+		expect(screen.getByText(GLOSSARY.clock.definition)).not.toBeNull();
 		expect(
 			screen.getByText(/One of these has never been reset/),
 		).not.toBeNull();

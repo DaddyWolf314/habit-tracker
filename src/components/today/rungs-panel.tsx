@@ -7,6 +7,7 @@ import {
 	type VersionedAgreement,
 } from "#/shared/agreements.ts";
 import { type Counter, rungsReached } from "#/shared/counters.ts";
+import { GLOSSARY } from "#/shared/glossary.ts";
 import { describeLadders } from "#/shared/today-describe.ts";
 
 /**
@@ -81,11 +82,15 @@ export function RungsPanel({
 			 * away is a number, and the number is theirs.
 			 */}
 			<Explainer label="What is this?">
+				{/* The word from the glossary, so it means the same here as it does in
+				    the counter editor where a rung is written (#212 item 4). What the
+				    *panel* shows is a separate sentence, because it is a fact about
+				    this panel rather than about the word. */}
+				<p>{GLOSSARY.rung.definition}</p>
 				<p>
-					A rung is a number on one of your counters with one of your agreements
-					attached to it. This shows every rung a counter is sitting at or
-					above, in the words of the term itself — so what it means is something
-					the two of you wrote, not something the app decided.
+					This shows every rung a counter is sitting at or above, in the words
+					of the term itself — so what it means is something the two of you
+					wrote, not something the app decided.
 				</p>
 				<p>{describeLadders(standing)}</p>
 			</Explainer>

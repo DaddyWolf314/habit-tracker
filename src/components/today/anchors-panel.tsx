@@ -1,6 +1,7 @@
 import { Explainer } from "#/components/ui/explainer.tsx";
 import type { AnchorView } from "#/shared/anchors.ts";
 import { elapsedDaysText } from "#/shared/anchors.ts";
+import { GLOSSARY } from "#/shared/glossary.ts";
 import { describeClocks } from "#/shared/today-describe.ts";
 import { anchorLabel } from "#/templates/index.ts";
 
@@ -32,12 +33,14 @@ export function AnchorsPanel({ anchors }: { anchors: AnchorView[] }) {
 			 * *since*, the countdowns further down count *toward* (#212 item 2).
 			 */}
 			<Explainer label="What are these?">
-				<p>
-					How long it's been since each of these last happened. A clock counts{" "}
-					<em>since</em> something; the countdowns further down count{" "}
-					<em>toward</em> something. Nothing here is set by hand — a clock
-					resets when one of your rules sees a matching event in the log.
-				</p>
+				{/*
+				 * The definition comes from the glossary rather than being written here
+				 * (#212 item 4): "clock" is one of the app's words, and a panel keeping
+				 * its own copy of what it means is how a word comes to mean two things
+				 * on two screens. What stays local is the *derived* half, which is
+				 * about these clocks rather than about the word.
+				 */}
+				<p>{GLOSSARY.clock.definition}</p>
 				<p>{describeClocks(anchors)}</p>
 			</Explainer>
 			<ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">

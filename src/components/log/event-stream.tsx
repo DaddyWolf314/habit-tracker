@@ -2,6 +2,7 @@ import { useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { ResponseComposer } from "#/components/response-composer.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { ackUpdates, amendEvent, getEventTrace } from "#/lib/api.ts";
 import {
@@ -99,6 +100,14 @@ export function EventStream({
 	return (
 		<section className="rounded-lg border p-4">
 			<h2 className="text-lg font-semibold">Log</h2>
+			{/*
+			 * The three words the rows here use without ever saying what they are
+			 * (#212 item 4). They belong together: all three are things appended to an
+			 * event after it happened, and the point that makes sense of every one of
+			 * them — that nothing in the log is edited or deleted — is stated once, in
+			 * the amendment entry the other two are kinds of.
+			 */}
+			<Define terms={["amendment", "response", "waiver"]} />
 			<ul className="mt-3 divide-y">
 				{events.length === 0 && (
 					<li className="py-3 text-sm text-muted-foreground">

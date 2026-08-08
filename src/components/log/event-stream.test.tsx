@@ -5,6 +5,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -228,6 +229,17 @@ describe("citations on the event card", () => {
 });
 
 /**
+ * The **rows'** collapsed drill-in toggles, scoped to the stream's list.
+ *
+ * The panel heading carries a glossary disclosure of its own since #212, and it
+ * sits above the list — so "the first collapsed button on screen" stopped meaning
+ * "the first row". Every query for a row's toggle goes through here rather than
+ * each one re-deciding how to spot it.
+ */
+const rowToggles = () =>
+	within(screen.getByRole("list")).getAllByRole("button", { expanded: false });
+
+/**
  * The drill-in is a disclosure, so it has to say whether it is open (#148) —
  * without `aria-expanded` a screen reader gets a button that silently grows a
  * chain below it.
@@ -237,7 +249,12 @@ describe("the chain drill-in reports its state", () => {
 
 	it("flips aria-expanded and names the region it reveals", async () => {
 		renderStream([event({ type: "task_completed" })]);
-		const toggle = screen.getAllByRole("button", { expanded: false })[0];
+		// Scoped to the stream's own list. This used to take the first collapsed
+		// disclosure on the screen, which was the row's until #212 put a glossary
+		// toggle above the list — and that one is also a collapsed disclosure with
+		// an `aria-controls`, so the assertions below passed against the wrong
+		// element rather than failing.
+		const toggle = rowToggles()[0];
 		expect(toggle.getAttribute("aria-controls")).not.toBeNull();
 		expect(
 			document.getElementById(toggle.getAttribute("aria-controls") ?? ""),
@@ -413,7 +430,7 @@ describe("the standalone waiver on a chain row", () => {
 			/>,
 		);
 		await act(async () => {
-			fireEvent.click(screen.getByRole("button", { expanded: false }));
+			fireEvent.click(rowToggles()[0]);
 		});
 	}
 
