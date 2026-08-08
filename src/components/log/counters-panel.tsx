@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { Input } from "#/components/ui/input.tsx";
 import {
 	Select,
@@ -365,6 +366,20 @@ export function CountersPanel({
 					{creating ? "Cancel" : "New counter"}
 				</Button>
 			</div>
+
+			{/*
+			 * Three of the app's words, defined where they are used (#212 item 4).
+			 * All three live on a counter, which is why they are one toggle rather
+			 * than three: someone meeting "streak" is a line away from meeting
+			 * "counter", and picking which word you are confused about before finding
+			 * out is not a choice worth offering.
+			 *
+			 * The rung definition sits *here* rather than only in `RungEditor` below,
+			 * which renders for a dom or switch and only while the form is open — a
+			 * sub reading a counter's rungs would otherwise find the word explained
+			 * nowhere on this screen.
+			 */}
+			<Define terms={["counter", "streak", "rung"]} />
 
 			{/* Every picker in this form sits at the `h-11` tap-target floor (#147),
 			    the same height as the `Input`s beside them — which is what CLAUDE.md

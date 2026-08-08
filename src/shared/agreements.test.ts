@@ -4,6 +4,7 @@ import {
 	type AgreementKind,
 	agreementChangeKind,
 	agreementEffectiveAt,
+	agreementNamesAt,
 	agreementRefKeys,
 	agreementsInForce,
 	authorsAgreement,
@@ -663,6 +664,62 @@ describe("describeCitation — how a citation reads (story 23)", () => {
 		expect(
 			describeCitation([agreement()], "morning_kneel", MAR, JUN),
 		).toBeNull();
+	});
+});
+
+/**
+ * Names for a **definition** that cites a term — a rule, not a log row (#212
+ * item 5).
+ *
+ * One clock, which is the whole difference from `describeCitation` above. A
+ * citation in the log is a fact about a past act and reads two names; a rule
+ * states what will fire from now on, so the only honest name is the one in force
+ * now. The rest of this is about never handing the caller back a blank, since the
+ * caller's fallback is the ULID it was trying to get rid of.
+ */
+describe("agreementNamesAt", () => {
+	const renamed = agreement({
+		versions: [
+			{ effective_from: MAR, name: "morning kneel", text: "", retired: false },
+			{ effective_from: JUN, name: "dawn ritual", text: "", retired: false },
+		],
+	});
+
+	it("reads the name in force at the given moment, not the latest written", () => {
+		expect(agreementNamesAt([renamed], MAR + 1).ag_7f3).toBe("morning kneel");
+		expect(agreementNamesAt([renamed], JUN + 1).ag_7f3).toBe("dawn ritual");
+	});
+
+	it("keeps a retired term", () => {
+		// A retired term leaves the picker while every rule matching it still fires
+		// on replay — so a rule citing one must not go back to reading as a ULID at
+		// exactly the moment its term left the corpus.
+		const retired = agreement({
+			versions: [
+				{
+					effective_from: MAR,
+					name: "text me when you land",
+					text: "",
+					retired: false,
+				},
+				{ effective_from: JUN, name: "", text: "", retired: true },
+			],
+		});
+		expect(agreementNamesAt([retired], JUN + 1).ag_7f3).not.toBe(undefined);
+	});
+
+	it("falls back to the latest wording for a term dated ahead", () => {
+		// Nothing is in force yet, but it is still the only name anyone has for it.
+		const announced = agreement({
+			versions: [
+				{ effective_from: JUN, name: "dawn ritual", text: "", retired: false },
+			],
+		});
+		expect(agreementNamesAt([announced], MAR).ag_7f3).toBe("dawn ritual");
+	});
+
+	it("holds nothing for a corpus it wasn't given", () => {
+		expect(agreementNamesAt([], JUN).morning_kneel).toBeUndefined();
 	});
 });
 

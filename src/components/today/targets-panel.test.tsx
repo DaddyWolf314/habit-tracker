@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("#/lib/api.ts", () => ({ logEvent: vi.fn(() => Promise.resolve({})) }));
 
 import { logEvent } from "#/lib/api.ts";
+import type { VersionedAgreement } from "#/shared/agreements.ts";
 import type { Counter } from "#/shared/counters.ts";
 import type { EventType } from "#/shared/event-types.ts";
 import type { Rule } from "#/shared/rules.ts";
@@ -54,6 +55,19 @@ const KNEEL_RULE: Rule = {
 	enabled: true,
 	condition: { type: "ritual_completed", metadata: { ritual_id: "ag_7f3" } },
 	effects: [{ verb: "increment_counter", counter: "ag_7f3_today", by: 1 }],
+};
+
+/**
+ * The term the rule above cites, renamed since the counter was scaffolded — the
+ * case that makes the row's provenance line carry information rather than repeat
+ * the counter's own name (#212 item 5).
+ */
+const TERM: VersionedAgreement = {
+	id: "ag_7f3",
+	kind: "ritual",
+	versions: [
+		{ effective_from: 0, name: "Dawn kneel", text: "", retired: false },
+	],
 };
 
 const TYPES: EventType[] = [
@@ -155,6 +169,57 @@ describe("TargetsPanel", () => {
 		renderPanel([KNEEL], []);
 		expect(screen.queryByRole("button", { name: "Log it" })).toBeNull();
 		expect(screen.getByText("Morning kneel")).not.toBeNull();
+	});
+
+	it("is not headed with the page's own title", () => {
+		// It was headed "Today", inside the page titled Today (#212 item 2) — two
+		// headings deep in one word, on the panel a new couple meets first.
+		renderPanel([KNEEL], [KNEEL_RULE]);
+		expect(
+			screen.getByRole("heading", { name: "What you're aiming at" }),
+		).not.toBeNull();
+		expect(screen.queryByRole("heading", { name: "Today" })).toBeNull();
+	});
+
+	it("says which term a scaffolded row counts", () => {
+		// "Track this" makes three artifacts and explains them once, at creation
+		// (#212 item 5). ADR 0006 stores no link, so this is read back out of the
+		// citation on the rule — the record that tracking happened.
+		render(
+			<TargetsPanel
+				counters={[KNEEL]}
+				rules={[KNEEL_RULE]}
+				types={TYPES}
+				agreements={[TERM]}
+				onChange={() => {}}
+			/>,
+		);
+		expect(
+			screen.getByText(/Counts “Dawn kneel” from your agreements/),
+		).not.toBeNull();
+	});
+
+	it("says nothing about a term for the pack's seeded row", () => {
+		// R1 increments unconditionally and cites nothing, so the row did not come
+		// from anything the couple agreed — claiming otherwise would be inventing a
+		// provenance.
+		renderPanel([KNEEL], []);
+		expect(screen.queryByText(/from your agreements/)).toBeNull();
+	});
+
+	it("says why a row has no button", () => {
+		// The seeded case (#212, #214): the pack's counter is incremented by an
+		// unconditional rule, so `tickFor` has nothing to cite and the row is a
+		// readout — which #214's floor only explains while the log is empty.
+		renderPanel([KNEEL], []);
+		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
+		expect(screen.getByText(/“Morning kneel” has no button/)).not.toBeNull();
+	});
+
+	it("says the rows are ticked once they can be", () => {
+		renderPanel([KNEEL], [KNEEL_RULE]);
+		fireEvent.click(screen.getByRole("button", { name: "What is this?" }));
+		expect(screen.getByText(/Every row here has a button/)).not.toBeNull();
 	});
 
 	it("keeps the row when logging fails, and says so", async () => {

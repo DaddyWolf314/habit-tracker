@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AnchorView } from "#/shared/anchors.ts";
+import { GLOSSARY } from "#/shared/glossary.ts";
 import { AnchorsPanel } from "./anchors-panel.tsx";
 
 /**
@@ -15,7 +16,11 @@ import { AnchorsPanel } from "./anchors-panel.tsx";
  */
 
 const anchor = (id: string, days: number | null): AnchorView =>
-	({ anchor: id, since: null, elapsed_days: days }) as AnchorView;
+	({
+		anchor: id,
+		since: days === null ? null : 1,
+		elapsed_days: days,
+	}) as AnchorView;
 
 describe("AnchorsPanel", () => {
 	afterEach(cleanup);
@@ -34,6 +39,30 @@ describe("AnchorsPanel", () => {
 		// "0 days since" would assert something that never happened.
 		render(<AnchorsPanel anchors={[anchor("since_last_infraction", null)]} />);
 		expect(screen.getByText("—")).not.toBeNull();
+	});
+
+	it("explains a clock against a countdown, and accounts for the dashes", () => {
+		// "Clocks" is the UI's word for the anchors read together, and CONTEXT's
+		// _Avoid_ on that entry is "'clock' for a timer" — the reading a first-time
+		// reader arrives with (#212 item 2). The derived half then explains the one
+		// readout that misleads: "—" is not zero.
+		render(
+			<AnchorsPanel
+				anchors={[
+					anchor("since_last_infraction", null),
+					anchor("since_last_check_in", 4),
+				]}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "What's a clock?" }));
+		// Asserted against the glossary entry itself, not a copy of its wording
+		// (#212 item 4): the panel reads the definition from there so "clock" cannot
+		// come to mean two things on two screens, and a test holding its own copy of
+		// the sentence would be a third place for it to drift.
+		expect(screen.getByText(GLOSSARY.clock.definition)).not.toBeNull();
+		expect(
+			screen.getByText(/One of these has never been reset/),
+		).not.toBeNull();
 	});
 
 	it("keeps the dom's orgasm clock immediately after the sub's", () => {

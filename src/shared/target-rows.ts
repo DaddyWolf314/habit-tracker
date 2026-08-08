@@ -1,6 +1,7 @@
+import { AGREEMENT_REF_KIND } from "./agreements.ts";
 import type { Counter } from "./counters.ts";
 import type { EventType } from "./event-types.ts";
-import { isCitingRef } from "./refs.ts";
+import { citingRefKind, isCitingRef } from "./refs.ts";
 import type { MetadataValue } from "./roles.ts";
 import { isComparisonClause, type Rule } from "./rules.ts";
 import { targetMet } from "./streaks.ts";
@@ -30,9 +31,21 @@ export interface TargetRow {
 	met: boolean;
 	/**
 	 * What a tick on this row logs, when the rules say what this counter counts.
-	 * Null leaves the row a readout — see {@link tickFor}.
+	 * Null leaves the row a readout — see {@link tickAndTerm}.
 	 */
 	tickLogs: { type: string; metadata: Record<string, MetadataValue> } | null;
+	/**
+	 * The **Agreement** this counter counts, or null when its rules cite none
+	 * (#212 item 5).
+	 *
+	 * The provenance of a scaffolded counter, derived rather than stored — ADR
+	 * 0006 keeps no link back, so the citing rule *is* the record that tracking
+	 * happened, and reading it out is the same move in the same direction
+	 * `isTracked` already makes in reverse. Falls out of the tick derivation
+	 * rather than being a second scan, so a row can never name a term it would not
+	 * log a citation of.
+	 */
+	tracks: string | null;
 }
 
 export function targetRows({
@@ -69,7 +82,7 @@ export function targetRows({
 			// target is met by staying *under* it, and Today saying "met" where the
 			// fold will say "broken" is the drift a shared function exists to prevent.
 			met: targetMet(counter.value, target, counter.target_direction),
-			tickLogs: tickFor(counter.id, rules, types),
+			...tickAndTerm(counter.id, rules, types),
 		});
 	}
 	return rows;
@@ -86,8 +99,8 @@ function streakOf(
 }
 
 /**
- * What a tick on this counter's row should log, or null when there is nothing
- * honest to log.
+ * What a tick on this counter's row should log, and the term it counts — or
+ * nulls when there is nothing honest to say.
  *
  * The rule that increments a counter says what the counter counts, so it also
  * says what to append — the link #121's scaffolding deliberately did not store
@@ -107,12 +120,12 @@ function streakOf(
  * silently asserts one of two rituals is worse than no button. Rules agreeing on
  * the same citation are not ambiguous and still tick.
  */
-function tickFor(
+function tickAndTerm(
 	counterId: string,
 	rules: Rule[],
 	types: EventType[],
-): TargetRow["tickLogs"] {
-	const found = new Map<string, NonNullable<TargetRow["tickLogs"]>>();
+): Pick<TargetRow, "tickLogs" | "tracks"> {
+	const found = new Map<string, Pick<TargetRow, "tickLogs" | "tracks">>();
 	for (const rule of rules) {
 		if (rule.enabled === false) continue;
 		const increments = rule.effects.some(
@@ -131,6 +144,17 @@ function tickFor(
 		// carrying one is not a citation, and the narrowing falls out of the check.
 		const cited: Record<string, MetadataValue> = {};
 		let allCite = true;
+		// The corpus citations among them, for the row's provenance (#212 item 5).
+		// Narrowed to the *Agreement* kind rather than taking any citing ref: the
+		// set also holds the store (ADR 0017), and a row that counted redemptions
+		// would otherwise claim to count a term.
+		//
+		// A set rather than a running "first one, or a sentinel if there were two".
+		// The question is "does this rule name exactly one term", which is what a
+		// set's size answers directly — and it also folds a rule citing the same
+		// term through two keys into the one answer, where counting would have
+		// called that ambiguous.
+		const terms = new Set<string>();
 		for (const [key, value] of clauses) {
 			const field = type.metadata[key];
 			if (!field || !isCitingRef(field) || isComparisonClause(value)) {
@@ -138,10 +162,26 @@ function tickFor(
 				break;
 			}
 			cited[key] = value;
+			if (
+				citingRefKind(field) === AGREEMENT_REF_KIND &&
+				typeof value === "string"
+			) {
+				terms.add(value);
+			}
 		}
 		if (!allCite) continue;
-		const logs = { type: type.id, metadata: cited };
-		found.set(JSON.stringify(logs), logs);
+		// Exactly one, or the row names none. Two would make "what this counts"
+		// ambiguous in the same way two rules do, and naming one of them would be
+		// the row picking.
+		const term = terms.size === 1 ? [...terms][0] : null;
+		const tickLogs = { type: type.id, metadata: cited };
+		// Keyed on what a tick would *log*, not on the term: two rules appending the
+		// same citation are one answer, and they necessarily agree about the term.
+		found.set(JSON.stringify(tickLogs), { tickLogs, tracks: term });
 	}
-	return found.size === 1 ? [...found.values()][0] : null;
+	// Ambiguity kills both halves together. A row that could not honestly offer a
+	// tick cannot honestly name what it counts either — they are the same claim.
+	return found.size === 1
+		? [...found.values()][0]
+		: { tickLogs: null, tracks: null };
 }

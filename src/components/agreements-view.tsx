@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { InlineConfirm } from "#/components/inline-confirm.tsx";
 import { Badge } from "#/components/ui/badge.tsx";
 import { Button } from "#/components/ui/button.tsx";
+import { Explainer } from "#/components/ui/explainer.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import {
 	columnsClass,
@@ -373,25 +374,8 @@ function KindSection({
 			);
 	}, [agreements, kind.author_scope, selfId]);
 
-	/**
-	 * What this kind is, and who writes one (#210).
-	 *
-	 * Open by default while the section is **empty**, closed once it holds terms.
-	 * An empty section is the one moment the reader has both the question and
-	 * nothing else to look at — "Nothing yet." under a word like *Protocol* is
-	 * the weakest square inch of this screen — and it is also the moment the copy
-	 * costs nothing, because it is displacing whitespace rather than the couple's
-	 * own terms. Once there are terms, their own words are the better explanation
-	 * of what the category holds, and this steps back behind a toggle.
-	 *
-	 * Deliberately one mechanism with a computed initial state rather than two
-	 * (always-on copy for empty, a toggle for full): the reader who wants it back
-	 * on a populated section can always get it, which "show it only when empty"
-	 * would deny exactly the partner who arrives later and does not recognise the
-	 * word.
-	 */
-	const [explaining, setExplaining] = useState(agreements.length === 0);
-	const explainerId = useId();
+	// What this kind is, and who writes one (#210). Both halves live behind the
+	// one {@link Explainer} below; the argument for the *initial state* is there.
 	const description = agreementKindDescription(kind.id);
 	const authorship = describeKindAuthorship(kind, selfRole, partnerRole);
 
@@ -423,28 +407,31 @@ function KindSection({
 				)}
 			</div>
 
-			<Button
-				size="xs"
-				variant="ghost"
-				className="-ml-2 mt-1"
-				aria-expanded={explaining}
-				aria-controls={explainerId}
-				onClick={() => setExplaining((open) => !open)}
+			{/*
+			 * Open while the section is **empty**, closed once it holds terms (#210).
+			 * An empty section is the one moment the reader has both the question and
+			 * nothing else to look at — "Nothing yet." under a word like *Protocol* is
+			 * the weakest square inch of this screen — and it is also the moment the
+			 * copy costs nothing, because it displaces whitespace rather than the
+			 * couple's own terms. Once there are terms, their own words explain the
+			 * category better than any shipped sentence, and this steps back.
+			 *
+			 * One mechanism with a computed initial state rather than two (always-on
+			 * copy for empty, a toggle for full): the reader who wants it back on a
+			 * populated section can always get it, which "show it only when empty"
+			 * would deny exactly the partner who arrives later and doesn't recognise
+			 * the word.
+			 */}
+			<Explainer
+				label={`What's a ${kind.label.toLowerCase()}?`}
+				defaultOpen={agreements.length === 0}
 			>
-				{explaining ? "Hide" : `What's a ${kind.label.toLowerCase()}?`}
-			</Button>
-			{explaining && (
-				<div
-					id={explainerId}
-					className="mt-1 space-y-1 text-xs text-muted-foreground"
-				>
-					{/* Absent for a kind the pack does not ship — no description rather
-					    than an invented one. The authorship line is always available,
-					    since it is derived from the couple's own kind. */}
-					{description && <p>{description}</p>}
-					<p>{authorship}</p>
-				</div>
-			)}
+				{/* Absent for a kind the pack does not ship — no description rather
+				    than an invented one. The authorship line is always available,
+				    since it is derived from the couple's own kind. */}
+				{description && <p>{description}</p>}
+				<p>{authorship}</p>
+			</Explainer>
 
 			{adding && (
 				<AgreementForm

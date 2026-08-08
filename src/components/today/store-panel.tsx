@@ -1,10 +1,12 @@
 import { Link } from "@tanstack/react-router";
+import { Explainer } from "#/components/ui/explainer.tsx";
 import type { Counter } from "#/shared/counters.ts";
 import {
 	affordableItems,
 	rewardItemEffectiveAt,
 	type VersionedRewardItem,
 } from "#/shared/rewards.ts";
+import { describeWithinReach } from "#/shared/today-describe.ts";
 
 /**
  * What the store has within reach (#194, ADR 0017) — Today's entrance to the
@@ -44,6 +46,21 @@ export function StorePanel({
 	return (
 		<section className="rounded-md border p-4">
 			<h2 className="font-medium">Within reach</h2>
+			{/*
+			 * The rows carry a name and a price and stop there, so the counter the
+			 * price is measured against — the one fact that decides whether a row is
+			 * here — is never on screen (#212 item 2). Each score is its own counter
+			 * (ADR 0015), so a couple with two currencies is the ordinary case, not an
+			 * exotic one, and "why is this here" has two possible answers.
+			 */}
+			<Explainer label="What is this?">
+				<p>
+					Things from your rewards that what you've saved up already covers.
+					What each one costs, and what it's priced in, are terms the two of you
+					wrote down — this only reads them.
+				</p>
+				<p>{describeWithinReach(within, counters, now)}</p>
+			</Explainer>
 			<ul className="mt-2 space-y-1 text-sm">
 				{within.map((item) => {
 					const version = rewardItemEffectiveAt(item, now);

@@ -1,5 +1,7 @@
+import { Define } from "#/components/ui/define.tsx";
 import type { AnchorView } from "#/shared/anchors.ts";
 import { elapsedDaysText } from "#/shared/anchors.ts";
+import { describeClocks } from "#/shared/today-describe.ts";
 import { anchorLabel } from "#/templates/index.ts";
 
 /**
@@ -22,6 +24,27 @@ export function AnchorsPanel({ anchors }: { anchors: AnchorView[] }) {
 	return (
 		<section className="rounded-lg border p-4">
 			<h2 className="text-lg font-semibold">Clocks</h2>
+			{/*
+			 * "Clocks" is the UI's word for the anchors read together (CONTEXT
+			 * §Counter / Timer / Anchor) and it is not self-explaining — the same
+			 * entry's _Avoid_ is "'clock' for a timer", which is precisely the reading
+			 * someone arrives with. So the copy draws that line first: these count
+			 * *since*, the countdowns further down count *toward* (#212 item 2).
+			 */}
+			{/*
+			 * Through `Define` like every other defined word, rather than reading
+			 * `GLOSSARY.clock.definition` into a bare `<p>` as this did first — that
+			 * was the same data with a second presentation, and it left *clock* one of
+			 * only two words whose term never appeared beside its definition. The
+			 * derived half rides in the children slot.
+			 *
+			 * The toggle now reads "What's a clock?" instead of "What are these?",
+			 * which is the better question: it names the word the reader is stuck on,
+			 * and the heading above already said there are several.
+			 */}
+			<Define terms={["clock"]}>
+				<p>{describeClocks(anchors)}</p>
+			</Define>
 			<ul className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
 				{sortForDisplay(anchors).map((anchor) => (
 					<li key={anchor.anchor} className="rounded-md bg-muted/40 px-3 py-2">

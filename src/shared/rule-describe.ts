@@ -35,6 +35,37 @@ import { humanize, summarizeEffectOp } from "./trace.ts";
  * reads fine for the counter/anchor/timer ids the pack uses.
  */
 
+/**
+ * Display names for the definitions a rule's citing refs can name, keyed by id
+ * (#212 item 5).
+ *
+ * A flat map rather than the corpus itself, so this module keeps knowing nothing
+ * about Agreements or the store: what makes a value nameable is that the caller
+ * holds a row for it, and the caller is the only one that knows *which* corpora
+ * it can resolve and at which clock. `agreementNamesAt` builds the corpus half
+ * and argues the clock; the store's is the same shape when a rule needs one.
+ *
+ * Optional throughout. An unresolved id still renders — an opaque id beats a
+ * blank, the call every citing surface here already makes.
+ */
+export type RefNames = Readonly<Record<string, string>>;
+
+/**
+ * The name behind a citing ref's value, or null when there is nothing to swap in.
+ *
+ * Guarded on the field being a **ref**, not on the map having a key: a metadata
+ * value that merely happens to equal a term's id is not a citation, and naming it
+ * would put a term's wording into a clause that never pointed at it.
+ */
+function citedName(
+	field: MetadataField | undefined,
+	value: MetadataValue,
+	refNames: RefNames | undefined,
+): string | null {
+	if (field?.kind !== "ref" || typeof value !== "string") return null;
+	return refNames?.[value] ?? null;
+}
+
 function valueText(
 	field: MetadataField | undefined,
 	value: MetadataValue,
@@ -113,6 +144,7 @@ function ambientText(condition: RuleCondition): string {
 export function describeCondition(
 	condition: RuleCondition,
 	type?: EventType,
+	refNames?: RefNames,
 ): string {
 	const typeLabel = type?.label ?? humanize(condition.type);
 	const clauses = Object.entries(condition.metadata).map(([key, value]) => {
@@ -120,7 +152,7 @@ export function describeCondition(
 		const fieldLabel = field?.label ?? humanize(key);
 		const text = isComparisonClause(value)
 			? comparisonText(value)
-			: valueText(field, value);
+			: (citedName(field, value, refNames) ?? valueText(field, value));
 		return `${fieldLabel} is ${text}`;
 	});
 	const about = condition.subject_role
@@ -196,13 +228,23 @@ export function describeEffect(effect: Effect, type?: EventType): string {
 		: phrase;
 }
 
-/** A rule as a condition sentence plus its list of effect phrases. */
+/**
+ * A rule as a condition sentence plus its list of effect phrases.
+ *
+ * `refNames` is where a scaffolded rule stops looking like it appeared from
+ * nowhere (#212 item 5). "Track this" mints `when Ritual completed is logged and
+ * Ritual is ag_01J8…" — the couple never typed that rule, and the one word in it
+ * that would tell them where it came from was rendered as the ULID it matches
+ * on. ADR 0006 stores no link back, so the citation *is* the provenance, and it
+ * only reads as provenance once it says the term's name.
+ */
 export function describeRule(
 	rule: Rule,
 	type?: EventType,
+	refNames?: RefNames,
 ): { when: string; effects: string[] } {
 	return {
-		when: describeCondition(rule.condition, type),
+		when: describeCondition(rule.condition, type, refNames),
 		effects: rule.effects.map((effect) => describeEffect(effect, type)),
 	};
 }

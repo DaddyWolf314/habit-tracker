@@ -242,7 +242,30 @@ export function TodayView() {
 
 	return (
 		<div className={pageColumnsClass}>
-			<h1 className="mb-4 text-2xl font-bold lg:text-3xl">Today</h1>
+			<h1 className="text-2xl font-bold lg:text-3xl">Today</h1>
+
+			{/*
+			 * The lead sentence Rules, Rewards, Vocabulary and Settings all have and
+			 * this screen did not (#212 item 3 — "Log and Today do not").
+			 *
+			 * Not new copy: this is the sentence {@link FirstRunPanel} used to open
+			 * with, moved. It answers "what is this screen", which is true whether or
+			 * not the couple has started, and the floor it lived in is keyed on an
+			 * empty log — so the one thing every visitor needs was the one thing that
+			 * disappeared first. The floor keeps what is actually about being new.
+			 *
+			 * It claims nothing about what has been logged, for the reason the floor
+			 * doesn't: `listEvents` omits a partner's `secret` entries entirely (ADR
+			 * 0001), so "nothing has happened yet" would be a false claim about the
+			 * couple's record shown to the partner least able to check it. "Most of it
+			 * stays hidden until there's something to show" is about the *panels*,
+			 * which both partners see alike.
+			 */}
+			<p className="mt-1 mb-4 text-sm text-muted-foreground">
+				The day's slice — what you're aiming at, what's running, and anything
+				waiting on one of you. It fills in as you use the app, so most of it
+				stays hidden until there's something to show.
+			</p>
 
 			{error && <p className="mb-4 text-sm text-destructive">{error}</p>}
 
@@ -309,10 +332,15 @@ export function TodayView() {
 				    are the same kind of line passed, so they read together. */}
 				<StorePanel items={rewards} counters={counters} />
 
+				{/* The corpus reaches this panel for the same reason it reaches the one
+				    above: a row scaffolded off a term names that term (#212 item 5), and
+				    ADR 0006 stores no link, so the name is resolved from the corpus
+				    through the citation the rule carries. */}
 				<TargetsPanel
 					counters={counters}
 					rules={rules}
 					types={types}
+					agreements={agreements}
 					onChange={refreshAfterMutation}
 				/>
 

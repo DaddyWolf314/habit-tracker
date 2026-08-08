@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useId, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Input } from "#/components/ui/input.tsx";
 import { pageRowsClass } from "#/components/ui/page.ts";
@@ -119,6 +120,12 @@ export function RewardsView() {
 				<p className="mt-1 text-sm text-muted-foreground">
 					What's on offer, what it costs, and what you can afford right now.
 				</p>
+				{/* The lead sentence names both words without saying what either is
+				    (#212 item 4). Defined at the top rather than on each card: a card
+				    shows one price in one currency, and the thing a reader needs is
+				    what those are in general — including that a currency is just one
+				    of their own counters. */}
+				<Define terms={["currency", "price"]} />
 			</header>
 
 			{error && <p className="text-sm text-destructive">{error}</p>}

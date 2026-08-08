@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from "react";
 import { Button } from "#/components/ui/button.tsx";
+import { Define } from "#/components/ui/define.tsx";
 import { fieldClass } from "#/components/ui/field.ts";
 import { Textarea } from "#/components/ui/textarea.tsx";
 import { amendEvent } from "#/lib/api.ts";
@@ -94,6 +95,11 @@ export function QueuePanel({
 					{queue.length}
 				</span>
 			</h2>
+			{/* The one amendment that changes what an event is taken to say, which is
+			    what makes this queue different from every other list of things to
+			    read (#212 item 4). Only rendered when the queue is non-empty, which
+			    is exactly when the question gets asked. */}
+			<Define terms={["adjudication"]} />
 			<ul className="mt-3 space-y-3">
 				{queue.map(({ event, type, rulings }) => (
 					<QueueItem

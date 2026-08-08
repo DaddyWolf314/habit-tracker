@@ -284,6 +284,41 @@ export function agreementsInForce(
 }
 
 /**
+ * Every term's display name as of `atMs`, keyed by id — what a surface reads to
+ * render a citation as words rather than a ULID (#212 item 5).
+ *
+ * Resolved at **one** clock, `atMs`, and that is the whole difference from
+ * {@link describeCitation}. A citation in the log is a fact about a past act, so
+ * it reads two clocks: the name that bound the person then, and today's beside
+ * it. A **rule** is not a past act — it states what will fire from now on — so
+ * the only honest name for the term it cites is the one in force now. Showing a
+ * rule the wording that applied last March would describe an automation nobody
+ * is subject to any more.
+ *
+ * Retired terms are included, deliberately. A retired term leaves the *picker*
+ * ({@link agreementsInForce}) while every rule matching it still fires on
+ * replay — so a rule citing one is a real, live rule, and the one thing it must
+ * not do is go back to reading as a ULID at exactly the moment its term left the
+ * corpus.
+ */
+export function agreementNamesAt(
+	agreements: VersionedAgreement[],
+	atMs: number,
+): Record<string, string> {
+	const names: Record<string, string> = {};
+	for (const agreement of agreements) {
+		// The latest wording for a term whose first version is dated ahead: it is
+		// still the only name anyone has for it, and a blank would send the caller
+		// back to the id.
+		const version =
+			agreementEffectiveAt(agreement, atMs) ??
+			latestAgreementVersion(agreement);
+		names[agreement.id] = version.name;
+	}
+	return names;
+}
+
+/**
  * The metadata keys on a type that cite an Agreement — every `ref` field
  * declaring `ref_kind: "agreement"`.
  *

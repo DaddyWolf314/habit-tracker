@@ -45,9 +45,15 @@ function renderPanel(step: FirstRunStep) {
 describe("FirstRunPanel", () => {
 	afterEach(cleanup);
 
-	it("says what Today is, whatever the step", async () => {
+	it("leaves saying what Today is to the page's lead sentence", async () => {
+		// This panel used to open by explaining the screen, because the page had no
+		// lead sentence. #212 item 3 gave it one, so that moved: it is a fact about
+		// Today, true whether or not the couple has started, and this floor is keyed
+		// on an empty log. Asserted as an absence so the two cannot both carry it —
+		// which would put the same paragraph twice on the one screen it opens on.
 		renderPanel("write");
-		expect(await screen.findByText(/the day's slice/i)).not.toBeNull();
+		expect(await screen.findByText(/Getting started/i)).not.toBeNull();
+		expect(screen.queryByText(/the day's slice/i)).toBeNull();
 	});
 
 	it("accounts for the seeded counter rather than leaving it unexplained", async () => {
@@ -87,7 +93,9 @@ describe("FirstRunPanel", () => {
 		for (const step of ["write", "track", "log"] as FirstRunStep[]) {
 			cleanup();
 			const { container } = renderPanel(step);
-			await screen.findByText(/the day's slice/i);
+			// Waits for the router to paint before reading the whole panel's text;
+			// the heading is the one string every step shares.
+			await screen.findByText(/Getting started/i);
 			expect(container.textContent).not.toMatch(
 				/nothing has happened|haven't logged|no events|nothing logged/i,
 			);
